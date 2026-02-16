@@ -621,8 +621,10 @@ impl WorldState {
                 debug!("World State time trigger: {}", tools::get_time_string());
 
                 // 对于 PoW 协议，需要等待区块链长度增加后才进入下一个 slot
-
                 if consensus_name == "pow" {
+                    let pow_wait_start = Instant::now();
+                    let pow_timeout =
+                        Duration::from_secs(shared_self.read().await.slot_duration.as_secs() * 16);
                     loop {
                         if last_index == 0 {
                             time::sleep(Duration::from_secs(
@@ -642,6 +644,12 @@ impl WorldState {
                         };
                         if current_index > last_index {
                             // 区块链有新块，可以进入下一个 slot
+                            break;
+                        }
+
+                        // 检查超时
+                        if pow_wait_start.elapsed() > pow_timeout {
+                            warn!("PoW wait timeout, force entering next slot");
                             break;
                         }
 
