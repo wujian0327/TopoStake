@@ -1,4 +1,4 @@
-import os
+﻿import os
 import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
@@ -285,7 +285,7 @@ if __name__ == '__main__':
     print("开始分析共识算法性能指标...\n")
     
     # 读取三种共识的数据
-    consensus_types = ['pog', 'pos', 'pow', 'minotaur']
+    consensus_types = ['topostake', 'pos', 'pow', 'minotaur']
     dataframes_dict = {}
     
     for ct in consensus_types:

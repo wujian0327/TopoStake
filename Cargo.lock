@@ -928,35 +928,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "pog-rs"
-version = "0.1.0"
-dependencies = [
- "blst",
- "chrono",
- "clap",
- "criterion",
- "dashmap",
- "env_logger",
- "flate2",
- "futures",
- "hex",
- "lazy_static",
- "log",
- "petgraph",
- "rand",
- "rand_distr",
- "regex",
- "secp256k1",
- "serde",
- "serde_json",
- "sha2",
- "sha3",
- "simplelog",
- "tokio",
- "zstd",
-]
-
-[[package]]
 name = "ppv-lite86"
 version = "0.2.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1310,6 +1281,35 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "topostake-rs"
+version = "0.1.0"
+dependencies = [
+ "blst",
+ "chrono",
+ "clap",
+ "criterion",
+ "dashmap",
+ "env_logger",
+ "flate2",
+ "futures",
+ "hex",
+ "lazy_static",
+ "log",
+ "petgraph",
+ "rand",
+ "rand_distr",
+ "regex",
+ "secp256k1",
+ "serde",
+ "serde_json",
+ "sha2",
+ "sha3",
+ "simplelog",
+ "tokio",
+ "zstd",
 ]
 
 [[package]]

@@ -1,4 +1,4 @@
-import matplotlib.pyplot as plt
+﻿import matplotlib.pyplot as plt
 import numpy as np
 # 假设这是您的 plot_style，为了代码能运行我先注释掉，您运行时保留即可
 # from plot_style import set_plot_style, get_colors_and_styles, format_axes, format_figure
@@ -7,9 +7,9 @@ import numpy as np
 # set_plot_style('paper')
 # colors, linestyles, markers = get_colors_and_styles()
 # 为了演示，我手动定义一下颜色，您请用您的字典替换
-colors = {'pog': '#1f77b4', 'pos': '#2ca02c', 'minotaur': '#9467bd', 'pow': '#d62728'}
-linestyles = {'pog': '-', 'pos': '--', 'minotaur': ':', 'pow': '-.'}
-markers = {'pog': 's', 'pos': 'o', 'minotaur': 'd', 'pow': '^'}
+colors = {'topostake': '#1f77b4', 'pos': '#2ca02c', 'minotaur': '#9467bd', 'pow': '#d62728'}
+linestyles = {'topostake': '-', 'pos': '--', 'minotaur': ':', 'pow': '-.'}
+markers = {'topostake': 's', 'pos': 'o', 'minotaur': 'd', 'pow': '^'}
 
 # --- 模拟数据 (保持您的逻辑不变) ---
 np.random.seed(42) 
@@ -41,8 +41,8 @@ gini_topostake = add_fluctuation(trend_topostake, scale=0.004)
 fig, ax = plt.subplots(figsize=(10, 8))
 
 ax.plot(epochs, gini_topostake, label='TopoStake (Ours)', 
-        color=colors['pog'], linestyle=linestyles['pog'], 
-        marker=markers['pog'], markevery=25, markersize=8)
+        color=colors['topostake'], linestyle=linestyles['topostake'], 
+        marker=markers['topostake'], markevery=25, markersize=8)
 
 ax.plot(epochs, gini_pos, label='PoS', 
         color=colors['pos'], linestyle=linestyles['pos'], 

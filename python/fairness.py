@@ -1,4 +1,4 @@
-import matplotlib.pyplot as plt
+﻿import matplotlib.pyplot as plt
 import numpy as np
 from plot_style import set_plot_style, get_colors_and_styles, format_axes, format_figure
 
@@ -44,8 +44,8 @@ fig, ax = plt.subplots(figsize=(10, 8))
 
 # 绘制 TopoStake (蓝线)
 ax.plot(epochs, gini_topostake, label='TopoStake (Ours)', 
-        color=colors['pog'], linestyle=linestyles['pog'], 
-        marker=markers['pog'], markevery=25, markersize=8)
+        color=colors['topostake'], linestyle=linestyles['topostake'], 
+        marker=markers['topostake'], markevery=25, markersize=8)
 
 # 绘制 PoS (红线)
 ax.plot(epochs, gini_pos, label='PoS', 
@@ -129,7 +129,7 @@ error_kw = dict(elinewidth=1.5, ecolor='#444444', capsize=4, capthick=1.5)
 # 画柱子
 # 1. TopoStake (Left)
 rects1 = ax.bar(x - width, roi_topostake, width, 
-                label='TopoStake (Ours)', color=colors['pog'], alpha=0.9, 
+                label='TopoStake (Ours)', color=colors['topostake'], alpha=0.9, 
                 yerr=std_topostake, error_kw=error_kw)
 
 # 2. PoS (Center)

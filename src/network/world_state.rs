@@ -1,7 +1,7 @@
-use crate::blockchain::block::Block;
+﻿use crate::blockchain::block::Block;
 use crate::blockchain::{BlockChainError, Blockchain};
 use crate::consensus::minotaur::MinotaurConsensus;
-use crate::consensus::pog::PogConsensus;
+use crate::consensus::topostake::TopoStakeConsensus;
 use crate::consensus::pos::PosConsensus;
 use crate::consensus::pow::PowConsensus;
 use crate::consensus::{Consensus, ConsensusType, RandaoSeed, Validator};
@@ -71,7 +71,7 @@ impl WorldState {
         let slot_duration = Duration::from_secs(slot_duration_secs);
         let consensus_name = consensus_type.to_string();
         let consensus: Box<dyn Consensus> = match consensus_type {
-            ConsensusType::POG => Box::new(PogConsensus::new(0, base_reward)),
+            ConsensusType::TopoStake => Box::new(TopoStakeConsensus::new(0, base_reward)),
             ConsensusType::POS => Box::new(PosConsensus::new(base_reward)),
             ConsensusType::POW => Box::new(PowConsensus::new(
                 pow_difficulty,
@@ -769,7 +769,7 @@ mod tests {
             blockchain.clone(),
             world_sender.clone(),
             1000,
-            ConsensusType::POG,
+            ConsensusType::TopoStake,
             0,
         );
         let mut node1 = Node::new(
@@ -779,7 +779,7 @@ mod tests {
             blockchain,
             world_sender.clone(),
             1000,
-            ConsensusType::POG,
+            ConsensusType::TopoStake,
             0,
         );
         let node0_sender = node0.sender.clone();

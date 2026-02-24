@@ -1,4 +1,4 @@
-import os
+﻿import os
 import matplotlib.pyplot as plt
 import networkx as nx
 import numpy as np
@@ -135,7 +135,7 @@ def draw_motivation_figure():
             ax2.text(mid_point[0], mid_point[1], "$", fontsize=16, color='green', fontweight='bold', ha='center', va='center')
 
     # 标注文字
-    ax2.set_title("(b) PoG: Incentivized Propagation", fontsize=16, y=-0.01)
+    ax2.set_title("(b) topostake: Incentivized Propagation", fontsize=16, y=-0.01)
     ax2.text(0, 0, "Active Core", fontsize=10, ha='center', va='center', color='white', fontweight='bold')
     # ax2.text(0, 0.6, "Optimized Topology\n(Reward Driven)", fontsize=12, ha='center', color='#2ca02c', fontweight='bold')
 
@@ -149,7 +149,7 @@ def draw_motivation_figure():
     # 两个图能更近一些
     plt.subplots_adjust(wspace=0.1)
 
-    output_file = os.path.join(get_project_root(), 'figures', 'pog_motivation.png')
+    output_file = os.path.join(get_project_root(), 'figures', 'topostake_motivation.png')
     plt.savefig(output_file, dpi=300, bbox_inches='tight')
     plt.show()
 

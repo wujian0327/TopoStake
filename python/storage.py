@@ -1,4 +1,4 @@
-import sys
+﻿import sys
 import os
 # 添加 python 目录到路径以导入 plot_style
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../python')))
@@ -37,8 +37,8 @@ fig, ax = plt.subplots(figsize=(10, 8))
 
 # TopoStake (Blue Solid) - Slightly above 1024 KB
 ax.plot(path_lengths, topo_sizes_kb, 
-        label='TopoStake Block (with Path)', color=colors['pog'], 
-        linestyle=linestyles['pog'], linewidth=3.5, marker=markers['pog'], markevery=5)
+        label='TopoStake Block (with Path)', color=colors['topostake'], 
+        linestyle=linestyles['topostake'], linewidth=3.5, marker=markers['topostake'], markevery=5)
 
 # Standard PoS (Green Dashed) - 1024 KB
 ax.plot(path_lengths, pos_sizes_kb, 
@@ -46,7 +46,7 @@ ax.plot(path_lengths, pos_sizes_kb,
         linestyle=linestyles['pos'], linewidth=3, marker=markers['pos'], markevery=5)
 
 # 填充区域：展示微小的增量
-ax.fill_between(path_lengths, pos_sizes_kb, topo_sizes_kb, color=colors['pog'], alpha=0.1)
+ax.fill_between(path_lengths, pos_sizes_kb, topo_sizes_kb, color=colors['topostake'], alpha=0.1)
 
 # 关键注释：强调“微乎其微”
 # 在 L=50 处标注

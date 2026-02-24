@@ -1,14 +1,14 @@
 [package]
-name = "pog-rs"
+name = "topostake-rs"
 version = "0.1.0"
 edition = "2021"
 
 [lib]
-name = "pog"
+name = "topostake"
 path = "src/lib.rs"
 
 [[bin]]
-name = "pog"
+name = "topostake"
 path = "src/main.rs"
 
 
@@ -39,7 +39,3 @@ regex = "1.0"
 env_logger = "0.11"
 criterion = "0.5.1"
 blst = "0.3"
-
-[[bench]]
-name = "path_tracing"
-harness = false

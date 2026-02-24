@@ -1,4 +1,4 @@
-
+﻿
 # --- 模拟数据 ---
 import os
 from matplotlib import pyplot as plt
@@ -39,7 +39,7 @@ tps_pow = np.array([15, 15, 14, 14, 13, 13])
 fig, ax = plt.subplots(figsize=(10, 8))  # 调整尺寸以适应大字体
 
 ax.plot(N, tps_topostake, 
-        marker=markers['pog'], linestyle=linestyles['pog'], color=colors['pog'], 
+        marker=markers['topostake'], linestyle=linestyles['topostake'], color=colors['topostake'], 
         label='TopoStake (Ours)')
 
 ax.plot(N, tps_pos, 
@@ -94,7 +94,7 @@ data_pow = np.random.normal(loc=13.0, scale=2.0, size=num_points)
 
 data = [data_topostake, data_pos, data_minotaur, data_pow]
 labels = ['TopoStake\n(Ours)', 'PoS', 'Minotaur', 'PoW']
-plot_colors = [colors['pog'], colors['pos'], colors['minotaur'], colors['pow']]
+plot_colors = [colors['topostake'], colors['pos'], colors['minotaur'], colors['pow']]
 
 # --- 2. 绘制箱线图 ---
 fig, ax = plt.subplots(figsize=(10, 8))
@@ -158,10 +158,10 @@ fig, ax = plt.subplots(figsize=(10, 8))
 
 # TopoStake
 ax.plot(N, path_topostake, 
-        marker=markers['pog'], linestyle=linestyles['pog'], color=colors['pog'], 
+        marker=markers['topostake'], linestyle=linestyles['topostake'], color=colors['topostake'], 
         label='TopoStake (Ours)')
 ax.fill_between(N, path_topostake - err_topostake, path_topostake + err_topostake, 
-                color=colors['pog'], alpha=0.2)
+                color=colors['topostake'], alpha=0.2)
 
 # PoS
 ax.plot(N, path_pos, 
@@ -217,7 +217,7 @@ confirmed_pow = np.array([48, 68, 70, 71, 70, 70])
 fig, ax = plt.subplots(figsize=(10, 8))
 
 ax.plot(input_rate, confirmed_topostake, 
-        marker=markers['pog'], linestyle=linestyles['pog'], color=colors['pog'], 
+        marker=markers['topostake'], linestyle=linestyles['topostake'], color=colors['topostake'], 
         label='TopoStake (Ours)')
 
 ax.plot(input_rate, confirmed_pos, 
@@ -280,7 +280,7 @@ width = 0.2  # the width of the bars
 
 # Offsets for 4 bars centered around x
 rects1 = ax.bar(x - 1.5*width, topo_topostake, width, label='TopoStake (Ours)', 
-                color=colors['pog'], edgecolor='black', hatch=markers['pog']*2) # hatch optional, using marker symbol as pattern if possible or just standard hatches
+                color=colors['topostake'], edgecolor='black', hatch=markers['topostake']*2) # hatch optional, using marker symbol as pattern if possible or just standard hatches
 # simplify hatch for bars to classic patterns if markers are specific shapes
 # Let's just use colors and standard hatches for distinction in bar charts usually
 

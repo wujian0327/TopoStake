@@ -1,4 +1,4 @@
-import os
+﻿import os
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib as mpl
@@ -14,7 +14,7 @@ def generate_block_production_data():
     """
     offline_rates = np.array([0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50])
     
-    pog_success_rates = np.array([1, 142/(1+142), 162/(2+162), 160/(3+160), 156/(6+156),154/(8+154), 150/(10+150), 140/(10+140), 141/(11+141),150/(14+150) , 144/(16+144)]) * 100
+    topostake_success_rates = np.array([1, 142/(1+142), 162/(2+162), 160/(3+160), 156/(6+156),154/(8+154), 150/(10+150), 140/(10+140), 141/(11+141),150/(14+150) , 144/(16+144)]) * 100
     
     pos_success_rates = np.array([1, 155/(2+155),155/(5+155), 156/(10+156), 148/(14+148), 147/(18+147),148/(24+148), 120/(27+128),102/(50+102), 91/(63+91), 70/(85+76)]) * 100
     
@@ -22,23 +22,23 @@ def generate_block_production_data():
     
     
     
-    return offline_rates, pog_success_rates, pos_success_rates, minotaur_success_rates
+    return offline_rates, topostake_success_rates, pos_success_rates, minotaur_success_rates
 
 def create_block_production_rate_figure():
     """
     绘制不同掉线率下的出块成功率对比图
     """
     # 获取数据
-    offline_rates, pog_rates, pos_rates, minotaur_rates = generate_block_production_data()
+    offline_rates, topostake_rates, pos_rates, minotaur_rates = generate_block_production_data()
     
     # 创建图表
     fig, ax = plt.subplots(figsize=(10, 8))
     colors, linestyles, markers = get_colors_and_styles()
     
     # 绘制三条曲线
-    ax.plot(offline_rates, pog_rates, 
-            color=colors['pog'],  linestyle=linestyles['pog'], 
-            marker=markers['pog'],  label='PoG', zorder=3)
+    ax.plot(offline_rates, topostake_rates, 
+            color=colors['topostake'],  linestyle=linestyles['topostake'], 
+            marker=markers['topostake'],  label='topostake', zorder=3)
     
     ax.plot(offline_rates, pos_rates, 
             color=colors['pos'], linestyle=linestyles['pos'], 

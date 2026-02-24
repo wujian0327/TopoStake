@@ -1,4 +1,4 @@
-import pandas as pd
+﻿import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
 import os
@@ -92,9 +92,9 @@ def simulate_minotaur_consensus(n_nodes=50, n_slots=1000, target_gini=0.6):
     nodes = np.random.choice(range(n_nodes), size=n_slots, p=combined_distribution)
     return pd.DataFrame({'miner': nodes})
 
-def simulate_pog_consensus(n_nodes=50, n_slots=1000, n_transactions_per_slot=100):
+def simulate_topostake_consensus(n_nodes=50, n_slots=1000, n_transactions_per_slot=100):
     """
-    模拟 POG 共识：基于路径贡献的概率出块
+    模拟 topostake 共识：基于路径贡献的概率出块
     - 模拟交易流生成路径贡献分数
     - 计算虚拟权益并选择出块者
     """
@@ -136,7 +136,7 @@ def simulate_pog_consensus(n_nodes=50, n_slots=1000, n_transactions_per_slot=100
     s_real = generate_distribution_with_gini(n_nodes, target_gini=0.6, seed=42)
     
     # 虚拟权益: S_v = omega * C + (1-omega) * S
-    omega = 0.8  # POG配置参数
+    omega = 0.8  # topostake配置参数
     s_virtual = omega * c_normalized + (1 - omega) * s_real
     s_virtual = s_virtual / np.sum(s_virtual)  # 归一化
     
@@ -163,8 +163,8 @@ def read_metrics_csv(consensus_type):
             return simulate_pow_consensus(n_miners=50, n_slots=1000)
         elif consensus_type == 'pos':
             return simulate_pos_consensus(n_validators=50, n_slots=1000)
-        elif consensus_type == 'pog':
-            return simulate_pog_consensus(n_nodes=50, n_slots=1000)
+        elif consensus_type == 'topostake':
+            return simulate_topostake_consensus(n_nodes=50, n_slots=1000)
         elif consensus_type == 'minotaur':
             return simulate_minotaur_consensus(n_nodes=50, n_slots=1000)
         else:
@@ -178,8 +178,8 @@ def generate_dummy_data(consensus_type):
     # PoS: 幂律分布 (Rich get richer)
     if consensus_type == 'pos':
         weights = [1.0 / (i+1)**1.5 for i in range(n_nodes)]
-    # POG: 相对平滑 (Middle class rises)
-    elif consensus_type == 'pog':
+    # topostake: 相对平滑 (Middle class rises)
+    elif consensus_type == 'topostake':
         weights = [1.0 / (i+1)**0.8 for i in range(n_nodes)]
     # PoW: 高度中心化 (Mining pools)
     else:
@@ -218,12 +218,12 @@ def calculate_nakamoto_coefficient(df, threshold=0.51):
     return nakamoto
 
 def plot_lorenz_comparison():
-    df_pog = read_metrics_csv('pog')
+    df_topostake = read_metrics_csv('topostake')
     df_pos = read_metrics_csv('pos')
     df_pow = read_metrics_csv('pow')
     df_minotaur = read_metrics_csv('minotaur')
     
-    x_pog, y_pog = calculate_lorenz_curve(df_pog)
+    x_topostake, y_topostake = calculate_lorenz_curve(df_topostake)
     x_pos, y_pos = calculate_lorenz_curve(df_pos)
     x_pow, y_pow = calculate_lorenz_curve(df_pow)
     x_minotaur, y_minotaur = calculate_lorenz_curve(df_minotaur)
@@ -233,8 +233,8 @@ def plot_lorenz_comparison():
     # 绘制对角线 (Perfect Equality)
     ax.plot([0, 1], [0, 1], linestyle='--', color='gray', label='Perfect Equality', alpha=0.6)
     
-    # 绘制 POG、PoS、PoW 和 Minotaur
-    ax.plot(x_pog, y_pog, label='POG', color='#1f77b4', linewidth=3)
+    # 绘制 topostake、PoS、PoW 和 Minotaur
+    ax.plot(x_topostake, y_topostake, label='topostake', color='#1f77b4', linewidth=3)
     ax.plot(x_pos, y_pos, label='PoS', color='#2ca02c', linewidth=3)
     ax.plot(x_pow, y_pow, label='PoW', color='#d62728', linewidth=3)
     ax.plot(x_minotaur, y_minotaur, label='Minotaur', color='#9467bd', linewidth=3)
@@ -257,20 +257,20 @@ def plot_lorenz_comparison():
     plt.close()
 
 def plot_nakamoto_bar():
-    df_pog = read_metrics_csv('pog')
+    df_topostake = read_metrics_csv('topostake')
     df_pos = read_metrics_csv('pos')
     df_pow = read_metrics_csv('pow')
     df_minotaur = read_metrics_csv('minotaur')
     
-    nk_pog = calculate_nakamoto_coefficient(df_pog)
+    nk_topostake = calculate_nakamoto_coefficient(df_topostake)
     nk_pos = calculate_nakamoto_coefficient(df_pos)
     nk_pow = calculate_nakamoto_coefficient(df_pow)
     nk_minotaur = calculate_nakamoto_coefficient(df_minotaur)
     
     fig, ax = plt.subplots(figsize=(10, 8))
     
-    protocols = ['POG', 'PoS', 'PoW', 'Minotaur']
-    values = [nk_pog, nk_pos, nk_pow, nk_minotaur]
+    protocols = ['topostake', 'PoS', 'PoW', 'Minotaur']
+    values = [nk_topostake, nk_pos, nk_pow, nk_minotaur]
     colors = ['#1f77b4', '#2ca02c', '#d62728', '#9467bd']
     
     bars = ax.bar(protocols, values, color=colors, alpha=0.8, width=0.6, edgecolor='black', linewidth=1.5)

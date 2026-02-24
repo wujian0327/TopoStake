@@ -1,4 +1,4 @@
-import matplotlib.pyplot as plt
+﻿import matplotlib.pyplot as plt
 import numpy as np
 from plot_style import set_plot_style, get_colors_and_styles, format_axes, format_figure
 
@@ -37,7 +37,7 @@ fig, ax = plt.subplots(figsize=(10, 8))
 
 # TopoStake (Ours) - 放第一个
 ax.plot(epochs, apl_topo, label='TopoStake (Ours)', 
-        color=colors['pog'], marker=markers['pog'], linestyle=linestyles['pog'], 
+        color=colors['topostake'], marker=markers['topostake'], linestyle=linestyles['topostake'], 
         markersize=8, linewidth=3)
 
 # PoS

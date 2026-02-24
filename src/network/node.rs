@@ -1,4 +1,4 @@
-use crate::blockchain::block::{Block, BlockError, Body};
+﻿use crate::blockchain::block::{Block, BlockError, Body};
 use crate::blockchain::path::{AggregatedSignedPaths, TransactionPaths};
 use crate::blockchain::transaction::Transaction;
 use crate::blockchain::{BlockChainError, Blockchain};
@@ -84,7 +84,7 @@ impl Node {
         } else {
             Wallet::new_deterministic(wallet_seed, index)
         };
-        let (sender, receiver) = tokio::sync::mpsc::channel(4096);
+        let (sender, receiver) = tokio::sync::mpsc::channel(1024 * 16);
         Node {
             index,
             epoch,
@@ -547,8 +547,8 @@ impl Node {
                         let tx_hash = &transaction_paths.transaction.hash;
 
                         if let Some(cached_tx) = transactions_cache.get(tx_hash) {
-                            if self.consensus == ConsensusType::POG {
-                                // POG: 只有当缓存的路径长度更短或相等时才跳过
+                            if self.consensus == ConsensusType::TopoStake {
+                                // TopoStake: 只有当缓存的路径长度更短或相等时才跳过
                                 if cached_tx.paths.len() <= transaction_paths.paths.len() {
                                     continue;
                                 }
@@ -1350,7 +1350,7 @@ mod tests {
             blockchain,
             world_sender,
             1000,
-            ConsensusType::POG,
+            ConsensusType::TopoStake,
             0,
         );
         let node_sender = node.sender.clone();
@@ -1391,7 +1391,7 @@ mod tests {
             wallet0.clone(),
             world_sender.clone(),
             1000,
-            ConsensusType::POG,
+            ConsensusType::TopoStake,
         );
         let mut node1 = Node::new_with_wallet(
             1,
@@ -1401,7 +1401,7 @@ mod tests {
             wallet1.clone(),
             world_sender.clone(),
             1000,
-            ConsensusType::POG,
+            ConsensusType::TopoStake,
         );
         let mut node2 = Node::new_with_wallet(
             2,
@@ -1411,7 +1411,7 @@ mod tests {
             wallet2.clone(),
             world_sender.clone(),
             1000,
-            ConsensusType::POG,
+            ConsensusType::TopoStake,
         );
         let mut node3 = Node::new_with_wallet(
             3,
@@ -1421,7 +1421,7 @@ mod tests {
             wallet3.clone(),
             world_sender.clone(),
             1000,
-            ConsensusType::POG,
+            ConsensusType::TopoStake,
         );
 
         node0.neighbors.push(Neighbor::new(
@@ -1521,7 +1521,7 @@ mod tests {
         let (_tx, _rx) = tokio::sync::mpsc::channel::<Message>(8);
         let (world_tx, _world_rx) = tokio::sync::mpsc::channel::<Message>(8);
         let bc = Blockchain::new(Block::gen_genesis_block());
-        let mut node = Node::new(0, 0, 0, bc, world_tx, 1000, ConsensusType::POG, 0);
+        let mut node = Node::new(0, 0, 0, bc, world_tx, 1000, ConsensusType::TopoStake, 0);
 
         assert_eq!(node.get_balance(), 0.0);
 

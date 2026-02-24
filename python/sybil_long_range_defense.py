@@ -1,4 +1,4 @@
-import numpy as np
+﻿import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import os
@@ -10,7 +10,7 @@ set_plot_style('paper')
 
 def compute_position_weight(position, path_length):
     """
-    计算位置权重 (参考 src/consensus/pog.rs)
+    计算位置权重 (参考 src/consensus/topostake.rs)
     alpha_k(L) = 2(L - k + 1) / (L(L + 1))
     注意: position 从 1 开始
     """

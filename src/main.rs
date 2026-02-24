@@ -1,15 +1,15 @@
 use clap::Parser;
 use log::LevelFilter;
-use pog::consensus::ConsensusType;
-use pog::network;
-use pog::network::graph::TopologyType;
+use topostake::consensus::ConsensusType;
+use topostake::network;
+use topostake::network::graph::TopologyType;
 use simplelog::{
     ColorChoice, CombinedLogger, ConfigBuilder, TermLogger, TerminalMode, WriteLogger,
 };
 use std::fs::File;
 
 #[derive(Parser, Debug)]
-#[clap(version = "1.0", author = "wujian", about = "POG协议模拟")]
+#[clap(version = "1.0", author = "wujian", about = "TopoStake协议模拟")]
 struct Args {
     /// 节点个数(Node number)
     #[clap(short, long, default_value = "20")]
@@ -53,7 +53,7 @@ struct Args {
     pow_max_threads: usize,
 
     /// 共识算法类型 (Consensus algorithm type)
-    #[arg(short, long, default_value_t = ConsensusType::POG)]
+    #[arg(short, long, default_value_t = ConsensusType::TopoStake)]
     consensus: ConsensusType,
 
     ///拓扑结构 (Topology)

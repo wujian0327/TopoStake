@@ -1,4 +1,4 @@
-import matplotlib.pyplot as plt
+﻿import matplotlib.pyplot as plt
 import numpy as np
 from plot_style import set_plot_style, get_colors_and_styles, format_axes, format_figure
 
@@ -39,7 +39,7 @@ fig, ax = plt.subplots(figsize=(10, 8))
 
 # TopoStake (Blue - 最佳稳定性)
 ax.plot(churn_rates * 100, tps_topo, 
-        label='TopoStake (Ours)', color=colors['pog'], marker=markers['pog'], linestyle=linestyles['pog'])
+        label='TopoStake (Ours)', color=colors['topostake'], marker=markers['topostake'], linestyle=linestyles['topostake'])
 
 # PoS (Red - 暴跌)
 ax.plot(churn_rates * 100, tps_pos, 
@@ -107,7 +107,7 @@ fig, ax = plt.subplots(figsize=(10, 8))
 
 # TopoStake (Blue) - 明显的“悬崖”
 ax.plot(sybil_counts, reward_topo, 
-        label='TopoStake (Ours)', color=colors['pog'], marker=markers['pog'], markevery=5, linestyle=linestyles['pog'], linewidth=3.5,markersize=6)
+        label='TopoStake (Ours)', color=colors['topostake'], marker=markers['topostake'], markevery=5, linestyle=linestyles['topostake'], linewidth=3.5,markersize=6)
 
 # PoS (Red)
 ax.plot(sybil_counts, reward_pos, 

@@ -1,4 +1,4 @@
-"""
+﻿"""
 公共的 Matplotlib 样式配置模块
 
 提供标准化的图表样式设置，用于所有分析脚本的一致性呈现。
@@ -72,9 +72,9 @@ def get_colors_and_styles():
             - linestyles_dict: 共识类型到线条样式的映射
             - markers_dict: 共识类型到标记符号的映射
     """
-    colors = {'pog': '#1f77b4', 'pos': '#2ca02c', 'pow': '#d62728', 'minotaur': '#9467bd'}
-    linestyles = {'pog': '-', 'pos': '--', 'pow': '-.', 'minotaur': ':'}
-    markers = {'pog': 's', 'pos': 'o', 'pow': '^', 'minotaur': 'D'}
+    colors = {'topostake': '#1f77b4', 'pos': '#2ca02c', 'pow': '#d62728', 'minotaur': '#9467bd'}
+    linestyles = {'topostake': '-', 'pos': '--', 'pow': '-.', 'minotaur': ':'}
+    markers = {'topostake': 's', 'pos': 'o', 'pow': '^', 'minotaur': 'D'}
     
     return colors, linestyles, markers
 

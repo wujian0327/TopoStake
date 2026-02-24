@@ -1,4 +1,4 @@
-import numpy as np
+﻿import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import os
@@ -10,7 +10,7 @@ set_plot_style('paper')
 
 def compute_penalty_factor(avg_path_length, ntd=10):
     """
-    计算惩罚因子 P(B) (对应 src/consensus/pog.rs 中的 distribute_rewards)
+    计算惩罚因子 P(B) (对应 src/consensus/topostake.rs 中的 distribute_rewards)
     P(B) = (NTD / L_avg)^2 if L_avg > NTD
     P(B) = 1.0 otherwise
     """

@@ -13,14 +13,15 @@ use std::fmt;
 use std::fmt::{Display, Formatter};
 
 pub mod minotaur;
-pub mod pog;
 pub mod pos;
 pub mod pow;
+pub mod topostake;
 
 #[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConsensusType {
     POS,
-    POG,
+    #[value(name = "topostake")]
+    TopoStake,
     POW,
     MINOTAUR,
 }
@@ -31,8 +32,8 @@ impl Display for ConsensusType {
             ConsensusType::POS => {
                 write!(f, "pos")
             }
-            ConsensusType::POG => {
-                write!(f, "pog")
+            ConsensusType::TopoStake => {
+                write!(f, "topostake")
             }
             ConsensusType::POW => {
                 write!(f, "pow")
