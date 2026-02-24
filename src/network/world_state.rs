@@ -1,12 +1,12 @@
 ﻿use crate::blockchain::block::Block;
 use crate::blockchain::{BlockChainError, Blockchain};
 use crate::consensus::minotaur::MinotaurConsensus;
-use crate::consensus::topostake::TopoStakeConsensus;
 use crate::consensus::pos::PosConsensus;
 use crate::consensus::pow::PowConsensus;
+use crate::consensus::topostake::TopoStakeConsensus;
 use crate::consensus::{Consensus, ConsensusType, RandaoSeed, Validator};
 use crate::metrics::{self, calculate_stake_concentration, SlotMetrics};
-use crate::network::message::{Message, MessageType};
+use crate::network::message::Message;
 use crate::tools::get_timestamp;
 use crate::{consensus, tools};
 use log::{debug, error, info, warn};
@@ -345,68 +345,30 @@ impl WorldState {
             let shared_self = Arc::clone(&shared_self);
             task::spawn(async move {
                 while let Some(msg) = receiver.recv().await {
-                    debug!("World State received msg type: {}", msg.msg_type);
-                    match msg.msg_type {
-                        MessageType::ReceiveRandaoSeed => {
-                            let randao_seed = match RandaoSeed::from_json(msg.data) {
-                                Ok(t) => t,
-                                Err(e) => {
-                                    error!("World State error: {}", e);
-                                    continue;
-                                }
-                            };
+                    debug!("World State received msg: {:?}", msg);
+                    match msg {
+                        Message::ReceiveRandaoSeed(randao_seed) => {
+                            let shared_self = shared_self.write().await;
+                            let mut current_slot = shared_self.current_slot.write().await;
+                            current_slot.randao_seeds.push(randao_seed.clone());
+                        }
+                        Message::ReceiveBecomeValidator(validator) => {
+                            let shared_self = shared_self.write().await;
+                            let mut validators = shared_self.validators.write().await;
+                            validators.retain(|v| v.address != validator.address);
+                            validators.push(validator.clone());
+                        }
+                        Message::UpdateValidatorStake { address, new_stake } => {
+                            let shared_self = shared_self.write().await;
+                            let mut validators = shared_self.validators.write().await;
+                            // 更新对应 Validator 的 stake
+                            if let Some(validator) =
+                                validators.iter_mut().find(|v| v.address == address)
                             {
-                                let shared_self = shared_self.write().await;
-                                let mut current_slot = shared_self.current_slot.write().await;
-                                current_slot.randao_seeds.push(randao_seed.clone());
+                                validator.stake = new_stake;
                             }
                         }
-                        MessageType::ReceiveBecomeValidator => {
-                            let validator = match Validator::from_json(msg.data) {
-                                Ok(t) => t,
-                                Err(e) => {
-                                    error!("World State error: {}", e);
-                                    continue;
-                                }
-                            };
-                            {
-                                let shared_self = shared_self.write().await;
-                                let mut validators = shared_self.validators.write().await;
-                                validators.retain(|v| v.address != validator.address);
-                                validators.push(validator.clone());
-                            }
-                        }
-                        MessageType::UpdateValidatorStake => {
-                            // 解析消息中的 address 和 new_stake
-                            if let Ok(json_str) = String::from_utf8(msg.data.clone()) {
-                                if let Ok(payload) =
-                                    serde_json::from_str::<serde_json::Value>(&json_str)
-                                {
-                                    if let (Some(address), Some(new_stake)) = (
-                                        payload.get("address").and_then(|v| v.as_str()),
-                                        payload.get("stake").and_then(|v| v.as_f64()),
-                                    ) {
-                                        let shared_self = shared_self.write().await;
-                                        let mut validators = shared_self.validators.write().await;
-                                        // 更新对应 Validator 的 stake
-                                        if let Some(validator) =
-                                            validators.iter_mut().find(|v| v.address == address)
-                                        {
-                                            validator.stake = new_stake;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        MessageType::SendBlock => {
-                            let block = match Block::from_json(msg.data) {
-                                Ok(b) => b,
-                                Err(e) => {
-                                    error!("Error: {}", e);
-                                    continue;
-                                }
-                            };
-
+                        Message::SendBlock { block, from: _ } => {
                             {
                                 let mut shared_self = shared_self.write().await;
                                 let add_block_result = {
@@ -496,42 +458,26 @@ impl WorldState {
                             }
                             debug!("World State add block successfully");
                         }
-                        MessageType::BlockProductionFailed => {
+                        Message::BlockProductionFailed {
+                            node_index,
+                            slot,
+                            reason,
+                        } => {
                             // 处理出块失败事件
-                            if let Ok(json_str) = String::from_utf8(msg.data.clone()) {
-                                if let Ok(payload) =
-                                    serde_json::from_str::<serde_json::Value>(&json_str)
-                                {
-                                    if let (Some(node_index), Some(slot), Some(reason)) = (
-                                        payload.get("node_index").and_then(|v| v.as_u64()),
-                                        payload.get("slot").and_then(|v| v.as_u64()),
-                                        payload.get("reason").and_then(|v| v.as_str()),
-                                    ) {
-                                        let mut shared_self = shared_self.write().await;
-                                        shared_self.block_production_failed += 1;
-                                        debug!(
-                                            "World State: Block production failed at slot {}: Node[{}] (reason: {})",
-                                            slot, node_index, reason
-                                        );
-                                    }
-                                }
-                            }
+                            let mut shared_self = shared_self.write().await;
+                            shared_self.block_production_failed += 1;
+                            debug!(
+                                "World State: Block production failed at slot {}: Node[{}] (reason: {})",
+                                slot,
+                                node_index,
+                                reason
+                            );
                         }
-                        MessageType::ResponseBlockSync => {
+                        Message::ResponseBlockSync {
+                            blocks: sync_blocks,
+                            from: _,
+                        } => {
                             //处理同步逻辑
-                            let blocks_json = match String::from_utf8(msg.data) {
-                                Ok(s) => s,
-                                Err(_e) => {
-                                    continue;
-                                }
-                            };
-
-                            let sync_blocks: Vec<Block> = match serde_json::from_str(&blocks_json) {
-                                Ok(blocks) => blocks,
-                                Err(_e) => {
-                                    continue;
-                                }
-                            };
                             if sync_blocks.is_empty() {
                                 continue;
                             }
@@ -824,14 +770,14 @@ mod tests {
         for (i, address) in nodes_address.iter().enumerate() {
             stake_map.insert(address.clone(), 1.0);
         }
-        let stake_json = serde_json::to_vec(&stake_map).unwrap_or_default();
+        // let stake_json = serde_json::to_vec(&stake_map).unwrap_or_default();
 
         node0_sender
-            .send(Message::new_become_validator_msg(stake_json.clone()))
+            .send(Message::new_become_validator_msg(stake_map.clone()))
             .await
             .unwrap();
         node1_sender
-            .send(Message::new_become_validator_msg(stake_json))
+            .send(Message::new_become_validator_msg(stake_map))
             .await
             .unwrap();
         tokio::time::sleep(Duration::from_secs(1)).await;

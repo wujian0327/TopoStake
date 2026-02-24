@@ -228,12 +228,12 @@ pub async fn start_network(
     }
 
     // Convert to JSON and send to all nodes
-    let stake_json = serde_json::to_vec(&stake_map).unwrap_or_default();
+    //let stake_json = serde_json::to_vec(&stake_map).unwrap_or_default();
 
     for (k, sender) in nodes_sender.clone() {
         debug!("Node[{}] become validator", nodes_index.get(&k).unwrap());
         // Create modified become_validator message with stake data
-        let msg = Message::new_become_validator_msg(stake_json.clone());
+        let msg = Message::new_become_validator_msg(stake_map.clone());
         sender.send(msg).await.unwrap();
     }
 

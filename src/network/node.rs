@@ -3,12 +3,12 @@ use crate::blockchain::path::{AggregatedSignedPaths, TransactionPaths};
 use crate::blockchain::transaction::Transaction;
 use crate::blockchain::{BlockChainError, Blockchain};
 use crate::consensus::{ConsensusType, RandaoSeed, Validator};
-use crate::network::message::{Message, MessageType};
-use crate::network::world_state::SlotManager;
+use crate::network::message::Message;
+// use crate::network::world_state::SlotManager;
 use crate::wallet::Wallet;
 use log::{debug, error, info, warn};
 use rand::Rng;
-use serde_json;
+// use serde_json;
 use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
 use std::sync::Arc;
@@ -224,10 +224,9 @@ impl Node {
             let blockchain = self.blockchain.read().await;
 
             // 1. 过滤掉已经在区块链中的交易
-            let mut valid_paths: Vec<TransactionPaths> = transaction_paths_cache
+            let mut valid_paths: Vec<&TransactionPaths> = transaction_paths_cache
                 .values()
-                .filter(|x| !blockchain.exist_transaction(x.transaction.hash.clone()))
-                .cloned()
+                .filter(|x| !blockchain.exist_transaction(&x.transaction.hash))
                 .collect();
 
             // 2. 按手续费从高到低排序
@@ -240,7 +239,10 @@ impl Node {
 
             // 3. 截取前 max_tx_per_block 个
             let pack_count = std::cmp::min(valid_paths.len(), self.max_tx_per_block);
-            valid_paths[..pack_count].to_vec()
+            valid_paths[..pack_count]
+                .iter()
+                .map(|&x| x.clone())
+                .collect::<Vec<TransactionPaths>>()
         };
 
         let mut transactions: Vec<Transaction> =
@@ -274,14 +276,13 @@ impl Node {
 
     pub async fn generate_block(&self, epoch: u64, slot: u64) -> Result<Block, BlockError> {
         let transaction_paths_to_pack = {
-            let mut transaction_paths_cache = self.transaction_paths_cache.write().await;
+            let transaction_paths_cache = self.transaction_paths_cache.read().await;
             let blockchain = self.blockchain.read().await;
 
             // 1. 过滤掉已经在区块链中的交易
-            let mut valid_paths: Vec<TransactionPaths> = transaction_paths_cache
+            let mut valid_paths: Vec<&TransactionPaths> = transaction_paths_cache
                 .values()
-                .filter(|x| !blockchain.exist_transaction(x.transaction.hash.clone()))
-                .cloned()
+                .filter(|x| !blockchain.exist_transaction(&x.transaction.hash))
                 .collect();
 
             // 2. 按手续费从高到低排序
@@ -294,13 +295,21 @@ impl Node {
 
             // 3. 截取前 max_tx_per_block 个
             let pack_count = std::cmp::min(valid_paths.len(), self.max_tx_per_block);
-            let to_pack = valid_paths[..pack_count].to_vec();
+            let to_pack: Vec<TransactionPaths> = valid_paths[..pack_count]
+                .iter()
+                .map(|&x| x.clone())
+                .collect();
+
+            drop(blockchain);
+            drop(transaction_paths_cache);
 
             // 4. 更新缓存：移除已打包的交易
-            let packed_hashes: std::collections::HashSet<String> =
-                to_pack.iter().map(|x| x.transaction.hash.clone()).collect();
-
-            transaction_paths_cache.retain(|hash, _| !packed_hashes.contains(hash));
+            if !to_pack.is_empty() {
+                let mut cache_write = self.transaction_paths_cache.write().await;
+                for tx in &to_pack {
+                    cache_write.remove(&tx.transaction.hash);
+                }
+            }
 
             to_pack
         };
@@ -395,13 +404,13 @@ impl Node {
         while let Some(msg) = self.receiver.recv().await {
             // 离线逻辑：如果节点离线，跳过大多数消息处理
             // 但 UpdateSlot 消息用于恢复在线逻辑，需要处理
-            if !self.is_online && !matches!(msg.msg_type, MessageType::UpdateSlot) {
+            if !self.is_online && !matches!(msg, Message::UpdateSlot(_)) {
                 debug!(
-                    "Node[{}] is offline, skipping message[{}]",
-                    self.index, msg.msg_type
+                    "Node[{}] is offline, skipping message[{:?}]",
+                    self.index, msg
                 );
-                match msg.msg_type {
-                    MessageType::GenerateBlock => {
+                match msg {
+                    Message::GenerateBlock => {
                         warn!(
                             "Node[{}] missed block generation due to being offline at slot {}",
                             self.index, self.slot
@@ -426,18 +435,11 @@ impl Node {
                 continue;
             }
 
-            match msg.msg_type {
-                MessageType::SendBlock => {
-                    let block = match Block::from_json(msg.data) {
-                        Ok(b) => b,
-                        Err(e) => {
-                            error!("Node[{}] error: {}", self.index, e);
-                            continue;
-                        }
-                    };
+            match msg {
+                Message::SendBlock { block, from } => {
                     debug!(
-                        "Node[{}] received msg[{}]: block hash[{}]",
-                        self.index, msg.msg_type, block.header.hash
+                        "Node[{}] received msg[SendBlock]: block hash[{}]",
+                        self.index, block.header.hash
                     );
                     {
                         //添加到自己的区块链
@@ -461,11 +463,11 @@ impl Node {
 
                                     if !self.neighbors.is_empty() {
                                         self.sync_in_progress = true;
-                                        for neighbor in self.neighbors.clone() {
+                                        for neighbor in &self.neighbors {
                                             let self_address = self.get_address();
+                                            let sender = neighbor.sender.clone();
                                             tokio::spawn(async move {
-                                                neighbor
-                                                    .sender
+                                                sender
                                                     .send(Message::new_request_block_sync_msg(
                                                         last_block_index,
                                                         self_address,
@@ -486,21 +488,15 @@ impl Node {
                     }
                     {
                         //清除交易缓存
-                        let tx_hashs: Vec<String> = block
-                            .body
-                            .transactions
-                            .iter()
-                            .map(|t| t.hash.to_string())
-                            .collect();
                         let mut transaction_paths_cache =
                             self.transaction_paths_cache.write().await;
-                        for tx_hash in tx_hashs {
-                            transaction_paths_cache.remove(&tx_hash);
+                        for t in &block.body.transactions {
+                            transaction_paths_cache.remove(&t.hash);
                         }
                     }
                     //广播到其他邻居
-                    for neighbor_sender in self.neighbors.clone() {
-                        if msg.from == neighbor_sender.address {
+                    for neighbor_sender in &self.neighbors {
+                        if from == neighbor_sender.address {
                             continue;
                         }
                         let block = block.clone();
@@ -509,38 +505,24 @@ impl Node {
                             self.index, neighbor_sender.index
                         );
                         let self_address = self.get_address();
+                        let sender = neighbor_sender.sender.clone();
                         tokio::spawn(async move {
-                            neighbor_sender
-                                .sender
+                            sender
                                 .send(Message::new_block_msg(block, self_address))
                                 .await
                                 .unwrap();
                         });
                     }
                 }
-                MessageType::SendTransactionPaths => {
-                    let mut transaction_paths = match TransactionPaths::from_json(msg.data) {
-                        Ok(t) => t,
-                        Err(e) => {
-                            error!("Node[{}] error: {}", self.index, e);
-                            continue;
-                        }
-                    };
-
+                Message::SendTransactionPaths {
+                    mut transaction_paths,
+                    from,
+                } => {
                     // if !transaction_paths.verify_last(self.wallet.address.clone()) {
                     //     error!("Node[{}] invalid transaction paths", self.index);
                     //     continue;
                     // }
-                    {
-                        let bc = self.blockchain.read().await;
-                        if bc.exist_transaction(transaction_paths.transaction.hash.clone()) {
-                            debug!(
-                                "Node[{}] received transaction[{}] already in blockchain",
-                                self.index, transaction_paths.transaction.hash
-                            );
-                            continue;
-                        }
-                    }
+
                     //判断交易是否已经收到了,判断交易的paths是否最短 (O(1)查找)
                     {
                         let transactions_cache = self.transaction_paths_cache.read().await;
@@ -558,10 +540,20 @@ impl Node {
                             }
                         }
                     }
+
+                    {
+                        let bc = self.blockchain.read().await;
+                        if bc.exist_transaction(&transaction_paths.transaction.hash) {
+                            debug!(
+                                "Node[{}] received transaction[{}] already in blockchain",
+                                self.index, transaction_paths.transaction.hash
+                            );
+                            continue;
+                        }
+                    }
                     debug!(
-                        "Node[{}] received msg[{}]: transaction hash[{}],path[{}]",
+                        "Node[{}] received msg[SendTransactionPaths]: transaction hash[{}],path[{}]",
                         self.short_address_with_index(),
-                        msg.msg_type,
                         transaction_paths.transaction.hash,
                         transaction_paths.to_paths_string(),
                     );
@@ -602,8 +594,8 @@ impl Node {
                                 transaction_paths.add_path(s.get_address(), wallet.clone());
                                 wallet = s.wallet.clone();
                             });
-                            for neighbor_sender in self.neighbors.clone() {
-                                if msg.from == neighbor_sender.address {
+                            for neighbor_sender in &self.neighbors {
+                                if from == neighbor_sender.address {
                                     continue;
                                 }
                                 let mut new_trans_paths = transaction_paths.clone();
@@ -617,9 +609,9 @@ impl Node {
                                     neighbor_sender.short_address_with_index()
                                 );
                                 let self_address = self.get_address();
+                                let sender = neighbor_sender.sender.clone();
                                 tokio::spawn(async move {
-                                    neighbor_sender
-                                        .sender
+                                    sender
                                         .send(Message::new_transaction_paths_msg(
                                             new_trans_paths,
                                             self_address,
@@ -634,8 +626,8 @@ impl Node {
                     }
 
                     //并广播到邻居
-                    for neighbor_sender in self.neighbors.clone() {
-                        if msg.from == neighbor_sender.address {
+                    for neighbor_sender in &self.neighbors {
+                        if from == neighbor_sender.address {
                             continue;
                         }
                         let mut new_trans_paths = transaction_paths.clone();
@@ -649,9 +641,9 @@ impl Node {
                             neighbor_sender.short_address_with_index()
                         );
                         let self_address = self.get_address();
+                        let sender = neighbor_sender.sender.clone();
                         tokio::spawn(async move {
-                            neighbor_sender
-                                .sender
+                            sender
                                 .send(Message::new_transaction_paths_msg(
                                     new_trans_paths,
                                     self_address,
@@ -662,7 +654,7 @@ impl Node {
                     }
                 }
 
-                MessageType::GenerateBlock => {
+                Message::GenerateBlock => {
                     // 同步过程中不能出块
                     if self.sync_in_progress {
                         warn!(
@@ -705,12 +697,12 @@ impl Node {
                     );
 
                     //广播区块
-                    for neighbor_sender in self.neighbors.clone() {
+                    for neighbor_sender in &self.neighbors {
                         let block = block.clone();
                         let self_address = self.get_address();
+                        let sender = neighbor_sender.sender.clone();
                         tokio::spawn(async move {
-                            neighbor_sender
-                                .sender
+                            sender
                                 .send(Message::new_block_msg(block, self_address))
                                 .await
                                 .unwrap();
@@ -726,18 +718,7 @@ impl Node {
                             .unwrap();
                     });
                 }
-                MessageType::GenerateTransactionPaths => {
-                    let to = match String::from_utf8(msg.data) {
-                        Ok(to) => to,
-                        Err(e) => {
-                            error!(
-                                "Node[{}] generate transaction paths failed:{}",
-                                self.index, e
-                            );
-                            continue;
-                        }
-                    };
-
+                Message::GenerateTransactionPaths { to } => {
                     // 检查余额是否充足
                     if !self.deduct_balance(self.transaction_fee) {
                         warn!(
@@ -760,9 +741,8 @@ impl Node {
                         Transaction::with_fee(to, 0, self.transaction_fee, self.wallet.clone());
                     let mut transaction_paths = TransactionPaths::new(transaction);
                     debug!(
-                        "Node[{}] received msg[{}]: transaction hash[{}],path[{}]",
+                        "Node[{}] received msg[GenerateTransactionPaths]: transaction hash[{}],path[{}]",
                         self.short_address_with_index(),
-                        msg.msg_type,
                         transaction_paths.transaction.hash,
                         transaction_paths.to_paths_string()
                     );
@@ -793,10 +773,7 @@ impl Node {
                                 transaction_paths.add_path(s.get_address(), wallet.clone());
                                 wallet = s.wallet.clone();
                             });
-                            for neighbor_sender in self.neighbors.clone() {
-                                if msg.from == neighbor_sender.address {
-                                    continue;
-                                }
+                            for neighbor_sender in &self.neighbors {
                                 let mut new_trans_paths = transaction_paths.clone();
                                 new_trans_paths
                                     .add_path(neighbor_sender.address.clone(), wallet.clone());
@@ -808,9 +785,9 @@ impl Node {
                                     neighbor_sender.short_address_with_index()
                                 );
                                 let self_address = self.get_address();
+                                let sender = neighbor_sender.sender.clone();
                                 tokio::spawn(async move {
-                                    neighbor_sender
-                                        .sender
+                                    sender
                                         .send(Message::new_transaction_paths_msg(
                                             new_trans_paths,
                                             self_address,
@@ -824,7 +801,7 @@ impl Node {
                         _ => {}
                     }
                     //广播交易
-                    for neighbor_sender in self.neighbors.clone() {
+                    for neighbor_sender in &self.neighbors {
                         let mut new_trans_paths = transaction_paths.clone();
                         new_trans_paths
                             .add_path(neighbor_sender.address.clone(), self.wallet.clone());
@@ -836,9 +813,9 @@ impl Node {
                             neighbor_sender.short_address_with_index()
                         );
                         let self_address = self.get_address();
+                        let sender = neighbor_sender.sender.clone();
                         tokio::spawn(async move {
-                            neighbor_sender
-                                .sender
+                            sender
                                 .send(Message::new_transaction_paths_msg(
                                     new_trans_paths,
                                     self_address,
@@ -848,7 +825,7 @@ impl Node {
                         });
                     }
                 }
-                MessageType::SendRandaoSeed => {
+                Message::SendRandaoSeed => {
                     let seed = RandaoSeed::generate_seed();
                     let signature = self.wallet.sign(Vec::from(seed));
                     let randao_seed = RandaoSeed {
@@ -857,23 +834,16 @@ impl Node {
                         signature,
                     };
                     debug!(
-                        "Node[{}] received msg[{}]: seed[{:?}]",
-                        self.index, msg.msg_type, seed
+                        "Node[{}] received msg[SendRandaoSeed]: seed[{:?}]",
+                        self.index, seed
                     );
                     self.world_state_sender
                         .send(Message::new_receive_random_seed_msg(randao_seed))
                         .await
                         .unwrap();
                 }
-                MessageType::BecomeValidator => {
-                    debug!("Node[{}] received msg[{}]", self.index, msg.msg_type);
-
-                    // Try to parse stake_map from JSON data
-                    let stake_map: std::collections::HashMap<String, f64> =
-                        String::from_utf8(msg.data.clone())
-                            .ok()
-                            .and_then(|json| serde_json::from_str(&json).ok())
-                            .unwrap_or_default();
+                Message::BecomeValidator(stake_map) => {
+                    debug!("Node[{}] received msg[BecomeValidator]", self.index);
 
                     // 从 stake_map 中获取本节点的 stake，并同步到 balance
                     let my_stake = stake_map
@@ -948,32 +918,13 @@ impl Node {
                         }
                     }
                 }
-                MessageType::UpdateNodeBalance => {
+                Message::UpdateNodeBalance(new_balance) => {
                     // WorldState 通知 Node 更新其 balance（例如获得奖励）
-                    if msg.data.len() == 8 {
-                        let new_balance = f64::from_le_bytes([
-                            msg.data[0],
-                            msg.data[1],
-                            msg.data[2],
-                            msg.data[3],
-                            msg.data[4],
-                            msg.data[5],
-                            msg.data[6],
-                            msg.data[7],
-                        ]);
-                        self.set_balance(new_balance);
-                        debug!("Node[{}] updated balance to {}", self.index, new_balance);
-                    }
+                    self.set_balance(new_balance);
+                    debug!("Node[{}] updated balance to {}", self.index, new_balance);
                 }
-                MessageType::UpdateSlot => {
-                    let slot = match SlotManager::from_json(msg.data) {
-                        Ok(t) => t,
-                        Err(e) => {
-                            error!("Node[{}] error: {}", self.index, e);
-                            continue;
-                        }
-                    };
-                    debug!("Node[{}] received msg[{}]", self.index, msg.msg_type);
+                Message::UpdateSlot(slot) => {
+                    debug!("Node[{}] received msg[UpdateSlot]", self.index);
 
                     let old_epoch = self.epoch;
                     self.slot = slot.current_slot;
@@ -992,15 +943,16 @@ impl Node {
 
                             // 向所有邻居发送块同步请求，确保至少有一个在线的邻居能响应
                             if !self.neighbors.is_empty() {
-                                for neighbor in self.neighbors.clone() {
+                                for neighbor in &self.neighbors {
                                     let self_address = self.get_address();
+                                    let sender = neighbor.sender.clone();
+                                    let neighbor_address = neighbor.address.clone();
                                     tokio::spawn(async move {
                                         debug!(
                                             "Node[{}] requests block sync from Node[{}], last block index: {}",
-                                            self_address, neighbor.address, last_block_index
+                                            self_address, neighbor_address, last_block_index
                                         );
-                                        neighbor
-                                            .sender
+                                        sender
                                             .send(Message::new_request_block_sync_msg(
                                                 last_block_index,
                                                 self_address,
@@ -1040,11 +992,14 @@ impl Node {
                         }
                     }
                 }
-                MessageType::PrintBlockchain => {
-                    debug!("Node[{}] received msg[{}]", self.index, msg.msg_type);
+                Message::PrintBlockchain => {
+                    debug!("Node[{}] received msg[PrintBlockchain]", self.index);
                     self.blockchain.read().await.write_to_file_all_json().await;
                 }
-                MessageType::RequestBlockSync => {
+                Message::RequestBlockSync {
+                    last_block_index: requested_index,
+                    from,
+                } => {
                     if self.sync_in_progress {
                         debug!(
                             "Node[{}] is syncing, ignoring new block sync request",
@@ -1052,7 +1007,7 @@ impl Node {
                         );
                         continue;
                     }
-                    if msg.from == "world_state" {
+                    if from == "world_state" {
                         info!(
                             "Node[{}] received RequestBlockSync from world_state",
                             self.index
@@ -1072,26 +1027,6 @@ impl Node {
                         });
                         continue;
                     }
-                    // 接收块同步请求，返回从 index+1 开始到最新的所有块
-                    let requested_index = match msg.data.len() {
-                        8 => u64::from_le_bytes([
-                            msg.data[0],
-                            msg.data[1],
-                            msg.data[2],
-                            msg.data[3],
-                            msg.data[4],
-                            msg.data[5],
-                            msg.data[6],
-                            msg.data[7],
-                        ]),
-                        _ => {
-                            error!(
-                                "Node[{}] received invalid RequestBlockSync data",
-                                self.index
-                            );
-                            continue;
-                        }
-                    };
 
                     let blockchain_read = self.blockchain.read().await;
                     let total_blocks = blockchain_read.blocks.len();
@@ -1105,18 +1040,18 @@ impl Node {
 
                     debug!(
                         "Node[{}] processing block sync request: requested_index={}, total_blocks={}, sending {} blocks to {}",
-                        self.index, requested_index, total_blocks, sync_blocks.len(), msg.from
+                        self.index, requested_index, total_blocks, sync_blocks.len(), from
                     );
 
-                    if !msg.from.is_empty() {
+                    if !from.is_empty() {
                         // 找到发送者并发送响应
-                        for neighbor in self.neighbors.clone() {
-                            if neighbor.address == msg.from {
+                        for neighbor in &self.neighbors {
+                            if neighbor.address == from {
                                 let sync_blocks = sync_blocks.clone();
                                 let self_address = self.get_address();
+                                let sender = neighbor.sender.clone();
                                 tokio::spawn(async move {
-                                    neighbor
-                                        .sender
+                                    sender
                                         .send(Message::new_response_block_sync_msg(
                                             sync_blocks,
                                             self_address,
@@ -1129,27 +1064,11 @@ impl Node {
                         }
                     }
                 }
-                MessageType::ResponseBlockSync => {
+                Message::ResponseBlockSync {
+                    blocks: sync_blocks,
+                    from: _,
+                } => {
                     // 处理块同步响应
-                    let blocks_json = match String::from_utf8(msg.data) {
-                        Ok(s) => s,
-                        Err(e) => {
-                            error!(
-                                "Node[{}] error parsing ResponseBlockSync: {}",
-                                self.index, e
-                            );
-                            continue;
-                        }
-                    };
-
-                    let sync_blocks: Vec<Block> = match serde_json::from_str(&blocks_json) {
-                        Ok(blocks) => blocks,
-                        Err(e) => {
-                            error!("Node[{}] error deserializing blocks: {}", self.index, e);
-                            continue;
-                        }
-                    };
-
                     if sync_blocks.is_empty() {
                         error!("Node[{}] received empty block sync response", self.index);
                         continue;
@@ -1221,6 +1140,19 @@ impl Node {
                                                 sync_block.header.hash
                                             );
                                             success = true;
+
+                                            // Clean up transaction cache for synced block
+                                            let tx_hashes: Vec<String> = sync_block
+                                                .body
+                                                .transactions
+                                                .iter()
+                                                .map(|t| t.hash.clone())
+                                                .collect();
+                                            let mut transaction_paths_cache =
+                                                self.transaction_paths_cache.write().await;
+                                            for tx_hash in tx_hashes {
+                                                transaction_paths_cache.remove(&tx_hash);
+                                            }
                                         }
                                         Err(e) => match e {
                                             BlockChainError::DuplicateBlocksReceived => {
@@ -1239,7 +1171,7 @@ impl Node {
                                                     );
                                                 } else {
                                                     if let Some(removed_block) =
-                                                        blockchain.blocks.pop()
+                                                        blockchain.pop_block()
                                                     {
                                                         warn!(
                                                         "Node[{}] removed block #{} due to {} during sync",

@@ -12,6 +12,8 @@ use tokio::io::AsyncWriteExt;
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Blockchain {
     pub blocks: Vec<Block>,
+    #[serde(skip)]
+    pub transaction_index: HashSet<String>,
 }
 
 impl Blockchain {
@@ -22,7 +24,16 @@ impl Blockchain {
         }
         Blockchain {
             blocks: vec![genesis_block],
+            transaction_index: set,
         }
+    }
+
+    pub fn pop_block(&mut self) -> Option<Block> {
+        let block = self.blocks.pop()?;
+        for tx in &block.body.transactions {
+            self.transaction_index.remove(&tx.hash);
+        }
+        Some(block)
     }
 
     pub fn get_block(&self, height: u64) -> Block {
@@ -55,24 +66,20 @@ impl Blockchain {
             return Err(BlockChainError::SlotError);
         }
         //check transaction if exists
-        for x in block.clone().body.transactions {
-            if self.exist_transaction(x.hash.to_string()) {
+        for x in &block.body.transactions {
+            if self.exist_transaction(&x.hash) {
                 return Err(BlockChainError::TransactionExists);
             }
+        }
+        for x in &block.body.transactions {
+            self.transaction_index.insert(x.hash.clone());
         }
         self.blocks.push(block.clone());
         Ok(())
     }
 
-    pub fn exist_transaction(&self, hash: String) -> bool {
-        for b in &self.blocks {
-            for t in &b.body.transactions {
-                if t.hash == hash {
-                    return true;
-                }
-            }
-        }
-        false
+    pub fn exist_transaction(&self, hash: &str) -> bool {
+        self.transaction_index.contains(hash)
     }
 
     pub fn get_last_block(&self) -> Block {
@@ -93,23 +100,27 @@ impl Blockchain {
 
     pub fn get_last_slot_block(&self) -> Vec<Block> {
         let (epoch, slot) = self.get_last_epoch_slot();
-        let blocks: Vec<Block> = self
+        let mut blocks: Vec<Block> = self
             .blocks
             .iter()
-            .filter(|b| b.header.slot == slot && b.header.epoch == epoch)
+            .rev()
+            .take_while(|b| b.header.slot == slot && b.header.epoch == epoch)
             .map(|b| b.clone())
             .collect();
+        blocks.reverse();
         blocks
     }
 
     pub fn get_last_epoch_block(&self) -> Vec<Block> {
         let (epoch, _slot) = self.get_last_epoch_slot();
-        let blocks: Vec<Block> = self
+        let mut blocks: Vec<Block> = self
             .blocks
             .iter()
-            .filter(|b| b.header.epoch == epoch)
+            .rev()
+            .take_while(|b| b.header.epoch == epoch)
             .map(|b| b.clone())
             .collect();
+        blocks.reverse();
         blocks
     }
 
