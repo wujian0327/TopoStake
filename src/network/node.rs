@@ -27,7 +27,7 @@ pub struct Node {
     pub receiver: Receiver<Message>,
     pub neighbors: Vec<Neighbor>,
     pub world_state_sender: Sender<Message>,
-    pub transaction_paths_cache: Arc<RwLock<HashMap<String, TransactionPaths>>>,
+    pub transaction_paths_cache: Arc<RwLock<HashMap<String, Arc<TransactionPaths>>>>,
     pub node_type: NodeType,
     pub sybil_nodes: Vec<Node>,
     pub is_online: bool,
@@ -224,7 +224,7 @@ impl Node {
             let blockchain = self.blockchain.read().await;
 
             // 1. 过滤掉已经在区块链中的交易
-            let mut valid_paths: Vec<&TransactionPaths> = transaction_paths_cache
+            let mut valid_paths: Vec<&Arc<TransactionPaths>> = transaction_paths_cache
                 .values()
                 .filter(|x| !blockchain.exist_transaction(&x.transaction.hash))
                 .collect();
@@ -242,7 +242,7 @@ impl Node {
             valid_paths[..pack_count]
                 .iter()
                 .map(|&x| x.clone())
-                .collect::<Vec<TransactionPaths>>()
+                .collect::<Vec<Arc<TransactionPaths>>>()
         };
 
         let mut transactions: Vec<Transaction> =
@@ -280,7 +280,7 @@ impl Node {
             let blockchain = self.blockchain.read().await;
 
             // 1. 过滤掉已经在区块链中的交易
-            let mut valid_paths: Vec<&TransactionPaths> = transaction_paths_cache
+            let mut valid_paths: Vec<&Arc<TransactionPaths>> = transaction_paths_cache
                 .values()
                 .filter(|x| !blockchain.exist_transaction(&x.transaction.hash))
                 .collect();
@@ -295,7 +295,7 @@ impl Node {
 
             // 3. 截取前 max_tx_per_block 个
             let pack_count = std::cmp::min(valid_paths.len(), self.max_tx_per_block);
-            let to_pack: Vec<TransactionPaths> = valid_paths[..pack_count]
+            let to_pack: Vec<Arc<TransactionPaths>> = valid_paths[..pack_count]
                 .iter()
                 .map(|&x| x.clone())
                 .collect();
@@ -405,10 +405,7 @@ impl Node {
             // 离线逻辑：如果节点离线，跳过大多数消息处理
             // 但 UpdateSlot 消息用于恢复在线逻辑，需要处理
             if !self.is_online && !matches!(msg, Message::UpdateSlot(_)) {
-                debug!(
-                    "Node[{}] is offline, skipping message[{:?}]",
-                    self.index, msg
-                );
+                debug!("Node[{}] is offline, skipping message", self.index);
                 match msg {
                     Message::GenerateBlock => {
                         warn!(
@@ -444,7 +441,7 @@ impl Node {
                     {
                         //添加到自己的区块链
                         let mut blockchain = self.blockchain.write().await;
-                        if let Err(e) = blockchain.add_block(block.clone()) {
+                        if let Err(e) = blockchain.add_block((*block).clone()) {
                             match e {
                                 BlockChainError::DuplicateBlocksReceived => {
                                     debug!("Node[{}] add block error: {}", self.index, e);
@@ -590,15 +587,19 @@ impl Node {
                         NodeType::Sybil => {
                             //Sybil,伪造路径,再广播
                             let mut wallet = self.wallet.clone();
+
+                            // Create a modifiable copy
+                            let mut fake_paths = (*transaction_paths).clone();
+
                             self.sybil_nodes.iter().for_each(|s| {
-                                transaction_paths.add_path(s.get_address(), wallet.clone());
+                                fake_paths.add_path(s.get_address(), wallet.clone());
                                 wallet = s.wallet.clone();
                             });
                             for neighbor_sender in &self.neighbors {
                                 if from == neighbor_sender.address {
                                     continue;
                                 }
-                                let mut new_trans_paths = transaction_paths.clone();
+                                let mut new_trans_paths = fake_paths.clone();
                                 new_trans_paths
                                     .add_path(neighbor_sender.address.clone(), wallet.clone());
                                 debug!(
@@ -613,7 +614,7 @@ impl Node {
                                 tokio::spawn(async move {
                                     sender
                                         .send(Message::new_transaction_paths_msg(
-                                            new_trans_paths,
+                                            Arc::new(new_trans_paths),
                                             self_address,
                                         ))
                                         .await
@@ -630,7 +631,7 @@ impl Node {
                         if from == neighbor_sender.address {
                             continue;
                         }
-                        let mut new_trans_paths = transaction_paths.clone();
+                        let mut new_trans_paths = (*transaction_paths).clone();
                         new_trans_paths
                             .add_path(neighbor_sender.address.clone(), self.wallet.clone());
                         debug!(
@@ -645,7 +646,7 @@ impl Node {
                         tokio::spawn(async move {
                             sender
                                 .send(Message::new_transaction_paths_msg(
-                                    new_trans_paths,
+                                    Arc::new(new_trans_paths),
                                     self_address,
                                 ))
                                 .await
@@ -697,8 +698,9 @@ impl Node {
                     );
 
                     //广播区块
+                    let block_arc = Arc::new(block.clone());
                     for neighbor_sender in &self.neighbors {
-                        let block = block.clone();
+                        let block = block_arc.clone();
                         let self_address = self.get_address();
                         let sender = neighbor_sender.sender.clone();
                         tokio::spawn(async move {
@@ -711,9 +713,10 @@ impl Node {
                     //告诉下worldState
                     let world_state_sender = self.world_state_sender.clone();
                     let self_address = self.get_address();
+                    let block_to_world = block_arc.clone();
                     tokio::spawn(async move {
                         world_state_sender
-                            .send(Message::new_block_msg(block, self_address))
+                            .send(Message::new_block_msg(block_to_world, self_address))
                             .await
                             .unwrap();
                     });
@@ -763,7 +766,7 @@ impl Node {
                             }
                         }
 
-                        transactions_cache.insert(tx_hash, transaction_paths.clone());
+                        transactions_cache.insert(tx_hash, Arc::new(transaction_paths.clone()));
                     }
                     match self.node_type {
                         NodeType::Sybil => {
@@ -789,7 +792,7 @@ impl Node {
                                 tokio::spawn(async move {
                                     sender
                                         .send(Message::new_transaction_paths_msg(
-                                            new_trans_paths,
+                                            Arc::new(new_trans_paths),
                                             self_address,
                                         ))
                                         .await
@@ -817,7 +820,7 @@ impl Node {
                         tokio::spawn(async move {
                             sender
                                 .send(Message::new_transaction_paths_msg(
-                                    new_trans_paths,
+                                    Arc::new(new_trans_paths),
                                     self_address,
                                 ))
                                 .await
@@ -1290,9 +1293,8 @@ mod tests {
             node.run().await;
         });
 
-        let msg = Message::new_block_msg(block, "".to_string());
+        let msg = Message::new_block_msg(Arc::new(block), "".to_string());
         let handle2 = tokio::spawn(async move {
-            info!("send msg:{:?}", msg);
             node_sender.send(msg).await.unwrap();
         });
 
@@ -1413,7 +1415,7 @@ mod tests {
         let transaction_paths = TransactionPaths::new(transaction);
         node0_sender
             .send(Message::new_transaction_paths_msg(
-                transaction_paths,
+                Arc::new(transaction_paths),
                 "".to_string(),
             ))
             .await

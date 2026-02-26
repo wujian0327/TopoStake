@@ -6,6 +6,7 @@ use crate::consensus::pow::PowConsensus;
 use crate::consensus::topostake::TopoStakeConsensus;
 use crate::consensus::{Consensus, ConsensusType, RandaoSeed, Validator};
 use crate::metrics::{self, calculate_stake_concentration, SlotMetrics};
+use crate::network::calculate_gini;
 use crate::network::message::Message;
 use crate::tools::get_timestamp;
 use crate::{consensus, tools};
@@ -280,7 +281,7 @@ impl WorldState {
         // Calculate stake concentration from stakes
         let stake_values: Vec<f64> = validators.iter().map(|v| v.stake).collect();
         let stake_concentration = calculate_stake_concentration(&stake_values);
-        let gini_coefficient = metrics::calculate_gini(&stake_values);
+        let gini_coefficient = calculate_gini(&stake_values);
 
         // Calculate transaction packing delay
         let tx_timestamps: Vec<u64> = last_block
@@ -345,7 +346,6 @@ impl WorldState {
             let shared_self = Arc::clone(&shared_self);
             task::spawn(async move {
                 while let Some(msg) = receiver.recv().await {
-                    debug!("World State received msg: {:?}", msg);
                     match msg {
                         Message::ReceiveRandaoSeed(randao_seed) => {
                             let shared_self = shared_self.write().await;
@@ -376,7 +376,7 @@ impl WorldState {
                                         .blockchain
                                         .write()
                                         .await
-                                        .add_block(block.clone())
+                                        .add_block((*block).clone())
                                 };
 
                                 if let Err(e) = add_block_result {
@@ -806,7 +806,7 @@ mod tests {
         let transaction_paths = TransactionPaths::new(transaction);
         node0_sender
             .send(Message::new_transaction_paths_msg(
-                transaction_paths,
+                Arc::new(transaction_paths),
                 "".to_string(),
             ))
             .await
@@ -827,7 +827,7 @@ mod tests {
         let transaction_paths = TransactionPaths::new(transaction);
         node1_sender
             .send(Message::new_transaction_paths_msg(
-                transaction_paths,
+                Arc::new(transaction_paths),
                 "".to_string(),
             ))
             .await

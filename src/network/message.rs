@@ -3,15 +3,15 @@ use crate::blockchain::path::TransactionPaths;
 use crate::consensus::{RandaoSeed, Validator};
 use crate::network::world_state::SlotManager;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum Message {
     SendBlock {
-        block: Block,
+        block: Arc<Block>,
         from: String,
     },
     SendTransactionPaths {
-        transaction_paths: TransactionPaths,
+        transaction_paths: Arc<TransactionPaths>,
         from: String,
     },
     GenerateBlock,
@@ -45,11 +45,14 @@ pub enum Message {
 }
 
 impl Message {
-    pub fn new_block_msg(block: Block, from: String) -> Message {
+    pub fn new_block_msg(block: Arc<Block>, from: String) -> Message {
         Message::SendBlock { block, from }
     }
 
-    pub fn new_transaction_paths_msg(transaction_paths: TransactionPaths, from: String) -> Message {
+    pub fn new_transaction_paths_msg(
+        transaction_paths: Arc<TransactionPaths>,
+        from: String,
+    ) -> Message {
         Message::SendTransactionPaths {
             transaction_paths,
             from,
