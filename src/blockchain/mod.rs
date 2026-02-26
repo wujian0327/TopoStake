@@ -14,6 +14,8 @@ pub struct Blockchain {
     pub blocks: Vec<Block>,
     #[serde(skip)]
     pub transaction_index: HashSet<String>,
+    #[serde(skip)]
+    pub max_blocks_in_memory: usize,
 }
 
 impl Blockchain {
@@ -25,6 +27,7 @@ impl Blockchain {
         Blockchain {
             blocks: vec![genesis_block],
             transaction_index: set,
+            max_blocks_in_memory: 100, // 默认只在内存中保留最近的100个区块
         }
     }
 
@@ -36,8 +39,13 @@ impl Blockchain {
         Some(block)
     }
 
-    pub fn get_block(&self, height: u64) -> Block {
-        self.blocks[height as usize - 1].clone()
+    pub fn get_block(&self, height: u64) -> Option<Block> {
+        // 因为我们限制了内存中的区块数量，所以不能直接用 height - 1 作为索引
+        // 需要找到对应的区块
+        self.blocks
+            .iter()
+            .find(|b| b.header.index == height)
+            .cloned()
     }
 
     pub fn add_block(&mut self, block: Block) -> Result<(), BlockChainError> {
@@ -75,6 +83,17 @@ impl Blockchain {
             self.transaction_index.insert(x.hash.clone());
         }
         self.blocks.push(block.clone());
+
+        // 限制内存中的区块数量
+        if self.blocks.len() > self.max_blocks_in_memory {
+            // 移除最老的区块
+            let removed_block = self.blocks.remove(0);
+            // 同时从 transaction_index 中移除这些交易的 hash，防止内存泄漏
+            for tx in removed_block.body.transactions {
+                self.transaction_index.remove(&tx.hash);
+            }
+        }
+
         Ok(())
     }
 

@@ -185,8 +185,8 @@ def create_tx_delay_line_figure(dataframes_dict):
     for ct, df in dataframes_dict.items():
         if df is not None and len(df) > 0:
             # 检查是否有延迟列
-            if 'avg_tx_delay_ms' in df.columns:
-                tx_delay = df['avg_tx_delay_ms'].values
+            if 'avg_tx_delay_s' in df.columns:
+                tx_delay = df['avg_tx_delay_s'].values
                 
                 # 计算累计平均值
                 cumulative_mean = np.cumsum(tx_delay) / np.arange(1, len(tx_delay) + 1)
@@ -254,13 +254,13 @@ def print_summary(dataframes_dict):
             print(f"  │   └─ 范围:           [{path.min():.4f}, {path.max():.4f}]")
             
             # 延迟统计
-            if 'tx_delay' in df.columns:
-                delay = df['tx_delay'].values
-                print(f"  ├─ 交易延迟 (ms):")
-                print(f"  │   ├─ 平均值 (μ):     {delay.mean():.2f} ms")
-                print(f"  │   ├─ 标准差 (σ):     {delay.std():.2f} ms")
-                print(f"  │   ├─ 中位数:          {np.median(delay):.2f} ms")
-                print(f"  │   └─ P95:            {np.percentile(delay, 95):.2f} ms")
+            if 'avg_tx_delay_s' in df.columns:
+                delay = df['avg_tx_delay_s'].values
+                print(f"  ├─ 交易延迟 (s):")
+                print(f"  │   ├─ 平均值 (μ):     {delay.mean():.2f} s")
+                print(f"  │   ├─ 标准差 (σ):     {delay.std():.2f} s")
+                print(f"  │   ├─ 中位数:          {np.median(delay):.2f} s")
+                print(f"  │   └─ P95:            {np.percentile(delay, 95):.2f} s")
             
             # 样本量信息
             print(f"  └─ 样本信息:")

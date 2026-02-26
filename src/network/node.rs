@@ -34,12 +34,13 @@ pub struct Node {
     pub offline_until_epoch: Option<u64>,
     pub offline_probability: f64,
     pub sync_in_progress: bool,
-    pub transaction_fee: f64,     // 交易手续费
-    pub balance: f64,             // 账户余额
-    pub max_tx_per_block: usize,  // 每个区块最大交易数量
-    pub consensus: ConsensusType, // 共识算法类型
-    pub max_mempool_size: usize,  // 内存池最大容量
-    pub hash_power: f64,          // 节点算力
+    pub transaction_fee: f64,      // 交易手续费
+    pub balance: f64,              // 账户余额
+    pub max_tx_per_block: usize,   // 每个区块最大交易数量
+    pub consensus: ConsensusType,  // 共识算法类型
+    pub max_mempool_size: usize,   // 内存池最大容量
+    pub hash_power: f64,           // 节点算力
+    pub tx_propagation_delay: u64, // 交易传播延迟(ms)
 }
 
 #[derive(Clone)]
@@ -108,6 +109,7 @@ impl Node {
             consensus,
             max_mempool_size: max_tx_per_block,
             hash_power: 1.0,
+            tx_propagation_delay: 50, // 默认50ms
         }
     }
 
@@ -145,6 +147,7 @@ impl Node {
             consensus,
             max_mempool_size: max_tx_per_block,
             hash_power: 1.0,
+            tx_propagation_delay: 50, // 默认50ms
         }
     }
 
@@ -203,6 +206,7 @@ impl Node {
             consensus,
             max_mempool_size: max_tx_per_block,
             hash_power: 1.0,
+            tx_propagation_delay: 50, // 默认50ms
         }
     }
 
@@ -218,6 +222,10 @@ impl Node {
         self.hash_power = hash_power;
     }
 
+    pub fn set_tx_propagation_delay(&mut self, delay: u64) {
+        self.tx_propagation_delay = delay;
+    }
+
     pub async fn create_block_template(&self, epoch: u64, slot: u64) -> Result<Block, BlockError> {
         let transaction_paths_to_pack = {
             let transaction_paths_cache = self.transaction_paths_cache.read().await;
@@ -229,12 +237,13 @@ impl Node {
                 .filter(|x| !blockchain.exist_transaction(&x.transaction.hash))
                 .collect();
 
-            // 2. 按手续费从高到低排序
+            // 2. 按手续费从高到低排序，如果手续费相同，则按交易创建时间从早到晚排序
             valid_paths.sort_by(|a, b| {
                 b.transaction
                     .fee
                     .partial_cmp(&a.transaction.fee)
                     .unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| a.transaction.timestamp.cmp(&b.transaction.timestamp))
             });
 
             // 3. 截取前 max_tx_per_block 个
@@ -285,12 +294,13 @@ impl Node {
                 .filter(|x| !blockchain.exist_transaction(&x.transaction.hash))
                 .collect();
 
-            // 2. 按手续费从高到低排序
+            // 2. 按手续费从高到低排序，如果手续费相同，则按交易创建时间从早到晚排序
             valid_paths.sort_by(|a, b| {
                 b.transaction
                     .fee
                     .partial_cmp(&a.transaction.fee)
                     .unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| a.transaction.timestamp.cmp(&b.transaction.timestamp))
             });
 
             // 3. 截取前 max_tx_per_block 个
@@ -512,7 +522,7 @@ impl Node {
                     }
                 }
                 Message::SendTransactionPaths {
-                    mut transaction_paths,
+                    transaction_paths,
                     from,
                 } => {
                     // if !transaction_paths.verify_last(self.wallet.address.clone()) {
@@ -526,15 +536,16 @@ impl Node {
                         let tx_hash = &transaction_paths.transaction.hash;
 
                         if let Some(cached_tx) = transactions_cache.get(tx_hash) {
-                            if self.consensus == ConsensusType::TopoStake {
-                                // TopoStake: 只有当缓存的路径长度更短或相等时才跳过
-                                if cached_tx.paths.len() <= transaction_paths.paths.len() {
-                                    continue;
-                                }
-                            } else {
-                                // 其他共识: 只要收到过就跳过
-                                continue;
-                            }
+                            // if self.consensus == ConsensusType::TopoStake {
+                            //     // TopoStake: 只有当缓存的路径长度更短或相等时才跳过
+                            //     if cached_tx.paths.len() <= transaction_paths.paths.len() {
+                            //         continue;
+                            //     }
+                            // } else {
+                            //     // 其他共识: 只要收到过就跳过
+                            //     continue;
+                            // }
+                            continue;
                         }
                     }
 
@@ -611,7 +622,12 @@ impl Node {
                                 );
                                 let self_address = self.get_address();
                                 let sender = neighbor_sender.sender.clone();
+                                let delay = self.tx_propagation_delay;
                                 tokio::spawn(async move {
+                                    if delay > 0 {
+                                        tokio::time::sleep(std::time::Duration::from_millis(delay))
+                                            .await;
+                                    }
                                     sender
                                         .send(Message::new_transaction_paths_msg(
                                             Arc::new(new_trans_paths),
@@ -643,7 +659,11 @@ impl Node {
                         );
                         let self_address = self.get_address();
                         let sender = neighbor_sender.sender.clone();
+                        let delay = self.tx_propagation_delay;
                         tokio::spawn(async move {
+                            if delay > 0 {
+                                tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+                            }
                             sender
                                 .send(Message::new_transaction_paths_msg(
                                     Arc::new(new_trans_paths),
@@ -789,7 +809,12 @@ impl Node {
                                 );
                                 let self_address = self.get_address();
                                 let sender = neighbor_sender.sender.clone();
+                                let delay = self.tx_propagation_delay;
                                 tokio::spawn(async move {
+                                    if delay > 0 {
+                                        tokio::time::sleep(std::time::Duration::from_millis(delay))
+                                            .await;
+                                    }
                                     sender
                                         .send(Message::new_transaction_paths_msg(
                                             Arc::new(new_trans_paths),
@@ -817,7 +842,11 @@ impl Node {
                         );
                         let self_address = self.get_address();
                         let sender = neighbor_sender.sender.clone();
+                        let delay = self.tx_propagation_delay;
                         tokio::spawn(async move {
+                            if delay > 0 {
+                                tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+                            }
                             sender
                                 .send(Message::new_transaction_paths_msg(
                                     Arc::new(new_trans_paths),

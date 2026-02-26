@@ -2,7 +2,6 @@ use crate::blockchain::block::Block;
 use crate::blockchain::path::TransactionPaths;
 use crate::consensus::{RandaoSeed, Validator};
 use crate::network::world_state::SlotManager;
-use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 pub enum Message {

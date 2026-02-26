@@ -359,7 +359,7 @@ impl Consensus for TopoStakeConsensus {
             validator.stake += network_reward;
             if network_reward > 0.0 {
                 let index = nodes_index.get(&validator.address).unwrap_or(&0);
-                info!(
+                debug!(
                     "POG: Node[{}] received network reward: {:.6} (virtual_stake: {:.6}), new stake: {:.6}",
                     index, network_reward, virtual_stake, validator.stake
                 );

@@ -39,6 +39,7 @@ pub async fn start_network(
     base_reward: f64,
     max_tx_per_block: usize,
     wallet_seed: u64,
+    max_epochs: u64,
 ) {
     info!("Consensus Type is {}", consensus);
 
@@ -57,6 +58,10 @@ pub async fn start_network(
         pow_difficulty,
         pow_max_threads,
         base_reward,
+        node_num,
+        trans_num_per_second,
+        topology.to_string(),
+        max_epochs,
     );
     info!("Generate world state");
 
@@ -150,7 +155,8 @@ pub async fn start_network(
     //4. gen the network graph
     let graph = match topology {
         TopologyType::ER => graph::random_er_graph(nodes_address.clone(), 0.2),
-        TopologyType::BA => graph::random_graph_with_ba_network(nodes_address.clone(), graph_seed),
+        TopologyType::BA => graph::random_ba_graph(nodes_address.clone(), graph_seed),
+        TopologyType::WS => graph::random_ws_graph(nodes_address.clone(), 4, 0.1, graph_seed),
     };
     info!("Generate network graph[{}]", topology);
     tokio::time::sleep(Duration::from_secs(3)).await;
@@ -190,6 +196,27 @@ pub async fn start_network(
                 ));
             }
         }
+    }
+
+    // 计算节点的度数，用于设置延迟
+    let mut node_degrees: HashMap<String, usize> = HashMap::new();
+    for (address, node) in node_map.iter() {
+        node_degrees.insert(address.clone(), node.neighbors.len());
+    }
+
+    // 找到最大度数
+    let max_degree = node_degrees.values().cloned().max().unwrap_or(1);
+
+    // 根据度数设置延迟：度数越小，延迟越大
+    for (address, node) in node_map.iter_mut() {
+        let degree = *node_degrees.get(address).unwrap_or(&1);
+        // 基础延迟 50ms，度数越小，额外延迟越大 (最大额外 150ms)
+        let delay = 50 + (150.0 * (1.0 - (degree as f64 / max_degree as f64))) as u64;
+        node.set_tx_propagation_delay(delay);
+        debug!(
+            "Node[{}] degree: {}, delay: {}ms",
+            node.index, degree, delay
+        );
     }
 
     //world should communicate with all node

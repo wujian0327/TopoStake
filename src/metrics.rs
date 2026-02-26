@@ -31,14 +31,14 @@ pub struct PathStats {
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct TxPackingDelayStats {
-    pub avg_delay_ms: f64, // 平均打包延迟 (ms)
+    pub avg_delay_s: f64, // 平均打包延迟 (s)
 }
 
 impl SlotMetrics {
     pub fn to_csv_header() -> String {
         "epoch,slot,miner,proposer_stake,timestamp,block_hash,tx_count,throughput,avg_path_length,\
          min_path_length,max_path_length,median_path_length,stake_concentration,\
-         gini_coefficient,consensus_type,consensus_state,avg_tx_delay_ms,block_production_success,block_production_failed"
+         gini_coefficient,consensus_type,consensus_state,avg_tx_delay_s,block_production_success,block_production_failed"
             .to_string()
     }
 
@@ -61,20 +61,20 @@ impl SlotMetrics {
             self.gini_coefficient,
             self.consensus_type,
             self.consensus_state,
-            self.tx_packing_delay_stats.avg_delay_ms,
+            self.tx_packing_delay_stats.avg_delay_s,
             self.block_production_success,
             self.block_production_failed,
         )
     }
 }
 
-/// 计算交易打包平均延迟统计 (以毫秒为单位)
+/// 计算交易打包平均延迟统计 (以秒为单位)
 pub fn calculate_tx_packing_delay(
     transactions_timestamp: Vec<u64>,
     block_timestamp: u64,
 ) -> TxPackingDelayStats {
     if transactions_timestamp.is_empty() {
-        return TxPackingDelayStats { avg_delay_ms: 0.0 };
+        return TxPackingDelayStats { avg_delay_s: 0.0 };
     }
 
     // 计算平均打包延迟 (秒)
@@ -90,9 +90,9 @@ pub fn calculate_tx_packing_delay(
         })
         .sum();
 
-    let avg_delay_ms = total_delay / transactions_timestamp.len() as f64;
+    let avg_delay_s = total_delay / transactions_timestamp.len() as f64;
 
-    TxPackingDelayStats { avg_delay_ms }
+    TxPackingDelayStats { avg_delay_s }
 }
 
 /// 计算Herfindahl index（权益集中度）

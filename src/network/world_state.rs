@@ -36,6 +36,7 @@ pub struct WorldState {
     pub blockchain: Arc<RwLock<Blockchain>>,
     pub consensus: Box<dyn Consensus>,
     consensus_name: String,
+    metrics_filename: String,
     metrics_slots_file: Option<std::fs::File>,
     slot_duration: Duration,
     slot_per_epoch: u64,
@@ -44,6 +45,7 @@ pub struct WorldState {
     pub block_production_success: usize, // 成功出块数
     pub block_production_failed: usize,  // 失败出块数
     pub base_reward: f64,                // 所有共识的固定奖励
+    pub max_epochs: u64,                 // 最大运行Epoch数
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -66,6 +68,10 @@ impl WorldState {
         pow_difficulty: usize,
         pow_max_threads: usize,
         base_reward: f64,
+        node_num: u32,
+        trans_num: u32,
+        topology: String,
+        max_epochs: u64,
     ) -> (Self, Sender<Message>, Receiver<Message>) {
         let (sender, receiver) = tokio::sync::mpsc::channel(4096);
         let nodes_sender: HashMap<String, Sender<Message>> = HashMap::new();
@@ -83,7 +89,10 @@ impl WorldState {
             ConsensusType::MINOTAUR => Box::new(MinotaurConsensus::new(base_reward)),
         };
         // Initialize metrics files - delete old file and create new one
-        let metrics_filename = format!("metrics_slots_{}.csv", consensus_name);
+        let metrics_filename = format!(
+            "metrics_{}_n_{}_t_{}_{}.csv",
+            consensus_name, node_num, trans_num, topology
+        );
         let _ = std::fs::remove_file(&metrics_filename); // 删除旧文件
         let metrics_slots_file = std::fs::OpenOptions::new()
             .create(true)
@@ -106,6 +115,7 @@ impl WorldState {
                 blockchain: Arc::new(RwLock::new(blockchain)),
                 consensus,
                 consensus_name,
+                metrics_filename,
                 metrics_slots_file,
                 slot_duration,
                 slot_per_epoch,
@@ -113,6 +123,7 @@ impl WorldState {
                 block_production_success: 0,
                 block_production_failed: 0,
                 base_reward,
+                max_epochs,
             },
             sender,
             receiver,
@@ -240,6 +251,11 @@ impl WorldState {
                 current_slot.current_epoch, index, stake
             );
         }
+
+        if current_slot.current_epoch + 1 >= self.max_epochs {
+            info!("Reached max epochs ({}), shutting down...", self.max_epochs);
+            std::process::exit(0);
+        }
     }
 
     pub async fn get_current_slot(&self) -> SlotManager {
@@ -321,7 +337,7 @@ impl WorldState {
             if let Ok(file) = std::fs::OpenOptions::new()
                 .create(true)
                 .append(true)
-                .open(format!("metrics_slots_{}.csv", self.consensus_name))
+                .open(&self.metrics_filename)
             {
                 self.metrics_slots_file = Some(file);
             }
@@ -680,6 +696,10 @@ mod tests {
             20,
             8,
             0.0,
+            20,
+            10,
+            "ba".to_string(),
+            500,
         );
         tokio::spawn(async move {
             world.run(world_receiver).await;
@@ -704,6 +724,10 @@ mod tests {
             20,
             8,
             0.0,
+            20,
+            10,
+            "ba".to_string(),
+            500,
         );
 
         let validators = world.validators.clone();
