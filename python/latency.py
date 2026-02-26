@@ -4,8 +4,8 @@ import glob
 import numpy as np
 
 def calculate_latency_distribution():
-    # 查找当前目录下所有以 metrics_slots_ 开头的 csv 文件
-    search_paths = ['../metrics_slots_*.csv',  'metrics_slots_*.csv']
+    # 查找当前目录下所有以 metrics_ 开头的 csv 文件
+    search_paths = ['../metrics_*.csv',  'metrics_*.csv']
     
     csv_files = []
     for path in search_paths:
@@ -15,7 +15,7 @@ def calculate_latency_distribution():
     csv_files = list(set(csv_files))
     
     if not csv_files:
-        print("未找到任何 metrics_slots_*.csv 文件")
+        print("未找到任何 metrics_*.csv 文件")
         return
 
     print(f"{'共识算法 (Consensus)':<20} | {'平均延迟(s)':<15} | {'中位数(s)':<15} | {'95分位(s)':<15} | {'最大延迟(s)':<15}")
@@ -25,7 +25,7 @@ def calculate_latency_distribution():
         try:
             # 提取共识算法名称
             filename = os.path.basename(file)
-            consensus_name = filename.replace('metrics_slots_', '').replace('.csv', '')
+            consensus_name = filename.replace('metrics_', '').replace('.csv', '')
             
             # 读取 CSV
             df = pd.read_csv(file)

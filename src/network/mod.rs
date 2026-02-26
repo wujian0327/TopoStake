@@ -145,8 +145,8 @@ pub async fn start_network(
         .collect();
     world.nodes_index = nodes_index.clone();
 
-    let nodes_address: Vec<String> = node_map.keys().cloned().collect();
-    // nodes_address.sort();
+    let mut nodes_address: Vec<String> = node_map.keys().cloned().collect();
+    nodes_address.sort();
     info!(
         "Generate {} honest nodes, {} sybil nodes, {} unstable nodes",
         node_num, sybil_node_num, unstable_node_num
@@ -523,5 +523,133 @@ mod tests {
                 break;
             }
         }
+    }
+
+    #[test]
+    fn test_determinism_setup() {
+        use crate::blockchain::block::Block;
+        use crate::blockchain::Blockchain;
+        use crate::consensus::ConsensusType;
+        use crate::network::graph::TopologyType;
+        use tokio::sync::mpsc;
+
+        let node_num = 20;
+        let gini = 0.6;
+        let wallet_seed = 888;
+        let graph_seed = 999;
+
+        let (stakes1, edges1) =
+            setup_network_state(node_num, gini, wallet_seed, graph_seed, TopologyType::BA);
+        let (stakes2, edges2) =
+            setup_network_state(node_num, gini, wallet_seed, graph_seed, TopologyType::BA);
+
+        // Verify Stakes match
+        assert_eq!(stakes1.len(), stakes2.len());
+        for (addr, stake) in &stakes1 {
+            assert_eq!(
+                stakes2.get(addr),
+                Some(stake),
+                "Stake mismatch for address {}",
+                addr
+            );
+        }
+
+        // Verify Topology match (Edges are sorted)
+        assert_eq!(edges1.len(), edges2.len());
+        assert_eq!(edges1, edges2, "Graph edges match failed");
+
+        println!("Network Determinism test passed: Topology and Stakes are identical across runs.");
+    }
+
+    fn setup_network_state(
+        node_num: u32,
+        gini: f64,
+        wallet_seed: u64,
+        graph_seed: u64,
+        topology: crate::network::graph::TopologyType,
+    ) -> (
+        std::collections::HashMap<String, f64>,
+        Vec<(String, String)>,
+    ) {
+        use crate::blockchain::block::Block;
+        use crate::blockchain::Blockchain;
+        use crate::consensus::ConsensusType;
+        use crate::network::{generate_stake_by_gini, graph, Node, NodeType};
+        use tokio::sync::mpsc;
+
+        let (world_sender, _) = mpsc::channel(100);
+        let genesis_block = Block::gen_genesis_block();
+        let bc = Blockchain::new(genesis_block);
+
+        let total_nodes = node_num;
+        let stake_values = if gini > 0.0 {
+            generate_stake_by_gini(total_nodes, gini, wallet_seed)
+        } else {
+            vec![1.0; total_nodes as usize]
+        };
+
+        let mut node_map: std::collections::HashMap<String, Node> = (0..total_nodes)
+            .map(|i| {
+                let hash_power = stake_values.get(i as usize).cloned().unwrap_or(1.0);
+                let mut node = Node::new(
+                    i,
+                    0,
+                    0,
+                    bc.clone(),
+                    world_sender.clone(),
+                    100,
+                    ConsensusType::POS,
+                    wallet_seed,
+                );
+                node.set_hash_power(hash_power);
+                (node.get_address(), node)
+            })
+            .collect();
+
+        // Sort Addresses (The deterministic fix)
+        let mut nodes_address: Vec<String> = node_map.keys().cloned().collect();
+        nodes_address.sort();
+
+        let mut stake_map: std::collections::HashMap<String, f64> =
+            std::collections::HashMap::new();
+        // Mimic logic: stake assigned by node index, mapped to address
+        // Wait, start_network logic is:
+        // node_map.iter() is used later to build sender map.
+        // stake_values[i] corresponds to Node with index i.
+
+        for (_, node) in &node_map {
+            let stake = stake_values[node.index as usize];
+            stake_map.insert(node.get_address(), stake);
+        }
+
+        let graph = match topology {
+            crate::network::graph::TopologyType::ER => {
+                graph::random_er_graph(nodes_address.clone(), 0.2)
+            }
+            crate::network::graph::TopologyType::BA => {
+                graph::random_ba_graph(nodes_address.clone(), graph_seed)
+            }
+            crate::network::graph::TopologyType::WS => {
+                graph::random_ws_graph(nodes_address.clone(), 4, 0.1, graph_seed)
+            }
+        };
+
+        use petgraph::visit::EdgeRef;
+        let mut edges: Vec<(String, String)> = graph
+            .edge_indices()
+            .map(|e| {
+                let (a, b) = graph.edge_endpoints(e).unwrap();
+                let n1 = graph[a].clone();
+                let n2 = graph[b].clone();
+                if n1 < n2 {
+                    (n1, n2)
+                } else {
+                    (n2, n1)
+                }
+            })
+            .collect();
+        edges.sort();
+
+        (stake_map, edges)
     }
 }

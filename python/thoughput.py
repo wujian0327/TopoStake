@@ -5,7 +5,7 @@ import glob
 def calculate_average_throughput():
     # 查找当前目录下所有以 metrics_slots_ 开头的 csv 文件
     # 假设你的 csv 文件在项目根目录或者 result 目录下
-    search_paths = ['../metrics_slots_*.csv', 'metrics_slots_*.csv']
+    search_paths = ['../metrics_*.csv', 'metrics_*.csv']
     
     csv_files = []
     for path in search_paths:
@@ -15,7 +15,7 @@ def calculate_average_throughput():
     csv_files = list(set(csv_files))
     
     if not csv_files:
-        print("未找到任何 metrics_slots_*.csv 文件")
+        print("未找到任何 metrics_*.csv 文件")
         return
 
     print(f"{'共识算法 (Consensus)':<20} | {'平均吞吐量 (Avg Throughput)':<25} | {'样本数 (Blocks)'}")
@@ -25,7 +25,7 @@ def calculate_average_throughput():
         try:
             # 提取共识算法名称
             filename = os.path.basename(file)
-            consensus_name = filename.replace('metrics_slots_', '').replace('.csv', '')
+            consensus_name = filename.replace('metrics_', '').replace('.csv', '')
             
             # 读取 CSV
             df = pd.read_csv(file)

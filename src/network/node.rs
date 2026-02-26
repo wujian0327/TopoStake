@@ -536,16 +536,15 @@ impl Node {
                         let tx_hash = &transaction_paths.transaction.hash;
 
                         if let Some(cached_tx) = transactions_cache.get(tx_hash) {
-                            // if self.consensus == ConsensusType::TopoStake {
-                            //     // TopoStake: 只有当缓存的路径长度更短或相等时才跳过
-                            //     if cached_tx.paths.len() <= transaction_paths.paths.len() {
-                            //         continue;
-                            //     }
-                            // } else {
-                            //     // 其他共识: 只要收到过就跳过
-                            //     continue;
-                            // }
-                            continue;
+                            if self.consensus == ConsensusType::TopoStake {
+                                // TopoStake: 只有当缓存的路径长度更短或相等时才跳过
+                                if cached_tx.paths.len() <= transaction_paths.paths.len() {
+                                    continue;
+                                }
+                            } else {
+                                // 其他共识: 只要收到过就跳过
+                                continue;
+                            }
                         }
                     }
 
@@ -566,6 +565,7 @@ impl Node {
                         transaction_paths.to_paths_string(),
                     );
                     //收到交易，存储
+                    let mut is_cached = false;
                     {
                         let mut transactions_cache = self.transaction_paths_cache.write().await;
                         let tx_hash = transaction_paths.transaction.hash.clone();
@@ -578,12 +578,20 @@ impl Node {
                                     "Node[{}] mempool full, dropping transaction[{}]",
                                     self.index, tx_hash
                                 );
-                                continue;
+                            } else {
+                                //插入或更新交易
+                                transactions_cache.insert(tx_hash, transaction_paths.clone());
+                                is_cached = true;
                             }
+                        } else {
+                            //插入或更新交易
+                            transactions_cache.insert(tx_hash, transaction_paths.clone());
+                            is_cached = true;
                         }
+                    }
 
-                        //插入或更新交易
-                        transactions_cache.insert(tx_hash, transaction_paths.clone());
+                    if !is_cached {
+                        continue;
                     }
 
                     match self.node_type {
@@ -770,6 +778,7 @@ impl Node {
                         transaction_paths.to_paths_string()
                     );
                     //缓存交易
+                    let mut is_cached = false;
                     {
                         let mut transactions_cache = self.transaction_paths_cache.write().await;
                         let tx_hash = transaction_paths.transaction.hash.clone();
@@ -782,11 +791,19 @@ impl Node {
                                     "Node[{}] mempool full, dropping generated transaction[{}]",
                                     self.index, tx_hash
                                 );
-                                continue;
+                            } else {
+                                transactions_cache
+                                    .insert(tx_hash, Arc::new(transaction_paths.clone()));
+                                is_cached = true;
                             }
+                        } else {
+                            transactions_cache.insert(tx_hash, Arc::new(transaction_paths.clone()));
+                            is_cached = true;
                         }
+                    }
 
-                        transactions_cache.insert(tx_hash, Arc::new(transaction_paths.clone()));
+                    if !is_cached {
+                        continue;
                     }
                     match self.node_type {
                         NodeType::Sybil => {

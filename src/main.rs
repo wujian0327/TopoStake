@@ -91,7 +91,7 @@ struct Args {
 
     /// 最大运行Epoch数 (Max epochs to run)
     /// 当达到此Epoch数时，程序将自动退出
-    #[clap(long, default_value = "500")]
+    #[clap(long, default_value = "100")]
     max_epochs: u64,
 }
 
