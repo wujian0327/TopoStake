@@ -1,4 +1,4 @@
-use crate::blockchain::block::Block;
+﻿use crate::blockchain::block::Block;
 use crate::blockchain::Blockchain;
 use crate::consensus::{Consensus, Validator, ValidatorError};
 use log::{debug, info};
@@ -7,7 +7,7 @@ use rand::{Rng, SeedableRng};
 use std::collections::HashMap;
 
 pub struct TopoStakeConsensus {
-    ntd: usize,
+    d: usize,
     base_reward: f64,
     // Temporal smoothing state: Score(n,t) for each node
     score_history: HashMap<String, f64>,
@@ -19,9 +19,9 @@ pub struct TopoStakeConsensus {
 }
 
 impl TopoStakeConsensus {
-    pub fn new(initial_ntd: usize, base_reward: f64) -> Self {
+    pub fn new(initial_d: usize, base_reward: f64) -> Self {
         TopoStakeConsensus {
-            ntd: initial_ntd,
+            d: initial_d,
             base_reward,
             score_history: HashMap::new(),
             alpha: 0.5,  // EMA factor: smaller alpha = longer memory
@@ -124,12 +124,12 @@ impl TopoStakeConsensus {
         map.iter().map(|(k, v)| (k.clone(), v / sum)).collect()
     }
 
-    /// Calculate path propagation value: c(p) = 1 if L(p) <= NTD, else 1/(1 + (L(p) - NTD))
+    /// Calculate path propagation value: c(p) = 1 if L(p) <= D, else 1/(1 + (L(p) - D))
     fn compute_path_value(&self, path_length: usize) -> f64 {
-        if path_length <= self.ntd {
+        if path_length <= self.d {
             1.0
         } else {
-            1.0 / (1.0 + (path_length - self.ntd) as f64)
+            1.0 / (1.0 + (path_length - self.d) as f64)
         }
     }
 
@@ -256,12 +256,12 @@ impl Consensus for TopoStakeConsensus {
 
     fn on_epoch_end(&mut self, blocks: &[Block]) {
         let paths: Vec<Vec<String>> = blocks.iter().flat_map(|b| b.get_all_paths()).collect();
-        self.adjust_ntd(&paths);
+        self.adjust_d(&paths);
         // self.set_omega(self.omega + 0.1);
     }
 
     fn state_summary(&self) -> String {
-        format!("pog(ntd={}_omega={:.2})", self.ntd, self.omega)
+        format!("pog(D={}_omega={:.2})", self.d, self.omega)
     }
 
     fn distribute_rewards(
@@ -307,9 +307,9 @@ impl Consensus for TopoStakeConsensus {
             .sum::<f64>()
             / paths.len() as f64;
 
-        // 计算惩罚因子：P(B) = (NTD / L_avg)^2，当 L_avg > NTD �?
-        let penalty_factor = if avg_path_length > self.ntd as f64 {
-            let ratio = self.ntd as f64 / avg_path_length;
+        // 计算惩罚因子：P(B) = (D / L_avg)^2，当 L_avg > D �?
+        let penalty_factor = if avg_path_length > self.d as f64 {
+            let ratio = self.d as f64 / avg_path_length;
             ratio * ratio
         } else {
             1.0
@@ -369,7 +369,7 @@ impl Consensus for TopoStakeConsensus {
 }
 
 impl TopoStakeConsensus {
-    fn adjust_ntd(&mut self, paths: &[Vec<String>]) {
+    fn adjust_d(&mut self, paths: &[Vec<String>]) {
         if paths.is_empty() {
             return;
         }
@@ -379,10 +379,10 @@ impl TopoStakeConsensus {
             .sum::<usize>() as f64
             / paths.len() as f64;
         let target = p_ave.ceil() as usize;
-        if self.ntd > target {
-            self.ntd -= 1;
-        } else if self.ntd < target {
-            self.ntd += 1;
+        if self.d > target {
+            self.d -= 1;
+        } else if self.d < target {
+            self.d += 1;
         }
     }
 }
@@ -458,3 +458,6 @@ mod tests {
         assert!((sum - 1.0).abs() < 1e-6, "Virtual stakes should sum to 1");
     }
 }
+
+
+

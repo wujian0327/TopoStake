@@ -154,7 +154,7 @@ pub async fn start_network(
 
     //4. gen the network graph
     let graph = match topology {
-        TopologyType::ER => graph::random_er_graph(nodes_address.clone(), 0.2),
+        TopologyType::ER => graph::random_er_graph(nodes_address.clone(), 0.1),
         TopologyType::BA => graph::random_ba_graph(nodes_address.clone(), graph_seed),
         TopologyType::WS => graph::random_ws_graph(nodes_address.clone(), 4, 0.1, graph_seed),
     };

@@ -276,15 +276,13 @@ impl WorldState {
             let blocks = &blockchain.blocks;
             if blocks.len() > 1 {
                 let prev_block_timestamp = blocks[blocks.len() - 2].header.timestamp;
+                // Use max(1) to prevent division by zero when blocks are produced in the same second
                 let time_delta = last_block
                     .header
                     .timestamp
-                    .saturating_sub(prev_block_timestamp);
-                if time_delta > 0 {
-                    tx_count as f64 / time_delta as f64
-                } else {
-                    0.0
-                }
+                    .saturating_sub(prev_block_timestamp)
+                    .max(1);
+                tx_count as f64 / time_delta as f64
             } else {
                 0.0
             }

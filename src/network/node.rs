@@ -530,7 +530,7 @@ impl Node {
                     //     continue;
                     // }
 
-                    //判断交易是否已经收到了,判断交易的paths是否最短 (O(1)查找)
+                    //判断交易是否已经收到了,判断交易的paths是否最短 
                     {
                         let transactions_cache = self.transaction_paths_cache.read().await;
                         let tx_hash = &transaction_paths.transaction.hash;
@@ -570,24 +570,9 @@ impl Node {
                         let mut transactions_cache = self.transaction_paths_cache.write().await;
                         let tx_hash = transaction_paths.transaction.hash.clone();
 
-                        // 检查内存池是否已满
-                        if transactions_cache.len() >= self.max_mempool_size {
-                            // 如果内存池满了，且这是一个新交易，则丢弃
-                            if !transactions_cache.contains_key(&tx_hash) {
-                                debug!(
-                                    "Node[{}] mempool full, dropping transaction[{}]",
-                                    self.index, tx_hash
-                                );
-                            } else {
-                                //插入或更新交易
-                                transactions_cache.insert(tx_hash, transaction_paths.clone());
-                                is_cached = true;
-                            }
-                        } else {
-                            //插入或更新交易
-                            transactions_cache.insert(tx_hash, transaction_paths.clone());
-                            is_cached = true;
-                        }
+                        // 取消内存池容量限制，确保交易完整传播
+                        transactions_cache.insert(tx_hash, transaction_paths.clone());
+                        is_cached = true;
                     }
 
                     if !is_cached {

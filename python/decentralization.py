@@ -124,8 +124,8 @@ def simulate_topostake_consensus(n_nodes=50, n_slots=1000, n_transactions_per_sl
                 node_idx = (src + k) % n_nodes  # 简化：线性路径
                 contributions[node_idx] += alpha_k
     
-    # 应用 NTD 惩罚和虚拟权益计算
-    ntd = 6
+    # 应用 d 惩罚和虚拟权益计算
+    d = 6
     total_contrib = np.sum(contributions)
     if total_contrib > 0:
         c_normalized = contributions / total_contrib
@@ -301,3 +301,4 @@ def plot_nakamoto_bar():
 if __name__ == '__main__':
     plot_lorenz_comparison()
     plot_nakamoto_bar()
+

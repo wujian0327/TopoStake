@@ -1,4 +1,4 @@
-use serde::{Deserialize, Serialize};
+﻿use serde::{Deserialize, Serialize};
 
 /// 每个槽的指标
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -15,7 +15,7 @@ pub struct SlotMetrics {
     pub stake_concentration: f64, // Herfindahl index
     pub gini_coefficient: f64,    // Gini系数，衡量权益分布不平等程度
     pub consensus_type: String,
-    pub consensus_state: String, // e.g., "topostake(ntd=3)", "pos"
+    pub consensus_state: String, // e.g., "topostake(D=3)", "pos"
     pub tx_packing_delay_stats: TxPackingDelayStats, // 交易打包延迟统计
     pub block_production_success: usize, // 成功出块数
     pub block_production_failed: usize, // 失败出块数
