@@ -40,6 +40,7 @@ pub async fn start_network(
     max_tx_per_block: usize,
     wallet_seed: u64,
     max_epochs: u64,
+    metrics_prefix: String,
 ) {
     info!("Consensus Type is {}", consensus);
 
@@ -62,6 +63,7 @@ pub async fn start_network(
         trans_num_per_second,
         topology.to_string(),
         max_epochs,
+        metrics_prefix,
     );
     info!("Generate world state");
 

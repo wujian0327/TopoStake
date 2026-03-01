@@ -2,16 +2,12 @@ import os
 from matplotlib import pyplot as plt
 import numpy as np
 from plot_style import get_project_root, set_plot_style, get_colors_and_styles, format_axes, format_figure
+import pandas as pd
 
 set_plot_style('paper')
 colors, linestyles, markers = get_colors_and_styles()
 
-# 图 1: Throughput (吞吐量)
-fig, ax = plt.subplots(figsize=(10, 8))  # 调整尺寸以适应大字体
-
-
 project_root = get_project_root()
-import pandas as pd
 
 def get_latency_data(alg):
     delays = []

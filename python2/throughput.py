@@ -68,4 +68,4 @@ ax.legend(fontsize=24, loc='best', frameon=True, fancybox=False, edgecolor='blac
 format_figure(fig)
 
 plt.savefig(os.path.join(project_root, 'figures', 'throughput_n.png'), dpi=300, bbox_inches='tight')
-plt.show()
+# plt.show()

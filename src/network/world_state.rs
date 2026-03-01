@@ -72,6 +72,7 @@ impl WorldState {
         trans_num: u32,
         topology: String,
         max_epochs: u64,
+        metrics_prefix: String,
     ) -> (Self, Sender<Message>, Receiver<Message>) {
         let (sender, receiver) = tokio::sync::mpsc::channel(4096);
         let nodes_sender: HashMap<String, Sender<Message>> = HashMap::new();
@@ -90,8 +91,8 @@ impl WorldState {
         };
         // Initialize metrics files - delete old file and create new one
         let metrics_filename = format!(
-            "metrics_{}_n_{}_t_{}_{}.csv",
-            consensus_name, node_num, trans_num, topology
+            "{}_{}_n_{}_t_{}_{}.csv",
+            metrics_prefix, consensus_name, node_num, trans_num, topology
         );
         let _ = std::fs::remove_file(&metrics_filename); // 删除旧文件
         let metrics_slots_file = std::fs::OpenOptions::new()
@@ -698,6 +699,7 @@ mod tests {
             10,
             "ba".to_string(),
             500,
+            "metrics".to_string(),
         );
         tokio::spawn(async move {
             world.run(world_receiver).await;
@@ -726,6 +728,7 @@ mod tests {
             10,
             "ba".to_string(),
             500,
+            "metrics".to_string(),
         );
 
         let validators = world.validators.clone();

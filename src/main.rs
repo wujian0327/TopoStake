@@ -93,6 +93,10 @@ struct Args {
     /// 当达到此Epoch数时，程序将自动退出
     #[clap(long, default_value = "100")]
     max_epochs: u64,
+
+    /// Metrics 文件前缀 (Metrics file prefix)
+    #[clap(long, default_value = "metrics")]
+    metrics_prefix: String,
 }
 
 #[tokio::main]
@@ -123,6 +127,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         args.max_tx_per_block,
         args.wallet_seed,
         args.max_epochs,
+        args.metrics_prefix,
     )
     .await;
     Ok(())
