@@ -1120,122 +1120,76 @@ impl Node {
                             continue;
                         }
 
-                        // 查找 current_index + 1 在 sync_blocks 中的位置
-                        let target_index = current_index + 1;
-                        let mut start_sync_idx = None;
-
-                        for (idx, sync_block) in sync_blocks.iter().enumerate() {
-                            if sync_block.header.index == target_index {
-                                start_sync_idx = Some(idx);
+                        // 寻找分叉点或者追加新块
+                        let mut start_idx = 0;
+                        let mut found_fork = false;
+                        
+                        for (i, sync_block) in sync_blocks.iter().enumerate() {
+                            let local_block_opt = blockchain.blocks.iter().find(|b| b.header.index == sync_block.header.index);
+                            
+                            if let Some(local_block) = local_block_opt {
+                                if local_block.header.hash != sync_block.header.hash {
+                                    warn!("Node[{}]: chain diverged at #{}, resolving", self.index, sync_block.header.index);
+                                    start_idx = i;
+                                    found_fork = true;
+                                    
+                                    let local_start = blockchain.blocks.first().map_or(0, |b| b.header.index);
+                                    let truncate_idx = (sync_block.header.index - local_start) as usize;
+                                    
+                                    let mut hashes_to_remove = Vec::new();
+                                    for b in &blockchain.blocks[truncate_idx..] {
+                                        for tx in &b.body.transactions {
+                                            hashes_to_remove.push(tx.hash.clone());
+                                        }
+                                    }
+                                    for hash in hashes_to_remove {
+                                        blockchain.transaction_index.remove(&hash);
+                                    }
+                                    
+                                    blockchain.blocks.truncate(truncate_idx);
+                                    break;
+                                }
+                            } else if sync_block.header.index > current_index {
+                                start_idx = i;
+                                found_fork = true;
                                 break;
                             }
                         }
-
-                        match start_sync_idx {
-                            None => {
-                                error!(
-                                    "Node[{}] target block index {} not found in sync response",
-                                    self.index, target_index
-                                );
-                                self.sync_in_progress = false;
-                            }
-                            Some(start_idx) => {
-                                // 判断是否成功
-                                let mut success = false;
-                                // 从找到的位置开始同步
-                                for (sync_idx, sync_block) in
-                                    sync_blocks[start_idx..].iter().enumerate()
-                                {
-                                    let expected_block_index = target_index + sync_idx as u64;
-
-                                    // 验证块的索引是否符合预期
-                                    if sync_block.header.index != expected_block_index {
-                                        error!(
-                                            "Node[{}] sync block index mismatch at position {}: expected {}, got {}",
-                                            self.index,
-                                            start_idx + sync_idx,
-                                            expected_block_index,
-                                            sync_block.header.index
-                                        );
+                        
+                        if found_fork {
+                            let mut success = true;
+                            for sync_idx in start_idx..sync_blocks.len() {
+                                let sync_block = &sync_blocks[sync_idx];
+                                match blockchain.add_block(sync_block.clone()) {
+                                    Ok(_) => {
+                                        debug!("Node[{}] synced block #{}", self.index, sync_block.header.index);
+                                        let tx_hashes: Vec<String> = sync_block
+                                            .body
+                                            .transactions
+                                            .iter()
+                                            .map(|t| t.hash.clone())
+                                            .collect();
+                                        let mut transaction_paths_cache =
+                                            self.transaction_paths_cache.write().await;
+                                        for tx_hash in tx_hashes {
+                                            transaction_paths_cache.remove(&tx_hash);
+                                        }
+                                    },
+                                    Err(e) => {
+                                        error!("Node[{}] error adding synced block #{}: {:?}", self.index, sync_block.header.index, e);
+                                        success = false;
                                         break;
                                     }
-
-                                    match blockchain.add_block(sync_block.clone()) {
-                                        Ok(_) => {
-                                            debug!(
-                                                "Node[{}] synced block #{}: hash={}",
-                                                self.index,
-                                                sync_block.header.index,
-                                                sync_block.header.hash
-                                            );
-                                            success = true;
-
-                                            // Clean up transaction cache for synced block
-                                            let tx_hashes: Vec<String> = sync_block
-                                                .body
-                                                .transactions
-                                                .iter()
-                                                .map(|t| t.hash.clone())
-                                                .collect();
-                                            let mut transaction_paths_cache =
-                                                self.transaction_paths_cache.write().await;
-                                            for tx_hash in tx_hashes {
-                                                transaction_paths_cache.remove(&tx_hash);
-                                            }
-                                        }
-                                        Err(e) => match e {
-                                            BlockChainError::DuplicateBlocksReceived => {
-                                                warn!(
-                                                    "Node[{}] block #{} already exists",
-                                                    self.index, sync_block.header.index
-                                                );
-                                            }
-                                            BlockChainError::ParentHashMismatch
-                                            | BlockChainError::TransactionExists => {
-                                                //删除最新的一个块，再同步
-                                                if blockchain.blocks.len() == 1 {
-                                                    error!(
-                                                        "Node[{}] no blocks to remove during sync error handling",
-                                                        self.index
-                                                    );
-                                                } else {
-                                                    if let Some(removed_block) =
-                                                        blockchain.pop_block()
-                                                    {
-                                                        warn!(
-                                                        "Node[{}] removed block #{} due to {} during sync",
-                                                        self.index, e, removed_block.header.index
-                                                    );
-                                                    } else {
-                                                        error!(
-                                                        "Node[{}] no blocks to remove during sync error handling",
-                                                        self.index
-                                                    );
-                                                        break;
-                                                    }
-                                                }
-                                                break;
-                                            }
-                                            _ => {
-                                                error!(
-                                                    "Node[{}] error adding synced block #{}: {}",
-                                                    self.index, sync_block.header.index, e
-                                                );
-                                                break;
-                                            }
-                                        },
-                                    }
-                                }
-                                if success {
-                                    let synced_count = sync_blocks.len() - start_idx;
-                                    info!(
-                                        "Node[{}] completed block sync: synced {} blocks ",
-                                        self.index, synced_count
-                                    );
-                                    self.sync_in_progress = false;
                                 }
                             }
+                            info!(
+                                "Node[{}] completed block sync to index {}, success: {}",
+                                self.index, blockchain.get_last_index(), success
+                            );
+                        } else {
+                            debug!("Node[{}] sync skipped, no new blocks found or all match", self.index);
                         }
+                        self.sync_in_progress = false;
                     }
                 }
                 _ => {}
