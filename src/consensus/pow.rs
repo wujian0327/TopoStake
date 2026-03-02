@@ -152,79 +152,108 @@ impl Consensus for PowConsensus {
 
         // 限制最大线程数
         let num_threads = std::cmp::min(validators.len(), self.max_threads);
-        let thread_step = (validators.len() + num_threads - 1) / num_threads; // 向上取整
+        let thread_step = if num_threads > 0 {
+            (validators.len() + num_threads - 1) / num_threads // 向上取整
+        } else {
+            1
+        };
 
         for chunk in validators.chunks(thread_step) {
-            for validator in chunk {
-                let validator_clone = validator.clone();
-                let winner_clone = Arc::clone(&winner);
-                let should_stop_clone = Arc::clone(&should_stop);
-                let difficulty = self.difficulty;
-                let seed = combines_seed;
+            let chunk_validators = chunk.to_vec();
+            let winner_clone = Arc::clone(&winner);
+            let should_stop_clone = Arc::clone(&should_stop);
+            let difficulty = self.difficulty;
+            let seed = combines_seed;
 
+            let handle = thread::spawn(move || {
                 // 恢复为固定的最大尝试次数，不再通过次数限制算力
                 let max_attempts = 100_000_000u64;
 
-                // 算力模拟参数
-                // 基础休眠时间（微秒）：算力为 1.0 的节点每 batch 需要休眠的时间
-                // 调整这个值可以控制整体的出块速度模拟
-                // 为了避免操作系统调度精度问题（通常 >1ms），这里使用较大的 batch 和 sleep 时间
-                let base_sleep_micros = 5_000.0; // 5ms
-                let batch_size = 5_000; // 每计算 5,000 次哈希检查一次休眠
+                let base_sleep_micros = 5_000_u64; // 5ms
+                let base_batch_size = 5_000_f64;
 
-                let handle = thread::spawn(move || {
-                    // 这里只是模拟pow运算，并没有使用节点的交易数据
-                    // this is just a simulation of PoW mining without using the node's transaction data
-                    let mut mining_data = Vec::new();
-                    mining_data.extend_from_slice(&seed);
-                    mining_data.extend_from_slice(&validator_clone.address.as_bytes());
+                // 维护每个验证者的状态
+                struct ValidatorState {
+                    validator: Validator,
+                    nonce: u64,
+                    mining_data: Vec<u8>,
+                }
 
-                    // 开始 PoW 计算
-                    for nonce in 0..max_attempts {
-                        // 检查是否应该停止（获胜者已产生或超时）
+                let mut states: Vec<ValidatorState> = chunk_validators
+                    .into_iter()
+                    .map(|v| {
+                        let mut mining_data = Vec::new();
+                        mining_data.extend_from_slice(&seed);
+                        mining_data.extend_from_slice(v.address.as_bytes());
+                        ValidatorState {
+                            validator: v,
+                            nonce: 0,
+                            mining_data,
+                        }
+                    })
+                    .collect();
+
+                let mut any_running = true;
+                while any_running {
+                    any_running = false;
+
+                    if should_stop_clone.load(std::sync::atomic::Ordering::Relaxed) {
+                        return;
+                    }
+
+                    for state in states.iter_mut() {
                         if should_stop_clone.load(std::sync::atomic::Ordering::Relaxed) {
                             return;
                         }
 
-                        // 模拟算力差异：速率限制
-                        if nonce % batch_size == 0 {
-                            // 算力越高，sleep 时间越短
-                            // sleep_time = base / hash_power
-                            let sleep_duration =
-                                (base_sleep_micros / validator_clone.hash_power) as u64;
-                            if sleep_duration > 0 {
-                                thread::sleep(Duration::from_micros(sleep_duration));
-                            }
+                        if state.nonce >= max_attempts {
+                            continue;
                         }
+                        any_running = true;
 
-                        let mut hasher = Sha256::new();
-                        hasher.update(&mining_data);
-                        hasher.update(nonce.to_le_bytes());
-                        let hash = hasher.finalize();
-                        let hash_bytes = hash.to_vec();
+                        let target_hashes =
+                            (base_batch_size * state.validator.hash_power).max(1.0) as u64;
 
-                        // 验证是否满足难度要求
-                        if Self::verify_pow(&hash_bytes, difficulty) {
-                            // 当前验证者找到了结果，尝试设置为获胜者
-                            if let Ok(mut winner_guard) = winner_clone.try_lock() {
-                                if winner_guard.is_none() {
-                                    *winner_guard = Some(validator_clone.clone());
-                                    info!(
-                                        "PoW: Validator {} won with nonce {}, pow power {:.2}",
-                                        validator_clone.address, nonce, validator_clone.hash_power
-                                    );
-                                    // 通知其他线程停止
-                                    should_stop_clone
-                                        .store(true, std::sync::atomic::Ordering::Relaxed);
-                                }
+                        for _ in 0..target_hashes {
+                            if state.nonce >= max_attempts {
+                                break;
                             }
-                            return;
+
+                            let mut hasher = Sha256::new();
+                            hasher.update(&state.mining_data);
+                            hasher.update(state.nonce.to_le_bytes());
+                            let hash = hasher.finalize();
+                            let hash_bytes = hash.to_vec();
+
+                            if Self::verify_pow(&hash_bytes, difficulty) {
+                                if let Ok(mut winner_guard) = winner_clone.try_lock() {
+                                    if winner_guard.is_none() {
+                                        *winner_guard = Some(state.validator.clone());
+                                        info!(
+                                            "PoW: Validator {} won with nonce {}, pow power {:.2}",
+                                            state.validator.address,
+                                            state.nonce,
+                                            state.validator.hash_power
+                                        );
+                                        should_stop_clone
+                                            .store(true, std::sync::atomic::Ordering::Relaxed);
+                                    }
+                                }
+                                return;
+                            }
+                            state.nonce += 1;
                         }
                     }
-                });
 
-                handles.push(handle);
-            }
+                    if base_sleep_micros > 0
+                        && !should_stop_clone.load(std::sync::atomic::Ordering::Relaxed)
+                    {
+                        thread::sleep(Duration::from_micros(base_sleep_micros));
+                    }
+                }
+            });
+
+            handles.push(handle);
         }
 
         // 等待线程完成或超时

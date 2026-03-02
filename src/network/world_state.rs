@@ -87,7 +87,9 @@ impl WorldState {
                 slot_duration,
                 base_reward,
             )),
-            ConsensusType::MINOTAUR => Box::new(MinotaurConsensus::new(base_reward)),
+            ConsensusType::MINOTAUR => {
+                Box::new(MinotaurConsensus::new(base_reward, pow_max_threads))
+            }
         };
         // Initialize metrics files - delete old file and create new one
         let metrics_filename = format!(

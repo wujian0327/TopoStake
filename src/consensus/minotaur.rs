@@ -31,18 +31,20 @@ pub struct MinotaurConsensus {
     base_reward: f64,
     pow_weight: f64,
     block_index: u64,
+    max_threads: usize,
     /// 后台计算任务：存储线程句柄和结果存储位置
     background_task: Arc<Mutex<Option<(u64, JoinHandle<Vec<PowBlock>>, Arc<AtomicBool>)>>>,
 }
 
 impl MinotaurConsensus {
     /// 创建新的Minotaur共识实例
-    pub fn new(base_reward: f64) -> Self {
+    pub fn new(base_reward: f64, max_threads: usize) -> Self {
         MinotaurConsensus {
             pow_blocks: HashMap::new(),
             base_reward,
             pow_weight: 0.5, // 默认50%权重
             block_index: 0,
+            max_threads,
             background_task: Arc::new(Mutex::new(None)),
         }
     }
@@ -268,6 +270,7 @@ impl Consensus for MinotaurConsensus {
         self.block_index = block_index;
         debug!("Transitioning to next block index: {}", self.block_index);
 
+        let max_threads_limit = self.max_threads;
         // 第二步：启动新的后台计算任务
         let validators_clone: Vec<Validator> = validators.to_vec();
         let stop_signal = Arc::new(AtomicBool::new(false));
@@ -277,90 +280,101 @@ impl Consensus for MinotaurConsensus {
             let pow_blocks = Arc::new(Mutex::new(HashMap::new()));
             let mut handles = vec![];
 
-            for validator in validators_clone {
-                let address = validator.address.clone();
-                let hash_power = validator.hash_power;
-                let pow_blocks_clone = Arc::clone(&pow_blocks);
-                let stop_signal_inner = Arc::clone(&stop_signal_clone);
-                let index = block_index;
+            let num_threads = std::cmp::min(validators_clone.len(), max_threads_limit);
+            if num_threads > 0 {
+                let thread_step = (validators_clone.len() + num_threads - 1) / num_threads;
 
-                let handle = thread::spawn(move || {
-                    // 基于算力的参数设置
-                    // 参考 PoW 实现：模拟不同算力的计算速率
-                    let base_sleep_micros = 5_000.0; // 基础休眠时间（微秒）
-                    let batch_size = 5_000; // 每计算多少次检查一次休眠
+                for chunk in validators_clone.chunks(thread_step) {
+                    let chunk_validators = chunk.to_vec();
+                    let pow_blocks_clone = Arc::clone(&pow_blocks);
+                    let stop_signal_inner = Arc::clone(&stop_signal_clone);
+                    let index = block_index;
 
-                    // 执行PoW计算，持续运算直到收到停止信号
-                    let mut nonce = 0u64;
-                    let mut best_pow_block = None::<PowBlock>;
+                    let handle = thread::spawn(move || {
+                        let base_sleep_micros = 5_000_u64; // 基础休眠时间（微秒）
+                        let base_batch_size = 5_000_f64; // 基础批次计算量
 
-                    loop {
-                        // 检查是否收到停止信号
-                        if stop_signal_inner.load(Ordering::Relaxed) {
-                            break;
+                        // 状态维护
+                        struct ValidatorState {
+                            address: String,
+                            hash_power: f64,
+                            nonce: u64,
+                            best_pow_block: Option<PowBlock>,
                         }
 
-                        // 模拟根据算力的运算间隔
-                        if nonce % batch_size == 0 && nonce > 0 {
-                            // 算力越高，sleep 时间越短
-                            let sleep_duration = (base_sleep_micros / hash_power) as u64;
-                            if sleep_duration > 0 {
-                                thread::sleep(Duration::from_micros(sleep_duration));
+                        let mut states: Vec<ValidatorState> = chunk_validators
+                            .into_iter()
+                            .map(|v| ValidatorState {
+                                address: v.address,
+                                hash_power: v.hash_power,
+                                nonce: 0,
+                                best_pow_block: None,
+                            })
+                            .collect();
+
+                        loop {
+                            if stop_signal_inner.load(Ordering::Relaxed) {
+                                break;
+                            }
+
+                            for state in states.iter_mut() {
+                                if stop_signal_inner.load(Ordering::Relaxed) {
+                                    break;
+                                }
+
+                                // 算力越高，此次循环计算的哈希次数越多，模拟哈希速率差异
+                                let target_hashes =
+                                    (base_batch_size * state.hash_power).max(1.0) as u64;
+
+                                for _ in 0..target_hashes {
+                                    let mut hasher = Sha256::new();
+                                    hasher.update(state.address.as_bytes());
+                                    hasher.update(index.to_le_bytes());
+                                    hasher.update(state.nonce.to_le_bytes());
+                                    let hash = hasher.finalize();
+
+                                    let difficulty = Self::calculate_difficulty(&hash.to_vec());
+
+                                    if state.best_pow_block.is_none()
+                                        || difficulty
+                                            > state.best_pow_block.as_ref().unwrap().max_difficulty
+                                    {
+                                        let mut rng = StdRng::from_seed([index as u8; 32]);
+                                        let pow_nonce = rng.next_u64();
+
+                                        state.best_pow_block = Some(PowBlock {
+                                            address: state.address.clone(),
+                                            hash_count: state.nonce + 1,
+                                            index,
+                                            nonce: pow_nonce,
+                                            max_difficulty: difficulty,
+                                        });
+                                    }
+                                    state.nonce += 1;
+                                }
+                            }
+
+                            if base_sleep_micros > 0 && !stop_signal_inner.load(Ordering::Relaxed) {
+                                thread::sleep(Duration::from_micros(base_sleep_micros));
                             }
                         }
 
-                        let mut hasher = Sha256::new();
-                        hasher.update(address.as_bytes());
-                        hasher.update(index.to_le_bytes());
-                        hasher.update(nonce.to_le_bytes());
-                        let hash = hasher.finalize();
-
-                        // 计算当前hash的难度（leading zeros数量）
-                        let difficulty = Self::calculate_difficulty(&hash.to_vec());
-
-                        // 如果这是第一次或者难度更大，更新最佳PowBlock
-                        if best_pow_block.is_none()
-                            || difficulty > best_pow_block.as_ref().unwrap().max_difficulty
-                        {
-                            let mut rng = StdRng::from_seed([index as u8; 32]);
-                            let pow_nonce = rng.next_u64();
-
-                            best_pow_block = Some(PowBlock {
-                                address: address.clone(),
-                                hash_count: nonce + 1,
-                                index,
-                                nonce: pow_nonce,
-                                max_difficulty: difficulty,
-                            });
-
-                            if difficulty > 0 {
-                                debug!(
-                                    "PoW computation in index {}: address={}, hash_count={}, max_difficulty={}",
-                                    index,
-                                    address,
-                                    nonce + 1,
-                                    difficulty
-                                );
-                            }
-                        }
-
-                        nonce += 1;
-                    }
-
-                    // 将最佳结果存储到共享的HashMap中
-                    if let Some(pow_block) = best_pow_block {
-                        let max_diff = pow_block.max_difficulty;
+                        // 将最佳结果存储到共享的HashMap中
                         let mut blocks = pow_blocks_clone.lock().unwrap();
-                        blocks.entry(index).or_insert_with(Vec::new).push(pow_block);
+                        let entry = blocks.entry(index).or_insert_with(Vec::new);
+                        for state in states {
+                            if let Some(pow_block) = state.best_pow_block {
+                                debug!(
+                                    "PoW computation finished for index {}: address={}, total attempts={}, max_difficulty={}",
+                                    index, pow_block.address, state.nonce, pow_block.max_difficulty
+                                );
+                                entry.push(pow_block);
+                            }
+                        }
+                    });
 
-                        debug!(
-                            "PoW computation finished for index {}: address={}, total attempts={}, max_difficulty={}",
-                            index, address, nonce, max_diff
-                        );
-                    }
-                });
-
-                handles.push(handle);
+                    handles.push(handle);
+                }
             }
 
             // 等待所有计算线程完成
