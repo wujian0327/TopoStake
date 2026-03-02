@@ -10,7 +10,7 @@ set_plot_style('paper')
 colors, linestyles, markers = get_colors_and_styles()
 
 def get_gini_data(alg):
-    file = os.path.join(project_root, f'result/metrics_{alg}_n_100_t_100_ba.csv')
+    file = os.path.join(project_root, f'result/gini_{alg}_n_100_t_100_ba.csv')
     try:
         df = pd.read_csv(file)
         if 'gini_coefficient' in df.columns and 'epoch' in df.columns:
