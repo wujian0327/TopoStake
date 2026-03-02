@@ -508,10 +508,10 @@ impl WorldState {
                                     "World State: received snapshot sync from index {} to {}, gap detected. Replacing local chain",
                                     response_start_index, response_index
                                 );
-                                
+
                                 local_chain.blocks.clear();
                                 local_chain.transaction_index.clear();
-                                
+
                                 for sync_block in &sync_blocks {
                                     local_chain.blocks.push(sync_block.clone());
                                     for tx in &sync_block.body.transactions {
@@ -527,22 +527,32 @@ impl WorldState {
                                 // 寻找分叉点或者追加新块
                                 let mut start_idx = 0;
                                 let mut found_fork = false;
-                                
+
                                 for (i, sync_block) in sync_blocks.iter().enumerate() {
                                     // 根据高度在本地查找是否有相同的块
-                                    let local_block_opt = local_chain.blocks.iter().find(|b| b.header.index == sync_block.header.index);
-                                    
+                                    let local_block_opt = local_chain
+                                        .blocks
+                                        .iter()
+                                        .find(|b| b.header.index == sync_block.header.index);
+
                                     if let Some(local_block) = local_block_opt {
                                         if local_block.header.hash != sync_block.header.hash {
                                             // 发现分叉
-                                            warn!("World State: chain diverged at #{}, resolving", sync_block.header.index);
+                                            warn!(
+                                                "World State: chain diverged at #{}, resolving",
+                                                sync_block.header.index
+                                            );
                                             start_idx = i;
                                             found_fork = true;
-                                            
+
                                             // 删除本地分叉及之后的块，并清理对应交易限制
-                                            let local_start = local_chain.blocks.first().map_or(0, |b| b.header.index);
-                                            let truncate_idx = (sync_block.header.index - local_start) as usize;
-                                            
+                                            let local_start = local_chain
+                                                .blocks
+                                                .first()
+                                                .map_or(0, |b| b.header.index);
+                                            let truncate_idx =
+                                                (sync_block.header.index - local_start) as usize;
+
                                             // 收集需要删除的交易 hashes
                                             let mut hashes_to_remove = Vec::new();
                                             for b in &local_chain.blocks[truncate_idx..] {
@@ -553,27 +563,34 @@ impl WorldState {
                                             for hash in hashes_to_remove {
                                                 local_chain.transaction_index.remove(&hash);
                                             }
-                                            
+
                                             local_chain.blocks.truncate(truncate_idx);
                                             break;
                                         }
-                                    } else if sync_block.header.index > local_chain.get_last_index() {
+                                    } else if sync_block.header.index > local_chain.get_last_index()
+                                    {
                                         // 到了需要追加的新块部分
                                         start_idx = i;
                                         found_fork = true;
                                         break;
                                     }
                                 }
-                                
+
                                 if found_fork {
                                     for sync_idx in start_idx..sync_blocks.len() {
                                         let sync_block = &sync_blocks[sync_idx];
                                         match local_chain.add_block(sync_block.clone()) {
                                             Ok(_) => {
-                                                debug!("World State: synced block #{}", sync_block.header.index);
-                                            },
+                                                debug!(
+                                                    "World State: synced block #{}",
+                                                    sync_block.header.index
+                                                );
+                                            }
                                             Err(e) => {
-                                                error!("World State: failed to sync block #{}: {:?}", sync_block.header.index, e);
+                                                error!(
+                                                    "World State: failed to sync block #{}: {:?}",
+                                                    sync_block.header.index, e
+                                                );
                                                 break;
                                             }
                                         }
