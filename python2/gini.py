@@ -67,20 +67,20 @@ ax.set_ylim(0.40, 0.75)
 
 # 添加背景分层
 # 0.6 以下： (White)
-ax.axhspan(0.40, 0.60, facecolor='white', alpha=1.0, zorder=0)
+# ax.axhspan(0.40, 0.60, facecolor='white', alpha=1.0, zorder=0)
 
 # 0.6 以上： (Light Gray #F0F0F0)
-ax.axhspan(0.60, 0.75, facecolor='#F0F0F0', alpha=0.8, zorder=0)
+# ax.axhspan(0.60, 0.75, facecolor='#F0F0F0', alpha=0.8, zorder=0)
 
 max_epoch = max([len(epochs_pos), len(epochs_pow), len(epochs_minotaur), len(epochs_topostake), 100])
 # 添加区域说明文字
 ax.text(max_epoch * 0.98, 0.735, 'Higher Inequality', fontsize=20, color='gray', ha='right', va='center', fontweight='bold', zorder=1)
-ax.text(max_epoch * 0.98, 0.415, 'Better Fairness', fontsize=20, color='gray', ha='right', va='center', fontweight='bold', zorder=1)
+ax.text(max_epoch * 0.98, 0.265, 'Better Fairness', fontsize=20, color='gray', ha='right', va='center', fontweight='bold', zorder=1)
+
+ax.set_ylim(0.25, 0.75)
 
 # 添加分界线
-
-# 添加分界线
-ax.axhline(y=0.60, color='gray', linestyle='--', linewidth=1.5, alpha=0.5)
+ax.axhline(y=0.60, color='gray', linestyle='--', linewidth=1.5, alpha=0.95, zorder=2)
 
 ax.legend(fontsize=24, loc='best', frameon=True, fancybox=False, edgecolor='black', framealpha=0.95)
 format_figure(fig)

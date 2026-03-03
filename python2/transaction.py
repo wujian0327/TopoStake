@@ -62,5 +62,5 @@ ax.set_ylim(0, 200)
 ax.legend(fontsize=22, loc='upper left', frameon=True, fancybox=False, edgecolor='black', framealpha=0.95)
 format_figure(fig)
 
-plt.savefig(os.path.join(project_root, 'figures', 'confirmed_throughput_vs_input.png'), dpi=300, bbox_inches='tight')
+plt.savefig(os.path.join(project_root, 'figures', 'transaction.png'), dpi=300, bbox_inches='tight')
 # plt.show()

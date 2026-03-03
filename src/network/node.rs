@@ -85,7 +85,7 @@ impl Node {
         } else {
             Wallet::new_deterministic(wallet_seed, index)
         };
-        let (sender, receiver) = tokio::sync::mpsc::channel(1024 * 16);
+        let (sender, receiver) = tokio::sync::mpsc::channel(1024 * 32);
         Node {
             index,
             epoch,
@@ -123,7 +123,7 @@ impl Node {
         max_tx_per_block: usize,
         consensus: ConsensusType,
     ) -> Self {
-        let (sender, receiver) = tokio::sync::mpsc::channel(8);
+        let (sender, receiver) = tokio::sync::mpsc::channel(1024 * 32);
         Node {
             index,
             epoch,
@@ -182,7 +182,7 @@ impl Node {
         } else {
             Wallet::new_deterministic(wallet_seed, index)
         };
-        let (sender, receiver) = tokio::sync::mpsc::channel(4096);
+        let (sender, receiver) = tokio::sync::mpsc::channel(1024 * 32);
         Node {
             index,
             epoch,

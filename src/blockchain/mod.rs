@@ -56,7 +56,6 @@ impl Blockchain {
             return Err(BlockChainError::InvalidBlock);
         }
         if self.get_last_hash() == block.header.hash {
-            //重复收到
             return Err(BlockChainError::DuplicateBlocksReceived);
         }
         if self.get_last_hash() != block.header.parent_hash {

@@ -57,21 +57,20 @@ fig, ax = plt.subplots(figsize=(10, 8))
 ax.plot(N, path_topostake, 
         marker=markers['topostake'], linestyle=linestyles['topostake'], color=colors['topostake'], 
         label='TopoStake (Ours)')
-ax.fill_between(N, path_topostake - err_topostake, path_topostake + err_topostake, 
-                color=colors['topostake'], alpha=0.2)
+# ax.fill_between(N, path_topostake - err_topostake, path_topostake + err_topostake, 
+#                 color=colors['topostake'], alpha=0.2)
 
 # PoS
 ax.plot(N, path_pos, 
         marker=markers['pos'], linestyle=linestyles['pos'], color=colors['pos'], 
         label='PoS')
-ax.fill_between(N, path_pos - err_pos, path_pos + err_pos, 
-                color=colors['pos'], alpha=0.1)
+# ax.fill_between(N, path_pos - err_pos, path_pos + err_pos, 
+#                 color=colors['pos'], alpha=0.1)
 
 # Minotaur
 ax.plot(N, path_minotaur, 
         marker=markers['minotaur'], linestyle=linestyles['minotaur'], color=colors['minotaur'], 
         label='Minotaur')
-# 为了图面整洁，Minotaur 和 PoS 重合度高，可以不画它的误差带，或者画个虚线
 
 # PoW (Baseline Gossip)
 ax.plot(N, path_pow, 
@@ -83,7 +82,7 @@ format_axes(ax,
             xlabel='Network Size ($N$)', 
             ylabel='Avg. Propagation Hops',)
 
-ax.legend(fontsize=22, loc='upper left', frameon=True, fancybox=False, edgecolor='black', framealpha=0.95)
+ax.legend(fontsize=22, loc='best', frameon=True, fancybox=False, edgecolor='black', framealpha=0.95)
 format_figure(fig)
 
 plt.savefig(os.path.join(project_root, 'figures', 'path_length_n.png'), dpi=300, bbox_inches='tight')

@@ -26,7 +26,7 @@ def get_latency_data(alg):
         return np.array([0])
         
     delays = np.array(delays)
-    threshold = np.percentile(delays, 85)
+    threshold = np.percentile(delays, 95)
     filtered_delays = delays[delays <= threshold]
     
     return filtered_delays
@@ -69,5 +69,5 @@ ax.yaxis.set_major_formatter(FuncFormatter(lambda y, _: '{:g}'.format(y)))
 
 format_figure(fig)
 
-plt.savefig(os.path.join(project_root, 'figures', 'latency_n.png'), dpi=300, bbox_inches='tight')
+plt.savefig(os.path.join(project_root, 'figures', 'latency.png'), dpi=300, bbox_inches='tight')
 # plt.show()

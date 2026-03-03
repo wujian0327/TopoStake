@@ -64,7 +64,7 @@ format_axes(ax,
             ylabel='Throughput (tx/s)')
 
 # 设置Y轴范围
-ax.set_ylim(0, 130) # slightly higher for bars labels if needed
+ax.set_ylim(0, 145) # slightly higher for bars labels if needed
 
 # 调整X轴标签
 ax.set_xticks(x)
@@ -73,5 +73,5 @@ ax.set_xticklabels(display_topologies, fontsize=20)
 ax.legend(fontsize=20, loc='upper right', frameon=True, fancybox=False, edgecolor='black', framealpha=0.95)
 format_figure(fig)
 
-plt.savefig(os.path.join(project_root, 'figures', 'throughput_vs_topology.png'), dpi=300, bbox_inches='tight')
+plt.savefig(os.path.join(project_root, 'figures', 'topology.png'), dpi=300, bbox_inches='tight')
 # plt.show()
