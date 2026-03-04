@@ -63,8 +63,13 @@ format_axes(ax,
 # 将坐标轴改为对数轴以适应差异过大的情况
 ax.set_yscale('log')
 
-# 自定义由于对数轴导致的难看的科学计数法，将其转换为容易理解的数字 1, 10, 100 等
-from matplotlib.ticker import FuncFormatter
+# 自定义由于对数轴导致的难看的科学计数法，将其转换为容易理解的数字
+from matplotlib.ticker import FuncFormatter, LogLocator
+# 强制让 matplotlib 显示 1, 2, 3, 4, 5, 6, 7, 8, 9, 10 等所有的次要刻度数字
+ax.yaxis.set_minor_locator(LogLocator(base=10.0, subs=np.arange(2.0, 10.0) * 1.0))
+# 因为次要刻度会很密，我们只显示 2, 3, 4, 6 这种比较清晰的刻度
+ax.yaxis.set_minor_formatter(FuncFormatter(lambda y, _: '{:g}'.format(y) if y in [2, 3, 4, 6, 8] else ''))
+
 ax.yaxis.set_major_formatter(FuncFormatter(lambda y, _: '{:g}'.format(y)))
 
 format_figure(fig)

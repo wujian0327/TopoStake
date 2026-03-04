@@ -23,9 +23,17 @@ def calculate_throughput(alg):
                  results.append(np.nan)
                  continue
             df = pd.read_csv(file)
-            if 'throughput' in df.columns:
-                valid_data = df[df['throughput'] > 0]
-                results.append(valid_data['throughput'].mean() if not valid_data.empty else np.nan)
+            if 'tx_count' in df.columns and 'timestamp' in df.columns:
+                valid_df = df[df['tx_count'] > 0]
+                if not valid_df.empty:
+                    total_tx = valid_df['tx_count'].sum()
+                    total_time = valid_df['timestamp'].max() - df['timestamp'].min()
+                    if total_time > 0:
+                        results.append(total_tx / total_time)
+                    else:
+                        results.append(np.nan)
+                else:
+                    results.append(np.nan)
             else:
                 results.append(np.nan)
         except Exception:
@@ -73,5 +81,5 @@ ax.set_xticklabels(display_topologies, fontsize=20)
 ax.legend(fontsize=20, loc='upper right', frameon=True, fancybox=False, edgecolor='black', framealpha=0.95)
 format_figure(fig)
 
-plt.savefig(os.path.join(project_root, 'figures', 'topology.png'), dpi=300, bbox_inches='tight')
+plt.savefig(os.path.join(project_root, 'figures', 'topology_thoughput.png'), dpi=300, bbox_inches='tight')
 # plt.show()

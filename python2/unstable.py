@@ -25,9 +25,17 @@ def get_unstable_throughput(alg):
                  results.append(np.nan)
                  continue
             df = pd.read_csv(file)
-            if 'throughput' in df.columns:
-                valid_data = df[df['throughput'] > 0]
-                results.append(valid_data['throughput'].mean() if not valid_data.empty else np.nan)
+            if 'tx_count' in df.columns and 'timestamp' in df.columns:
+                valid_df = df[df['tx_count'] > 0]
+                if not valid_df.empty:
+                    total_tx = valid_df['tx_count'].sum()
+                    total_time = valid_df['timestamp'].max() - df['timestamp'].min()
+                    if total_time > 0:
+                        results.append(total_tx / total_time)
+                    else:
+                        results.append(np.nan)
+                else:
+                    results.append(np.nan)
             else:
                 results.append(np.nan)
         except Exception:
@@ -58,7 +66,7 @@ format_axes(ax,
             ylabel='Throughput (Tx/s)')
 
 ax.set_ylim(0, 120) 
-ax.set_xlim(0, 30)
+ax.set_xlim(0, 31)
 ax.set_xticks(np.arange(0, 35, 10))
 
 # 图例位置

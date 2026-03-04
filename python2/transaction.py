@@ -21,9 +21,17 @@ def calculate_throughput(alg):
                  results.append(np.nan)
                  continue
             df = pd.read_csv(file)
-            if 'throughput' in df.columns:
-                valid_data = df[df['throughput'] > 0]
-                results.append(valid_data['throughput'].mean() if not valid_data.empty else np.nan)
+            if 'tx_count' in df.columns and 'timestamp' in df.columns:
+                valid_df = df[df['tx_count'] > 0]
+                if not valid_df.empty:
+                    total_tx = valid_df['tx_count'].sum()
+                    total_time = valid_df['timestamp'].max() - df['timestamp'].min()
+                    if total_time > 0:
+                        results.append(total_tx / total_time)
+                    else:
+                        results.append(np.nan)
+                else:
+                    results.append(np.nan)
             else:
                 results.append(np.nan)
         except Exception:
@@ -58,7 +66,7 @@ format_axes(ax,
             xlabel='Input Transaction Rate (tx/s)', 
             ylabel='Confirmed Throughput (tx/s)')
 
-ax.set_ylim(0, 200)
+ax.set_ylim(0, 250)
 ax.legend(fontsize=22, loc='upper left', frameon=True, fancybox=False, edgecolor='black', framealpha=0.95)
 format_figure(fig)
 

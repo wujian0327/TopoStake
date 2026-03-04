@@ -10,7 +10,7 @@ set_plot_style('paper')
 colors, linestyles, markers = get_colors_and_styles()
 
 # --- 数据计算 ---
-tx_counts = np.arange(1, 301) # 1 到 300 个交易
+tx_counts = np.arange(0, 301) # 0 到 300 个交易
 
 # 常量 (Bytes)
 HEADER_SIZE = 100
@@ -63,7 +63,7 @@ format_axes(ax,
             ylabel='Total Block Size (KB)')
 
 ax.set_ylim(0, val_500_topo * 1.1) 
-ax.set_xlim(0, 300)
+ax.set_xlim(0, 310)
 
 ax.legend(fontsize=22, loc='upper left', frameon=True, fancybox=False, edgecolor='black', framealpha=0.95)
 
