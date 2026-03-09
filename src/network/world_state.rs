@@ -67,6 +67,8 @@ impl WorldState {
         slot_per_epoch: u64,
         pow_difficulty: usize,
         pow_max_threads: usize,
+        omega: f64,
+        beta: f64,
         base_reward: f64,
         node_num: u32,
         trans_num: u32,
@@ -79,7 +81,9 @@ impl WorldState {
         let slot_duration = Duration::from_secs(slot_duration_secs);
         let consensus_name = consensus_type.to_string();
         let consensus: Box<dyn Consensus> = match consensus_type {
-            ConsensusType::TopoStake => Box::new(TopoStakeConsensus::new(0, base_reward)),
+            ConsensusType::TopoStake => {
+                Box::new(TopoStakeConsensus::new(0, base_reward, omega, beta))
+            }
             ConsensusType::POS => Box::new(PosConsensus::new(base_reward)),
             ConsensusType::POW => Box::new(PowConsensus::new(
                 pow_difficulty,
@@ -92,10 +96,16 @@ impl WorldState {
             }
         };
         // Initialize metrics files - delete old file and create new one
-        let metrics_filename = format!(
-            "{}_{}_n_{}_t_{}_{}.csv",
-            metrics_prefix, consensus_name, node_num, trans_num, topology
-        );
+        let metrics_filename = match consensus_type {
+            ConsensusType::TopoStake => format!(
+                "{}_{}_n_{}_t_{}_{}_omega_{}_beta_{}.csv",
+                metrics_prefix, consensus_name, node_num, trans_num, topology, omega, beta
+            ),
+            _ => format!(
+                "{}_{}_n_{}_t_{}_{}.csv",
+                metrics_prefix, consensus_name, node_num, trans_num, topology
+            ),
+        };
         let _ = std::fs::remove_file(&metrics_filename); // 删除旧文件
         let metrics_slots_file = std::fs::OpenOptions::new()
             .create(true)
@@ -744,7 +754,9 @@ mod tests {
             5,
             20,
             8,
-            0.0,
+            1.0, // omega
+            0.5, // beta
+            0.0, // base_reward
             20,
             10,
             "ba".to_string(),
@@ -773,7 +785,9 @@ mod tests {
             5,
             20,
             8,
-            0.0,
+            1.0, // omega
+            0.5, // beta
+            0.0, // base_reward
             20,
             10,
             "ba".to_string(),

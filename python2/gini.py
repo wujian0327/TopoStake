@@ -10,7 +10,10 @@ set_plot_style('paper')
 colors, linestyles, markers = get_colors_and_styles()
 
 def get_gini_data(alg):
-    file = os.path.join(project_root, f'result/gini_{alg}_n_100_t_100_ba.csv')
+    if alg == 'topostake_omega_0.5':
+        file = os.path.join(project_root, f'result/gini_topostake_n_100_t_100_ba_omega_0.5.csv')
+    else:
+        file = os.path.join(project_root, f'result/gini_{alg}_n_100_t_100_ba.csv')
     try:
         df = pd.read_csv(file)
         if 'gini_coefficient' in df.columns and 'epoch' in df.columns:
@@ -28,6 +31,7 @@ epochs_pos, gini_pos = get_gini_data('pos')
 epochs_pow, gini_pow = get_gini_data('pow')
 epochs_minotaur, gini_minotaur = get_gini_data('minotaur')
 epochs_topostake, gini_topostake = get_gini_data('topostake')
+epochs_topostake_omega, gini_topostake_omega = get_gini_data('topostake_omega_0.5')
 
 # To align axes, find overlapping epochs or just plot them against their respective epoch arrays
 # --- 绘图 ---
@@ -38,6 +42,12 @@ if len(epochs_topostake) > 0:
     ax.plot(epochs_topostake, gini_topostake, label='TopoStake (Ours)', 
             color=colors['topostake'], linestyle=linestyles['topostake'], 
             marker=markers['topostake'], markevery=max(1, len(epochs_topostake)//20), markersize=8)
+
+# 绘制 TopoStake omega=0.5 (添加的新线，使用不同的线型或标记)
+if len(epochs_topostake_omega) > 0:
+    ax.plot(epochs_topostake_omega, gini_topostake_omega, label='TopoStake ($\omega=0.5$)', 
+            color=colors['topostake'], linestyle='--', 
+            marker='x', markevery=max(1, len(epochs_topostake_omega)//20), markersize=8)
 
 # 绘制 PoS (红线)
 if len(epochs_pos) > 0:

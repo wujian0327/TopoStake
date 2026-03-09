@@ -89,6 +89,14 @@ struct Args {
     #[clap(long, default_value = "8")]
     wallet_seed: u64,
 
+    /// TopoStake的omega参数 (Omega parameter for TopoStake)
+    #[clap(long, default_value = "1.0")]
+    omega: f64,
+
+    /// TopoStake的beta参数 (Beta parameter for TopoStake)
+    #[clap(long, default_value = "0.5")]
+    beta: f64,
+
     /// 最大运行Epoch数 (Max epochs to run)
     /// 当达到此Epoch数时，程序将自动退出
     #[clap(long, default_value = "100")]
@@ -126,6 +134,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         args.base_reward,
         args.max_tx_per_block,
         args.wallet_seed,
+        args.omega,
+        args.beta,
         args.max_epochs,
         args.metrics_prefix,
     )

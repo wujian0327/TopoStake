@@ -12,7 +12,7 @@ from plot_style import get_project_root
 project_root = get_project_root()
 
 def get_unstable_throughput(alg):
-    u_values = [0, 10, 20, 30]
+    u_values = [0, 10, 20, 30,40, 50]
     results = []
     for u in u_values:
         n = 100 - u
@@ -25,17 +25,9 @@ def get_unstable_throughput(alg):
                  results.append(np.nan)
                  continue
             df = pd.read_csv(file)
-            if 'tx_count' in df.columns and 'timestamp' in df.columns:
-                valid_df = df[df['tx_count'] > 0]
-                if not valid_df.empty:
-                    total_tx = valid_df['tx_count'].sum()
-                    total_time = valid_df['timestamp'].max() - df['timestamp'].min()
-                    if total_time > 0:
-                        results.append(total_tx / total_time)
-                    else:
-                        results.append(np.nan)
-                else:
-                    results.append(np.nan)
+            if 'throughput' in df.columns:
+                valid_data = df[df['throughput'] > 0]
+                results.append(valid_data['throughput'].mean() if not valid_data.empty else np.nan)
             else:
                 results.append(np.nan)
         except Exception:
@@ -65,13 +57,13 @@ format_axes(ax,
             xlabel='Unstable Node Rate (%)', 
             ylabel='Throughput (Tx/s)')
 
-ax.set_ylim(0, 120) 
-ax.set_xlim(0, 31)
-ax.set_xticks(np.arange(0, 35, 10))
+ax.set_ylim(40, 110) 
+ax.set_xlim(0, 51)
+ax.set_xticks(np.arange(0, 55, 10))
 
 # 图例位置
-ax.legend(fontsize=24, loc='best', frameon=True, fancybox=False, edgecolor='black', framealpha=0.95)
+ax.legend(fontsize=24, loc='lower left', frameon=True, fancybox=False, edgecolor='black', framealpha=0.95)
 
 format_figure(fig)
-plt.savefig('figures/unstable.png', dpi=300, bbox_inches='tight')
+plt.savefig(os.path.join(project_root, 'figures', 'unstable.png'), dpi=300, bbox_inches='tight')
 # plt.show()

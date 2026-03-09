@@ -9,25 +9,23 @@ use std::collections::HashMap;
 pub struct TopoStakeConsensus {
     d: usize,
     base_reward: f64,
-    // Temporal smoothing state: Score(n,t) for each node
     score_history: HashMap<String, f64>,
-    // Parameters for contribution calculation
-    alpha: f64,
+    beta: f64,
     k_sat: f64,
     k_base: f64,
     omega: f64,
 }
 
 impl TopoStakeConsensus {
-    pub fn new(initial_d: usize, base_reward: f64) -> Self {
+    pub fn new(initial_d: usize, base_reward: f64, omega: f64, beta: f64) -> Self {
         TopoStakeConsensus {
             d: initial_d,
             base_reward,
             score_history: HashMap::new(),
-            alpha: 0.5,  // EMA factor: smaller alpha = longer memory
+            beta,        // EMA factor: smaller beta = longer memory
             k_sat: 1.0,  // Saturation scale
             k_base: 1.0, // Saturation base
-            omega: 1.0,
+            omega,
         }
     }
 
@@ -193,7 +191,7 @@ impl TopoStakeConsensus {
     }
 
     /// Update temporal score history using EMA
-    /// Score(n,t) = alpha * C_slot(n,t) + (1 - alpha) * Score(n,t-1)
+    /// Score(n,t) = beta * C_slot(n,t) + (1 - beta) * Score(n,t-1)
     fn update_score_history(
         &mut self,
         slot_contribution: &HashMap<String, f64>,
@@ -203,7 +201,7 @@ impl TopoStakeConsensus {
             let current_slot = slot_contribution.get(&validator.address).unwrap_or(&0.0);
             let previous_score = self.score_history.get(&validator.address).unwrap_or(&0.0);
 
-            let new_score = self.alpha * current_slot + (1.0 - self.alpha) * previous_score;
+            let new_score = self.beta * current_slot + (1.0 - self.beta) * previous_score;
             self.score_history
                 .insert(validator.address.clone(), new_score);
         }
@@ -261,7 +259,10 @@ impl Consensus for TopoStakeConsensus {
     }
 
     fn state_summary(&self) -> String {
-        format!("pog(D={}_omega={:.2})", self.d, self.omega)
+        format!(
+            "pog(D={}_omega={:.2}_beta={:.2})",
+            self.d, self.omega, self.beta
+        )
     }
 
     fn distribute_rewards(
@@ -270,22 +271,15 @@ impl Consensus for TopoStakeConsensus {
         validators: &mut [Validator],
         nodes_index: HashMap<String, u32>,
     ) {
-        // POG: 根据论文的两层奖励分配机�?
-        // �?层：矿工直接获得交易费的一部分
-        // �?层：剩余费用按网络贡献（虚拟股份）分配给所有验证�?
-
         let block_reward = self.base_reward;
-        // 计算本块总费�?
         let total_fees: f64 = block.body.transactions.iter().map(|tx| tx.fee).sum();
 
-        // 计算路径统计用于奖励惩罚
         let paths: Vec<Vec<String>> = block.get_all_paths();
         if paths.is_empty() {
             info!(
                 "POG: No paths in block {}, miner gets all fees {:.6}",
                 block.header.index, total_fees
             );
-            // 如果没有路径，矿工获得所有费�?
             if let Some(validator) = validators
                 .iter_mut()
                 .find(|v| v.address == block.header.miner)
@@ -307,7 +301,6 @@ impl Consensus for TopoStakeConsensus {
             .sum::<f64>()
             / paths.len() as f64;
 
-        // 计算惩罚因子：P(B) = (D / L_avg)^2，当 L_avg > D �?
         let penalty_factor = if avg_path_length > self.d as f64 {
             let ratio = self.d as f64 / avg_path_length;
             ratio * ratio
@@ -319,7 +312,6 @@ impl Consensus for TopoStakeConsensus {
             "POG: rewards distribution - total_fees={:.6}, avg_path_length={:.2}, penalty_factor={:.6}",
             total_fees, avg_path_length, penalty_factor
         );
-        // 重新计算虚拟股份进行分配
         let s_real_map: HashMap<String, f64> = validators
             .iter()
             .map(|v| (v.address.clone(), v.stake))
@@ -329,10 +321,8 @@ impl Consensus for TopoStakeConsensus {
         let virtual_stake_map =
             self.cal_virtual_stake(&s_real_map, &normalized_stake, &normalized_contribution);
 
-        // �?层：矿工奖励 = 0.5 * total_fees * penalty_factor
         let miner_share = block_reward + 0.5 * total_fees * penalty_factor;
 
-        // 矿工获得挖矿费用
         if let Some(validator) = validators
             .iter_mut()
             .find(|v| v.address == block.header.miner)
@@ -346,10 +336,8 @@ impl Consensus for TopoStakeConsensus {
             );
         }
 
-        // �?层：网络费用�?= total_fees * (1 - 0.5 * penalty_factor)
         let network_pool = total_fees * (1.0 - 0.5 * penalty_factor);
 
-        // 按虚拟股份分配网络费用池
         for validator in validators.iter_mut() {
             if validator.address == block.header.miner {
                 continue;
@@ -425,7 +413,7 @@ mod tests {
         let miner_v = Validator::new(miner.address, 4.0, 1.0);
         let validators = vec![v1, v2, v3, miner_v];
 
-        let mut pog = TopoStakeConsensus::new(3, 1.0);
+        let mut pog = TopoStakeConsensus::new(3, 1.0, 1.0, 0.5);
 
         // Test with pure PoS (omega = 0)
         pog.set_omega(0.0);
@@ -458,6 +446,3 @@ mod tests {
         assert!((sum - 1.0).abs() < 1e-6, "Virtual stakes should sum to 1");
     }
 }
-
-
-

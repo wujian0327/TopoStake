@@ -39,6 +39,8 @@ pub async fn start_network(
     base_reward: f64,
     max_tx_per_block: usize,
     wallet_seed: u64,
+    omega: f64,
+    beta: f64,
     max_epochs: u64,
     metrics_prefix: String,
 ) {
@@ -58,6 +60,8 @@ pub async fn start_network(
         slot_per_epoch,
         pow_difficulty,
         pow_max_threads,
+        omega,
+        beta,
         base_reward,
         node_num,
         trans_num_per_second,
