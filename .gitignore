@@ -11,3 +11,4 @@ blockchain.json
 __pycache__/
 .github/
 back/*
+*.pdf

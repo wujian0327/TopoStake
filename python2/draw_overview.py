@@ -50,6 +50,21 @@ def label(ax, x, y, text, fs=7.5, color=text_dark, fw='normal', fst='normal'):
     ax.text(x, y, text, ha='center', va='center', fontsize=fs,
             color=color, fontweight=fw, fontstyle=fst, fontfamily='serif', zorder=5)
 
+
+def draw_route_entry(ax, x, y, w, h, title, left_text, right_text,
+                     fc=white, ec=blue_mid, tc=text_dark):
+    box = FancyBboxPatch((x - w / 2, y - h / 2), w, h,
+                         boxstyle='round,pad=0.05',
+                         facecolor=fc, edgecolor=ec, linewidth=1.2, zorder=4)
+    ax.add_patch(box)
+    ax.plot([x, x], [y - h / 2, y + h / 2], color=ec, linewidth=1.0, zorder=5)
+    ax.text(x, y + h / 2 + 0.12, title, ha='center', va='bottom', fontsize=6.7,
+            color=ec, fontweight='bold', fontfamily='serif', zorder=5)
+    ax.text(x - w * 0.25, y, left_text, ha='center', va='center', fontsize=6.2,
+            color=tc, fontfamily='serif', zorder=5)
+    ax.text(x + w * 0.25, y, right_text, ha='center', va='center', fontsize=6.2,
+            color=tc, fontfamily='serif', zorder=5)
+
 # ====================================================================
 # TOP: Steps 2 → 3 → 4
 # ====================================================================
@@ -128,6 +143,15 @@ draw_arrow(ax, 8.18, ny, 9.22, ny, lw=1.6)
 # Dots between vi and v_{m-1}
 for dx in [5.85, 6.1, 6.35]:
     ax.plot(dx, ny, 'o', color=gray_bdr, markersize=4, zorder=3)
+
+# Route-entry hints for Step 1
+draw_route_entry(ax, 1.85, 0.02, 1.05, 0.38, r'$r_0$', r'$v_1$', r'$\sigma_0$')
+draw_route_entry(ax, 4.0, 0.02, 1.05, 0.38, r'$r_1$', r'$v_i$', r'$\sigma_1$')
+draw_route_entry(ax, 8.7, 0.02, 1.25, 0.38, r'$r_{m-1}$', r'$v_m$', r'$\sigma_{m-1}$')
+label(ax, 5.1, 0.42, r'Route array $R$ grows hop by hop', fs=7.4,
+      color=blue_mid, fst='italic')
+label(ax, 5.1, -1.35, 'Chained-signature verifiable path', fs=8.2,
+      color=green, fw='bold', fst='italic')
 
 # (Step 1) label
 label(ax, 3.95, -0.55, '(Step 1)', fs=8, color=green, fw='bold')
