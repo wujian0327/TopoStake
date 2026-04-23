@@ -9,7 +9,8 @@ set_plot_style('paper')
 colors, linestyles, markers = get_colors_and_styles()
 
 # 图 1: Throughput (吞吐量)
-fig, ax = plt.subplots(figsize=(10, 8))  # 调整尺寸以适应大字体
+fig, (ax1, ax2) = plt.subplots(2, 1, sharex=True, figsize=(10, 8), gridspec_kw={'height_ratios': [2, 1]})
+fig.subplots_adjust(hspace=0.1)
 
 N = np.array([50, 100, 150, 200, 250, 300])
 
@@ -49,30 +50,48 @@ tps_pos = calculate_throughput('pos')
 tps_minotaur = calculate_throughput('minotaur')
 tps_pow = calculate_throughput('pow')
 
-ax.plot(N, tps_topostake, 
-        marker=markers['topostake'], linestyle=linestyles['topostake'], color=colors['topostake'], 
-        label='TopoStake (Ours)')
+for ax in (ax1, ax2):
+    ax.plot(N, tps_topostake, 
+            marker=markers['topostake'], linestyle=linestyles['topostake'], color=colors['topostake'], 
+            label='TopoStake (Ours)')
 
-ax.plot(N, tps_pos, 
-        marker=markers['pos'], linestyle=linestyles['pos'], color=colors['pos'], 
-        label='PoS')
+    ax.plot(N, tps_pos, 
+            marker=markers['pos'], linestyle=linestyles['pos'], color=colors['pos'], 
+            label='PoS')
 
-ax.plot(N, tps_minotaur, 
-        marker=markers['minotaur'], linestyle=linestyles['minotaur'], color=colors['minotaur'], 
-        label='Minotaur')
+    ax.plot(N, tps_minotaur, 
+            marker=markers['minotaur'], linestyle=linestyles['minotaur'], color=colors['minotaur'], 
+            label='Minotaur')
 
-ax.plot(N, tps_pow, 
-        marker=markers['pow'], linestyle=linestyles['pow'], color=colors['pow'], 
-        label='PoW')
+    ax.plot(N, tps_pow, 
+            marker=markers['pow'], linestyle=linestyles['pow'], color=colors['pow'], 
+            label='PoW')
+
+# Set specific ylim for each subplot to create a broken axis
+ax1.set_ylim(88, 102)
+ax2.set_ylim(45, 58)
+
+# Hide spines to create jump
+ax1.spines['bottom'].set_visible(False)
+ax2.spines['top'].set_visible(False)
+ax1.xaxis.tick_top()
+ax1.tick_params(labeltop=False)  # keep labels at the bottom ax2 only
+ax2.xaxis.tick_bottom()
+
+# Plot the break marks
+d = .015
+kwargs = dict(marker=[(-1, -d), (1, d)], markersize=15,
+              linestyle="none", color='k', mec='k', mew=1.5, clip_on=False)
+ax1.plot([0, 1], [0, 0], transform=ax1.transAxes, **kwargs)
+ax2.plot([0, 1], [1, 1], transform=ax2.transAxes, **kwargs)
 
 # 使用统一的格式化函数
-format_axes(ax, 
-            xlabel='Network Size ($N$)', 
-            ylabel='Throughput (tx/s)', 
-           )
+format_axes(ax1, xlabel='', ylabel='')
+format_axes(ax2, xlabel='Network Size ($N$)', ylabel='')
 
-ax.set_ylim(40, 110) 
-ax.legend(fontsize=24, loc='best', frameon=True, fancybox=False, edgecolor='black', framealpha=0.95)
+fig.supylabel('Throughput (tx/s)', fontsize=28, x=0.02)
+
+ax1.legend(fontsize=24, loc='best', frameon=True, fancybox=False, edgecolor='black', framealpha=0.95)
 format_figure(fig)
 
 plt.savefig(os.path.join(project_root, 'figures', 'throughput_n.png'), dpi=300, bbox_inches='tight')
