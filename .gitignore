@@ -12,3 +12,4 @@ __pycache__/
 .github/
 back/*
 !/result/*
+*.pdf
