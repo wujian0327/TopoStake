@@ -75,4 +75,5 @@ ax.yaxis.set_major_formatter(FuncFormatter(lambda y, _: '{:g}'.format(y)))
 format_figure(fig)
 
 plt.savefig(os.path.join(project_root, 'figures', 'latency.png'), dpi=300, bbox_inches='tight')
+plt.savefig(os.path.join(project_root, 'figures', 'latency.pdf'), dpi=300, bbox_inches='tight')
 # plt.show()

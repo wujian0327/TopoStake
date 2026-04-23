@@ -213,6 +213,6 @@ os.makedirs(figures_dir, exist_ok=True)
 
 plt.savefig(os.path.join(figures_dir, 'topology_comparison.png'), dpi=400, bbox_inches='tight',
             facecolor='white', edgecolor='none')
-# plt.savefig(os.path.join(figures_dir, 'topology_comparison.pdf'), dpi=400, bbox_inches='tight',
-            # facecolor='white', edgecolor='none')
+plt.savefig(os.path.join(figures_dir, 'topology_comparison.pdf'), dpi=400, bbox_inches='tight',
+            facecolor='white', edgecolor='none')
 print("Done!")

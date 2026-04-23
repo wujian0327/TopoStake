@@ -71,4 +71,5 @@ ax.legend(fontsize=22, loc='upper left', frameon=True, fancybox=False, edgecolor
 format_figure(fig)
 
 plt.savefig(os.path.join(project_root, 'figures', 'transaction.png'), dpi=300, bbox_inches='tight')
+plt.savefig(os.path.join(project_root, 'figures', 'transaction.pdf'), dpi=300, bbox_inches='tight')
 # plt.show()

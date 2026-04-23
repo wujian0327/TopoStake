@@ -95,4 +95,5 @@ ax1.legend(fontsize=24, loc='best', frameon=True, fancybox=False, edgecolor='bla
 format_figure(fig)
 
 plt.savefig(os.path.join(project_root, 'figures', 'throughput_n.png'), dpi=300, bbox_inches='tight')
+plt.savefig(os.path.join(project_root, 'figures', 'throughput_n.pdf'), dpi=300, bbox_inches='tight')
 # plt.show()
