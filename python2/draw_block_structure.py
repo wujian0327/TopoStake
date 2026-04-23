@@ -164,7 +164,7 @@ det_cw = 1.35
 det_gap = 0.07
 
 # Zoom label
-lab(ax, 1.0, 0.15, 'Path structure of $p_k$:', fs=7.5, tc=green, fw='bold', ha='left')
+lab(ax, 1.0, 0.15, 'Path Record of $p_k$:', fs=7.5, tc=green, fw='bold', ha='left')
 
 # Detail outer frame
 det_frame = FancyBboxPatch((0.8, det_y - 0.12), 9.05, det_h + 0.24,
@@ -175,58 +175,58 @@ ax.add_patch(det_frame)
 # Cells inside
 det_x = 1.1
 det_items = [
-    ('$\\sigma_{agg}^k$',  purple_lt, purple,  '\nBLS aggregate\nsignature'),
+    ('$\\sigma_{agg}^k$',  purple_lt, purple,  '\nBLS Aggregate\nSignature'),
     ('$v_0$',              sky_lt,    blue_mid, None),
     ('$v_1$',              sky_lt,    blue_mid, None),
     (None,                 None,      None,     None),  # dots
     ('$v_{m-1}$',          sky_lt,    blue_mid, None),
-    ('$v_m$',              blue_bg,   navy,     None),
+]
+
+v0_x = det_x + 1 * (det_cw + det_gap)
+v1_x = det_x + 2 * (det_cw + det_gap) + 0.6
+vm1_x = det_x + 7.1
+dots_x = (v1_x + vm1_x) / 2
+
+det_positions = [
+    det_x,
+    v0_x,
+    v1_x,
+    dots_x,
+    vm1_x,
 ]
 
 positions = []
 for i, (txt, fc, ec, annot) in enumerate(det_items):
-    x = det_x + i * (det_cw + det_gap)
+    x = det_positions[i]
     if fc is None:
         lab(ax, x + det_cw/2, det_y + det_h/2, '...', fs=9, tc=gray)
-        # arrows between dots
     else:
         cell(ax, x, det_y, det_cw, det_h, fc, ec, txt, fs=7.5, lw=1.2)
         if annot:
             lab(ax, x + det_cw/2, det_y - 0.40, annot, fs=7.5, tc=ec, fst='italic')
     positions.append(x)
 
-# Small arrows between relay nodes (v0 → v1 → ... → vm)
-for i in [1, 2]:  # v0→v1, v1→...
-    x1 = positions[i] + det_cw + 0.01
-    x2 = positions[i+1] + 0.01
-    if i == 2:
-        x2 = positions[i+1] + det_cw/2 - 0.15
-    arrow(ax, x1, det_y + det_h/2, x2, det_y + det_h/2,
-          color=gray, lw=0.8)
-
-# Arrow from dots to v_{m-1}
-arrow(ax, positions[3] + det_cw/2 + 0.2, det_y + det_h/2,
+# Small arrows between relay nodes (v0 → v1 → ... → v_{m-1})
+arrow(ax, positions[1] + det_cw + 0.01, det_y + det_h/2,
+      positions[2] + 0.01, det_y + det_h/2, color=gray, lw=0.8)
+arrow(ax, positions[2] + det_cw + 0.01, det_y + det_h/2,
+      positions[3] + det_cw/2 - 0.18, det_y + det_h/2, color=gray, lw=0.8)
+arrow(ax, positions[3] + det_cw/2 + 0.16, det_y + det_h/2,
       positions[4] + 0.01, det_y + det_h/2, color=gray, lw=0.8)
-
-# Arrow from v_{m-1} to v_m
-arrow(ax, positions[4] + det_cw + 0.01, det_y + det_h/2,
-      positions[5] + 0.01, det_y + det_h/2, color=gray, lw=0.8)
 
 # Brace under relay nodes
 brace_y = det_y - 0.4
 bx_left = positions[1] + det_cw/2
-bx_right = positions[5] + det_cw/2
+bx_right = positions[4] + det_cw/2
 ax.plot([bx_left, bx_right], [brace_y, brace_y], color=green, lw=0.8)
 ax.plot([bx_left, bx_left], [brace_y, brace_y+0.08], color=green, lw=0.8)
 ax.plot([bx_right, bx_right], [brace_y, brace_y+0.08], color=green, lw=0.8)
 bx_mid = (bx_left + bx_right) / 2
 ax.plot([bx_mid, bx_mid], [brace_y, brace_y-0.08], color=green, lw=0.8)
 
-lab(ax, bx_mid, brace_y - 0.25,
-    'relay sequence ($v_0$: origin  $\\rightarrow$  $v_m$: proposer)',
-    fs=8, tc=text_dark, fst='italic')
+lab(ax, bx_mid, brace_y - 0.3, 'Signing-node Sequence', fs=8, tc=text_dark, fst='italic')
 
-# Separator line between σ and relay sequence
+# Separator line between σ and signing-node sequence
 sep_x = positions[0] + det_cw + det_gap/2
 ax.plot([sep_x, sep_x], [det_y + 0.05, det_y + det_h - 0.05],
         color=gray, lw=0.6, linestyle=':')
@@ -237,5 +237,7 @@ figures_dir = os.path.join(project_root, 'figures')
 os.makedirs(figures_dir, exist_ok=True)
 
 plt.savefig(os.path.join(figures_dir, 'block_structure.png'), dpi=600, bbox_inches='tight',
+            facecolor='white', edgecolor='none')
+plt.savefig(os.path.join(figures_dir, 'block_structure.pdf'), bbox_inches='tight',
             facecolor='white', edgecolor='none')
 print("Done!")
