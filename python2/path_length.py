@@ -1,5 +1,6 @@
 import os
 from matplotlib import pyplot as plt
+from matplotlib.ticker import MaxNLocator
 import numpy as np
 from plot_style import get_project_root, set_plot_style, get_colors_and_styles, format_axes, format_figure
 import pandas as pd
@@ -51,12 +52,12 @@ path_minotaur, err_minotaur = calculate_path_stats('minotaur')
 path_pow, err_pow = calculate_path_stats('pow')
 
 # --- 绘图 ---
-fig, ax = plt.subplots(figsize=(10, 8))
+fig, ax = plt.subplots(figsize=(10, 6.8))
 
 # TopoStake
 ax.plot(N, path_topostake, 
         marker=markers['topostake'], linestyle=linestyles['topostake'], color=colors['topostake'], 
-        label='TopoStake (Ours)')
+        label='TopoStake')
 # ax.fill_between(N, path_topostake - err_topostake, path_topostake + err_topostake, 
 #                 color=colors['topostake'], alpha=0.2)
 
@@ -80,10 +81,18 @@ ax.plot(N, path_pow,
 
 format_axes(ax, 
             xlabel='Network Size ($N$)', 
-            ylabel='Avg. Propagation Hops',)
+            ylabel='Avg. Path Hops',)
+
+ax.set_xlabel('Network Size ($N$)', fontweight='bold')
+ax.set_ylabel('Avg. Path Hops', fontweight='bold')
+
+# Reduce y-axis tick density for better readability.
+ax.yaxis.set_major_locator(MaxNLocator(nbins=5))
 
 ax.legend(fontsize=22, loc='best', frameon=True, fancybox=False, edgecolor='black', framealpha=0.95)
 format_figure(fig)
+fig.subplots_adjust(left=0.11, right=0.985, bottom=0.13, top=0.975)
 
-plt.savefig(os.path.join(project_root, 'figures', 'path_length_n.png'), dpi=300, bbox_inches='tight')
+plt.savefig(os.path.join(project_root, 'figures', 'path_length_n.png'), dpi=300)
+plt.savefig(os.path.join(project_root, 'figures', 'path_length_n.pdf'), dpi=300)
 # plt.show()

@@ -44,7 +44,7 @@ confirmed_minotaur = calculate_throughput('minotaur')
 confirmed_pow = calculate_throughput('pow')
 
 
-fig, ax = plt.subplots(figsize=(10, 8))
+fig, ax = plt.subplots(figsize=(10, 6.8))
 
 ax.plot(input_rate, confirmed_topostake, 
         marker=markers['topostake'], linestyle=linestyles['topostake'], color=colors['topostake'], 
@@ -64,7 +64,7 @@ ax.plot(input_rate, confirmed_pow,
 
 format_axes(ax, 
             xlabel='Input Transaction Rate (tx/s)', 
-            ylabel='Confirmed Throughput (tx/s)')
+            ylabel='Throughput (tx/s)')
 
 ax.set_ylim(0, 250)
 ax.legend(fontsize=22, loc='upper left', frameon=True, fancybox=False, edgecolor='black', framealpha=0.95)

@@ -111,4 +111,5 @@ ax.legend(fontsize=20, loc='best', frameon=True, fancybox=False, edgecolor='blac
 format_figure(fig)
 
 plt.savefig('figures/gini_evolution_realistic.png', dpi=300, bbox_inches='tight')
+plt.savefig('figures/gini_evolution_realistic.pdf', dpi=300, bbox_inches='tight')
 # plt.show()

@@ -45,14 +45,14 @@ topo_pos = calculate_throughput('pos')
 topo_minotaur = calculate_throughput('minotaur')
 topo_pow = calculate_throughput('pow')
 
-fig, ax = plt.subplots(figsize=(10, 8))
+fig, ax = plt.subplots(figsize=(10, 6.8))
 
 # 绘制柱状图 (Grouped Bar Chart)
 x = np.arange(len(topologies))  # label locations
 width = 0.2  # the width of the bars
 
 # Offsets for 4 bars centered around x
-rects1 = ax.bar(x - 1.5*width, topo_topostake, width, label='TopoStake (Ours)', 
+rects1 = ax.bar(x - 1.5*width, topo_topostake, width, label='TopoStake', 
                 color=colors['topostake'], edgecolor='black', hatch=markers['topostake']*2) # hatch optional, using marker symbol as pattern if possible or just standard hatches
 # simplify hatch for bars to classic patterns if markers are specific shapes
 # Let's just use colors and standard hatches for distinction in bar charts usually
@@ -72,14 +72,16 @@ format_axes(ax,
             ylabel='Throughput (tx/s)')
 
 # 设置Y轴范围
-ax.set_ylim(0, 145) # slightly higher for bars labels if needed
+ax.set_ylim(20, 115) # slightly higher for bars labels if needed
 
 # 调整X轴标签
 ax.set_xticks(x)
-ax.set_xticklabels(display_topologies, fontsize=20)
+ax.set_xticklabels(display_topologies, fontsize=18)
 
-ax.legend(fontsize=20, loc='upper right', frameon=True, fancybox=False, edgecolor='black', framealpha=0.95)
+ax.legend(fontsize=18, loc='upper center', ncol=4, frameon=True, fancybox=False, edgecolor='black', framealpha=0.95)
 format_figure(fig)
+fig.subplots_adjust(left=0.11, right=0.985, bottom=0.13, top=0.975)
 
-plt.savefig(os.path.join(project_root, 'figures', 'topology_thoughput.png'), dpi=300, bbox_inches='tight')
+plt.savefig(os.path.join(project_root, 'figures', 'topology_thoughput.png'), dpi=300)
+plt.savefig(os.path.join(project_root, 'figures', 'topology_thoughput.pdf'), dpi=300)
 # plt.show()

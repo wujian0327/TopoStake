@@ -20,7 +20,8 @@ def set_plot_style(style_name='paper'):
             - 'compact': 紧凑风格（字体小：9-12pt）
     """
     plt.style.use('seaborn-v0_8-whitegrid')
-    plt.rcParams['font.sans-serif'] = ['SimHei', 'DejaVu Sans']
+    # plt.rcParams['font.sans-serif'] = ['SimHei', 'DejaVu Sans']
+    plt.rcParams['font.sans-serif'] = ["Times New Roman", "Times", "DejaVu Serif"]
     plt.rcParams['axes.unicode_minus'] = False
     plt.rcParams['figure.dpi'] = 100
     plt.rcParams['savefig.dpi'] = 300

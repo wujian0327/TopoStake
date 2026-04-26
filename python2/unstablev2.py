@@ -12,7 +12,7 @@ from plot_style import get_project_root
 project_root = get_project_root()
 
 def get_unstable_throughput(alg):
-    u_values = [0, 10, 20, 30,40, 50]
+    u_values = [0, 10, 20, 30, 40, 50]
     results = []
     for u in u_values:
         n = 100 - u
@@ -22,8 +22,8 @@ def get_unstable_throughput(alg):
             file = os.path.join(project_root, f'result/unstable{u}_{alg}_n_{n}_t_100_ba.csv')
         try:
             if not os.path.exists(file):
-                 results.append(np.nan)
-                 continue
+                results.append(np.nan)
+                continue
             df = pd.read_csv(file)
             if 'throughput' in df.columns:
                 valid_data = df[df['throughput'] > 0]
@@ -33,7 +33,6 @@ def get_unstable_throughput(alg):
         except Exception:
             results.append(np.nan)
     return np.array(u_values), np.array(results)
-
 
 def get_unstable_throughput_beta1_topostake():
     u_values = [0, 10, 20, 30, 40, 50]
@@ -59,41 +58,95 @@ def get_unstable_throughput_beta1_topostake():
             results.append(np.nan)
     return np.array(u_values), np.array(results)
 
+def to_retention(values):
+    """
+    Convert absolute throughput to throughput retention (%),
+    normalized by the zero-churn value.
+    """
+    values = np.array(values, dtype=float)
+    if len(values) == 0 or np.isnan(values[0]) or values[0] == 0:
+        return np.full_like(values, np.nan)
+    return values / values[0] * 100.0
+
+
+# --- 读取数据 ---
 u_vals, tps_topo = get_unstable_throughput('topostake')
 _, tps_topo_beta1 = get_unstable_throughput_beta1_topostake()
 _, tps_pos = get_unstable_throughput('pos')
 _, tps_min = get_unstable_throughput('minotaur')
 # _, tps_pow = get_unstable_throughput('pow')
 
+# --- 转换为 Retention ---
+ret_topo = to_retention(tps_topo)
+ret_topo_beta1 = to_retention(tps_topo_beta1)
+ret_pos = to_retention(tps_pos)
+ret_min = to_retention(tps_min)
+
 # --- 绘图 ---
-fig, ax = plt.subplots(figsize=(10, 8))
+fig, ax = plt.subplots(figsize=(10, 6.8))
 
-ax.plot(u_vals, tps_topo_beta1,
-    label='TopoStake ($\\beta=1.0$)', color='#1f77b4', marker='D', linestyle='--'
-    )
-ax.plot(u_vals, tps_topo, 
-        label='TopoStake ($\\beta=0.5$)', color=colors['topostake'], marker=markers['topostake'], linestyle=linestyles['topostake'])
+# ax.plot(
+#     u_vals, ret_topo_beta1,
+#     label='TopoStake w/o EMA',
+#     color='#1f77b4',
+#     marker='D',
+#     linestyle='--'
+# )
 
-ax.plot(u_vals, tps_pos, 
-        label='PoS', color=colors['pos'], marker=markers['pos'], linestyle=linestyles['pos'])
+ax.plot(
+    u_vals, ret_topo,
+    label='TopoStake',
+    color=colors['topostake'],
+    marker=markers['topostake'],
+    linestyle=linestyles['topostake']
+)
 
-ax.plot(u_vals, tps_min, 
-        label='Minotaur', color=colors['minotaur'], marker=markers['minotaur'], linestyle=linestyles['minotaur'])
+ax.plot(
+    u_vals, ret_pos,
+    label='PoS',
+    color=colors['pos'],
+    marker=markers['pos'],
+    linestyle=linestyles['pos']
+)
 
+ax.plot(
+    u_vals, ret_min,
+    label='Minotaur',
+    color=colors['minotaur'],
+    marker=markers['minotaur'],
+    linestyle=linestyles['minotaur']
+)
 
-# 设置轴
-format_axes(ax, 
-            xlabel='Unstable Node Rate (%)', 
-            ylabel='Throughput (Tx/s)')
+# --- 设置轴 ---
+format_axes(
+    ax,
+)
 
-ax.set_ylim(50, 105) 
+# Keep axis titles bold, while tick numbers remain regular.
+ax.set_xlabel('Fraction of Unstable Validators (%)', fontweight='bold')
+ax.set_ylabel('Throughput Retention (%)', fontweight='bold')
+
+ax.set_ylim(60, 102)
 ax.set_xlim(0, 51)
-ax.set_xticks(np.arange(0, 55, 10))
+ax.set_xticks(np.arange(0, 55, 15))
+ax.set_yticks(np.arange(60, 105, 10))
 
 # 图例位置
-ax.legend(fontsize=24, loc='lower left', frameon=True, fancybox=False, edgecolor='black', framealpha=0.95)
+ax.legend(
+    fontsize=24,
+    loc='best',
+    frameon=True,
+    fancybox=False,
+    edgecolor='black',
+    framealpha=0.95
+)
 
 format_figure(fig)
-plt.savefig(os.path.join(project_root, 'figures', 'unstable.png'), dpi=300, bbox_inches='tight')
-plt.savefig(os.path.join(project_root, 'figures', 'unstable.pdf'), dpi=300, bbox_inches='tight')
+fig.subplots_adjust(left=0.11, right=0.985, bottom=0.13, top=0.975)
+
+plt.savefig(os.path.join(project_root, 'figures', 'unstable.png'),
+            dpi=300)
+plt.savefig(os.path.join(project_root, 'figures', 'unstable.pdf'),
+            dpi=300)
+
 # plt.show()

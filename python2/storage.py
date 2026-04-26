@@ -69,5 +69,6 @@ ax.legend(fontsize=22, loc='upper left', frameon=True, fancybox=False, edgecolor
 
 format_figure(fig)
 plt.savefig(os.path.join(project_root, 'figures', 'block_size_impact.png'), dpi=300, bbox_inches='tight')
+plt.savefig(os.path.join(project_root, 'figures', 'block_size_impact.pdf'), dpi=300, bbox_inches='tight')
 
 # plt.show()

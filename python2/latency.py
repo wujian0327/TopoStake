@@ -41,7 +41,7 @@ labels = ['TopoStake\n(Ours)', 'PoS', 'Minotaur', 'PoW']
 plot_colors = [colors['topostake'], colors['pos'], colors['minotaur'], colors['pow']]
 
 # --- 2. 绘制箱线图 ---
-fig, ax = plt.subplots(figsize=(10, 8))
+fig, ax = plt.subplots(figsize=(10, 6.8))
 
 bplot = ax.boxplot(data, patch_artist=True, tick_labels=labels, 
                    notch=False, vert=True, showfliers=False, widths=0.6,

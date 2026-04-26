@@ -9,7 +9,7 @@ set_plot_style('paper')
 colors, linestyles, markers = get_colors_and_styles()
 
 # 图 1: Throughput (吞吐量)
-fig, (ax1, ax2) = plt.subplots(2, 1, sharex=True, figsize=(10, 8), gridspec_kw={'height_ratios': [2, 1]})
+fig, (ax1, ax2) = plt.subplots(2, 1, sharex=True, figsize=(10, 6.8), gridspec_kw={'height_ratios': [2, 1]})
 fig.subplots_adjust(hspace=0.1)
 
 N = np.array([50, 100, 150, 200, 250, 300])
@@ -89,9 +89,9 @@ ax2.plot([0, 1], [1, 1], transform=ax2.transAxes, **kwargs)
 format_axes(ax1, xlabel='', ylabel='')
 format_axes(ax2, xlabel='Network Size ($N$)', ylabel='')
 
-fig.supylabel('Throughput (tx/s)', fontsize=28, x=0.02)
+fig.supylabel('Throughput (tx/s)', fontsize=28, fontweight='bold', x=0.02)
 
-ax1.legend(fontsize=24, loc='best', frameon=True, fancybox=False, edgecolor='black', framealpha=0.95)
+ax1.legend(fontsize=24, loc='upper right', bbox_to_anchor=(0.52, 0.65), frameon=True, fancybox=False, edgecolor='black', framealpha=0.95)
 format_figure(fig)
 
 plt.savefig(os.path.join(project_root, 'figures', 'throughput_n.png'), dpi=300, bbox_inches='tight')
