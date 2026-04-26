@@ -42,7 +42,7 @@ epochs_topostake_omega_08, gini_topostake_omega_08 = get_gini_data('topostake_om
 
 # To align axes, find overlapping epochs or just plot them against their respective epoch arrays
 # --- 绘图 ---
-fig, ax = plt.subplots(figsize=(10, 8))
+fig, ax = plt.subplots(figsize=(10, 6.8))
 
 # 绘制 TopoStake (蓝线)
 if len(epochs_topostake) > 0:
