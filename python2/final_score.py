@@ -333,13 +333,13 @@ ax.add_patch(
 )
 
 # Region labels
-ax.text(2, 62, "Active Validators", fontsize=20, fontweight="bold", alpha=0.8)
-ax.text(61, 3, "Rich Validators", fontsize=20, fontweight="bold", alpha=0.8)
+ax.text(2, 62, "Active Validators", fontsize=21, fontweight="bold", alpha=0.8)
+ax.text(61, 3, "Rich Validators", fontsize=21, fontweight="bold", alpha=0.8)
 ax.annotate(
-    "Balance Validators",
+    "Balanced Validators",
     xy=(50, 50),
     xytext=(18, 18),
-    fontsize=20,
+    fontsize=21,
     fontweight="bold",
     alpha=0.85,
     arrowprops=dict(arrowstyle="->", lw=2.2, color="black")
@@ -384,7 +384,7 @@ ax.set_yticks(np.arange(0, 101, 20))
 
 ax.legend(
     loc='upper right',
-    fontsize=22,
+    fontsize=20,
     frameon=True,
     fancybox=False,
     edgecolor='black',
