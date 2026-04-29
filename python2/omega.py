@@ -333,23 +333,18 @@ def main() -> None:
         )
     )
 
-    epoch_path = RESULT_DIR / "omega_fairness_epochs_direct.csv"
-    summary_path = RESULT_DIR / "omega_fairness_summary_direct.csv"
-    epoch_df.to_csv(epoch_path, index=False)
-    summary_df.to_csv(summary_path, index=False)
-
     print(summary_df.to_string(index=False, float_format=lambda x: f"{x:.4f}"))
-    print(f"Saved epoch data: {epoch_path}")
-    print(f"Saved summary: {summary_path}")
 
     set_plot_style("paper")
     colors, linestyles, markers = get_colors_and_styles()
     fig, ax = plt.subplots(figsize=(10, 6.8))
+    fairness_mean_pct = summary_df["fairness_mean"] * 100.0
+    fairness_std_pct = summary_df["fairness_std"] * 100.0
 
     ax.errorbar(
         summary_df["omega"],
-        summary_df["fairness_mean"],
-        yerr=summary_df["fairness_std"],
+        fairness_mean_pct,
+        yerr=fairness_std_pct,
         marker=markers["topostake"],
         linestyle=linestyles["topostake"],
         color=colors["topostake"],
@@ -363,14 +358,14 @@ def main() -> None:
     format_axes(
         ax,
         xlabel=r"Mixing Parameter ($\omega$)",
-        ylabel="Fairness Score",
+        ylabel="Fairness Score (%)",
     )
     ax.set_xlim(-0.03, 1.03)
     ax.set_xticks(np.arange(0.0, 1.01, 0.2))
-    ax.set_ylim(0.25, 0.60)
-    ax.set_yticks([0.30, 0.40, 0.50, 0.60])
+    ax.set_ylim(25, 60)
+    ax.set_yticks([30, 40, 50, 60])
     ax.axhline(
-        y=0.40,
+        y=40,
         color="gray",
         linestyle="--",
         linewidth=1.5,
