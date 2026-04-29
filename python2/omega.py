@@ -22,7 +22,7 @@ from plot_style import (
 # =========================================================
 
 N = 100
-EPOCHS = 500
+EPOCHS = 200
 TX_PER_EPOCH = 100
 BA_M = 3
 TARGET_STAKE_GINI = 0.60
