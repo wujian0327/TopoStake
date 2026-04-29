@@ -1,12 +1,13 @@
-use crate::blockchain::block::Block;
+﻿use crate::blockchain::block::Block;
 use crate::blockchain::{BlockChainError, Blockchain};
 use crate::consensus::minotaur::MinotaurConsensus;
-use crate::consensus::pog::PogConsensus;
 use crate::consensus::pos::PosConsensus;
 use crate::consensus::pow::PowConsensus;
+use crate::consensus::topostake::TopoStakeConsensus;
 use crate::consensus::{Consensus, ConsensusType, RandaoSeed, Validator};
 use crate::metrics::{self, calculate_stake_concentration, SlotMetrics};
-use crate::network::message::{Message, MessageType};
+use crate::network::calculate_gini;
+use crate::network::message::Message;
 use crate::tools::get_timestamp;
 use crate::{consensus, tools};
 use log::{debug, error, info, warn};
@@ -35,6 +36,7 @@ pub struct WorldState {
     pub blockchain: Arc<RwLock<Blockchain>>,
     pub consensus: Box<dyn Consensus>,
     consensus_name: String,
+    metrics_filename: String,
     metrics_slots_file: Option<std::fs::File>,
     slot_duration: Duration,
     slot_per_epoch: u64,
@@ -43,6 +45,7 @@ pub struct WorldState {
     pub block_production_success: usize, // 成功出块数
     pub block_production_failed: usize,  // 失败出块数
     pub base_reward: f64,                // 所有共识的固定奖励
+    pub max_epochs: u64,                 // 最大运行Epoch数
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -64,14 +67,23 @@ impl WorldState {
         slot_per_epoch: u64,
         pow_difficulty: usize,
         pow_max_threads: usize,
+        omega: f64,
+        beta: f64,
         base_reward: f64,
+        node_num: u32,
+        trans_num: u32,
+        topology: String,
+        max_epochs: u64,
+        metrics_prefix: String,
     ) -> (Self, Sender<Message>, Receiver<Message>) {
         let (sender, receiver) = tokio::sync::mpsc::channel(4096);
         let nodes_sender: HashMap<String, Sender<Message>> = HashMap::new();
         let slot_duration = Duration::from_secs(slot_duration_secs);
         let consensus_name = consensus_type.to_string();
         let consensus: Box<dyn Consensus> = match consensus_type {
-            ConsensusType::POG => Box::new(PogConsensus::new(0, base_reward)),
+            ConsensusType::TopoStake => {
+                Box::new(TopoStakeConsensus::new(0, base_reward, omega, beta))
+            }
             ConsensusType::POS => Box::new(PosConsensus::new(base_reward)),
             ConsensusType::POW => Box::new(PowConsensus::new(
                 pow_difficulty,
@@ -79,10 +91,21 @@ impl WorldState {
                 slot_duration,
                 base_reward,
             )),
-            ConsensusType::MINOTAUR => Box::new(MinotaurConsensus::new(base_reward)),
+            ConsensusType::MINOTAUR => {
+                Box::new(MinotaurConsensus::new(base_reward, pow_max_threads))
+            }
         };
         // Initialize metrics files - delete old file and create new one
-        let metrics_filename = format!("metrics_slots_{}.csv", consensus_name);
+        let metrics_filename = match consensus_type {
+            ConsensusType::TopoStake => format!(
+                "{}_{}_n_{}_t_{}_{}_omega_{}_beta_{}.csv",
+                metrics_prefix, consensus_name, node_num, trans_num, topology, omega, beta
+            ),
+            _ => format!(
+                "{}_{}_n_{}_t_{}_{}.csv",
+                metrics_prefix, consensus_name, node_num, trans_num, topology
+            ),
+        };
         let _ = std::fs::remove_file(&metrics_filename); // 删除旧文件
         let metrics_slots_file = std::fs::OpenOptions::new()
             .create(true)
@@ -105,6 +128,7 @@ impl WorldState {
                 blockchain: Arc::new(RwLock::new(blockchain)),
                 consensus,
                 consensus_name,
+                metrics_filename,
                 metrics_slots_file,
                 slot_duration,
                 slot_per_epoch,
@@ -112,6 +136,7 @@ impl WorldState {
                 block_production_success: 0,
                 block_production_failed: 0,
                 base_reward,
+                max_epochs,
             },
             sender,
             receiver,
@@ -239,6 +264,11 @@ impl WorldState {
                 current_slot.current_epoch, index, stake
             );
         }
+
+        if current_slot.current_epoch + 1 >= self.max_epochs {
+            info!("Reached max epochs ({}), shutting down...", self.max_epochs);
+            std::process::exit(0);
+        }
     }
 
     pub async fn get_current_slot(&self) -> SlotManager {
@@ -259,15 +289,13 @@ impl WorldState {
             let blocks = &blockchain.blocks;
             if blocks.len() > 1 {
                 let prev_block_timestamp = blocks[blocks.len() - 2].header.timestamp;
+                // Use max(1) to prevent division by zero when blocks are produced in the same second
                 let time_delta = last_block
                     .header
                     .timestamp
-                    .saturating_sub(prev_block_timestamp);
-                if time_delta > 0 {
-                    tx_count as f64 / time_delta as f64
-                } else {
-                    0.0
-                }
+                    .saturating_sub(prev_block_timestamp)
+                    .max(1);
+                tx_count as f64 / time_delta as f64
             } else {
                 0.0
             }
@@ -280,7 +308,7 @@ impl WorldState {
         // Calculate stake concentration from stakes
         let stake_values: Vec<f64> = validators.iter().map(|v| v.stake).collect();
         let stake_concentration = calculate_stake_concentration(&stake_values);
-        let gini_coefficient = metrics::calculate_gini(&stake_values);
+        let gini_coefficient = calculate_gini(&stake_values);
 
         // Calculate transaction packing delay
         let tx_timestamps: Vec<u64> = last_block
@@ -320,7 +348,7 @@ impl WorldState {
             if let Ok(file) = std::fs::OpenOptions::new()
                 .create(true)
                 .append(true)
-                .open(format!("metrics_slots_{}.csv", self.consensus_name))
+                .open(&self.metrics_filename)
             {
                 self.metrics_slots_file = Some(file);
             }
@@ -345,68 +373,29 @@ impl WorldState {
             let shared_self = Arc::clone(&shared_self);
             task::spawn(async move {
                 while let Some(msg) = receiver.recv().await {
-                    debug!("World State received msg type: {}", msg.msg_type);
-                    match msg.msg_type {
-                        MessageType::ReceiveRandaoSeed => {
-                            let randao_seed = match RandaoSeed::from_json(msg.data) {
-                                Ok(t) => t,
-                                Err(e) => {
-                                    error!("World State error: {}", e);
-                                    continue;
-                                }
-                            };
+                    match msg {
+                        Message::ReceiveRandaoSeed(randao_seed) => {
+                            let shared_self = shared_self.write().await;
+                            let mut current_slot = shared_self.current_slot.write().await;
+                            current_slot.randao_seeds.push(randao_seed.clone());
+                        }
+                        Message::ReceiveBecomeValidator(validator) => {
+                            let shared_self = shared_self.write().await;
+                            let mut validators = shared_self.validators.write().await;
+                            validators.retain(|v| v.address != validator.address);
+                            validators.push(validator.clone());
+                        }
+                        Message::UpdateValidatorStake { address, new_stake } => {
+                            let shared_self = shared_self.write().await;
+                            let mut validators = shared_self.validators.write().await;
+                            // 更新对应 Validator 的 stake
+                            if let Some(validator) =
+                                validators.iter_mut().find(|v| v.address == address)
                             {
-                                let shared_self = shared_self.write().await;
-                                let mut current_slot = shared_self.current_slot.write().await;
-                                current_slot.randao_seeds.push(randao_seed.clone());
+                                validator.stake = new_stake;
                             }
                         }
-                        MessageType::ReceiveBecomeValidator => {
-                            let validator = match Validator::from_json(msg.data) {
-                                Ok(t) => t,
-                                Err(e) => {
-                                    error!("World State error: {}", e);
-                                    continue;
-                                }
-                            };
-                            {
-                                let shared_self = shared_self.write().await;
-                                let mut validators = shared_self.validators.write().await;
-                                validators.retain(|v| v.address != validator.address);
-                                validators.push(validator.clone());
-                            }
-                        }
-                        MessageType::UpdateValidatorStake => {
-                            // 解析消息中的 address 和 new_stake
-                            if let Ok(json_str) = String::from_utf8(msg.data.clone()) {
-                                if let Ok(payload) =
-                                    serde_json::from_str::<serde_json::Value>(&json_str)
-                                {
-                                    if let (Some(address), Some(new_stake)) = (
-                                        payload.get("address").and_then(|v| v.as_str()),
-                                        payload.get("stake").and_then(|v| v.as_f64()),
-                                    ) {
-                                        let shared_self = shared_self.write().await;
-                                        let mut validators = shared_self.validators.write().await;
-                                        // 更新对应 Validator 的 stake
-                                        if let Some(validator) =
-                                            validators.iter_mut().find(|v| v.address == address)
-                                        {
-                                            validator.stake = new_stake;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        MessageType::SendBlock => {
-                            let block = match Block::from_json(msg.data) {
-                                Ok(b) => b,
-                                Err(e) => {
-                                    error!("Error: {}", e);
-                                    continue;
-                                }
-                            };
-
+                        Message::SendBlock { block, from: _ } => {
                             {
                                 let mut shared_self = shared_self.write().await;
                                 let add_block_result = {
@@ -414,7 +403,7 @@ impl WorldState {
                                         .blockchain
                                         .write()
                                         .await
-                                        .add_block(block.clone())
+                                        .add_block((*block).clone())
                                 };
 
                                 if let Err(e) = add_block_result {
@@ -496,100 +485,132 @@ impl WorldState {
                             }
                             debug!("World State add block successfully");
                         }
-                        MessageType::BlockProductionFailed => {
+                        Message::BlockProductionFailed {
+                            node_index,
+                            slot,
+                            reason,
+                        } => {
                             // 处理出块失败事件
-                            if let Ok(json_str) = String::from_utf8(msg.data.clone()) {
-                                if let Ok(payload) =
-                                    serde_json::from_str::<serde_json::Value>(&json_str)
-                                {
-                                    if let (Some(node_index), Some(slot), Some(reason)) = (
-                                        payload.get("node_index").and_then(|v| v.as_u64()),
-                                        payload.get("slot").and_then(|v| v.as_u64()),
-                                        payload.get("reason").and_then(|v| v.as_str()),
-                                    ) {
-                                        let mut shared_self = shared_self.write().await;
-                                        shared_self.block_production_failed += 1;
-                                        debug!(
-                                            "World State: Block production failed at slot {}: Node[{}] (reason: {})",
-                                            slot, node_index, reason
-                                        );
-                                    }
-                                }
-                            }
+                            let mut shared_self = shared_self.write().await;
+                            shared_self.block_production_failed += 1;
+                            debug!(
+                                "World State: Block production failed at slot {}: Node[{}] (reason: {})",
+                                slot,
+                                node_index,
+                                reason
+                            );
                         }
-                        MessageType::ResponseBlockSync => {
-                            //处理同步逻辑
-                            let blocks_json = match String::from_utf8(msg.data) {
-                                Ok(s) => s,
-                                Err(_e) => {
-                                    continue;
-                                }
-                            };
-
-                            let sync_blocks: Vec<Block> = match serde_json::from_str(&blocks_json) {
-                                Ok(blocks) => blocks,
-                                Err(_e) => {
-                                    continue;
-                                }
-                            };
+                        Message::ResponseBlockSync {
+                            blocks: sync_blocks,
+                            from: _,
+                        } => {
                             if sync_blocks.is_empty() {
                                 continue;
                             }
-                            // 从第一个区块开始对比，找到分叉点后替换本地区块链
                             let shared_self = shared_self.write().await;
                             let mut local_chain = shared_self.blockchain.write().await;
 
-                            let local_len = local_chain.blocks.len();
-                            let sync_len = sync_blocks.len();
-                            let min_len = local_len.min(sync_len);
+                            let current_index = local_chain.get_last_index();
+                            let response_index = sync_blocks.last().unwrap().header.index;
+                            let response_start_index = sync_blocks.first().unwrap().header.index;
 
-                            // 寻找第一个不同的块
-                            let mut divergence_idx = None;
-                            for i in 0..min_len {
-                                if local_chain.blocks[i].header.hash != sync_blocks[i].header.hash {
-                                    divergence_idx = Some(i);
-                                    break;
-                                }
-                            }
+                            // 同步的数据比我们当前拥有的新很多，且中间有断层
+                            if current_index + 1 < response_start_index {
+                                warn!(
+                                    "World State: received snapshot sync from index {} to {}, gap detected. Replacing local chain",
+                                    response_start_index, response_index
+                                );
 
-                            match divergence_idx {
-                                Some(idx) => {
-                                    // 截断本地链到分叉点，然后用同步链替换后续部分
-                                    local_chain.blocks.truncate(idx);
-                                    local_chain
-                                        .blocks
-                                        .extend(sync_blocks[idx..].iter().cloned());
-                                    info!(
-                                        "World State: chain diverged at #{}, replaced from peer (local_len={} -> sync_len={})",
-                                        idx,
-                                        local_len,
-                                        sync_len
-                                    );
-                                }
-                                None => {
-                                    if sync_len > local_len {
-                                        // 本地是前缀，直接追加缺失部分
-                                        local_chain
-                                            .blocks
-                                            .extend(sync_blocks[local_len..].iter().cloned());
-                                        info!(
-                                            "World State: appended {} blocks (local_len={} -> sync_len={})",
-                                            sync_len - local_len,
-                                            local_len,
-                                            sync_len
-                                        );
-                                    } else if sync_len == local_len {
-                                        debug!(
-                                            "World State: chains are identical (len={})",
-                                            local_len
-                                        );
-                                    } else {
-                                        warn!(
-                                            "World State: peer chain shorter (peer_len={} < local_len={}), skip",
-                                            sync_len,
-                                            local_len
-                                        );
+                                local_chain.blocks.clear();
+                                local_chain.transaction_index.clear();
+
+                                for sync_block in &sync_blocks {
+                                    local_chain.blocks.push(sync_block.clone());
+                                    for tx in &sync_block.body.transactions {
+                                        local_chain.transaction_index.insert(tx.hash.clone());
                                     }
+                                }
+                            } else if current_index >= response_index {
+                                debug!(
+                                    "World State: skipping sync: current_index({}) >= response_index({})",
+                                    current_index, response_index
+                                );
+                            } else {
+                                // 寻找分叉点或者追加新块
+                                let mut start_idx = 0;
+                                let mut found_fork = false;
+
+                                for (i, sync_block) in sync_blocks.iter().enumerate() {
+                                    // 根据高度在本地查找是否有相同的块
+                                    let local_block_opt = local_chain
+                                        .blocks
+                                        .iter()
+                                        .find(|b| b.header.index == sync_block.header.index);
+
+                                    if let Some(local_block) = local_block_opt {
+                                        if local_block.header.hash != sync_block.header.hash {
+                                            // 发现分叉
+                                            warn!(
+                                                "World State: chain diverged at #{}, resolving",
+                                                sync_block.header.index
+                                            );
+                                            start_idx = i;
+                                            found_fork = true;
+
+                                            // 删除本地分叉及之后的块，并清理对应交易限制
+                                            let local_start = local_chain
+                                                .blocks
+                                                .first()
+                                                .map_or(0, |b| b.header.index);
+                                            let truncate_idx =
+                                                (sync_block.header.index - local_start) as usize;
+
+                                            // 收集需要删除的交易 hashes
+                                            let mut hashes_to_remove = Vec::new();
+                                            for b in &local_chain.blocks[truncate_idx..] {
+                                                for tx in &b.body.transactions {
+                                                    hashes_to_remove.push(tx.hash.clone());
+                                                }
+                                            }
+                                            for hash in hashes_to_remove {
+                                                local_chain.transaction_index.remove(&hash);
+                                            }
+
+                                            local_chain.blocks.truncate(truncate_idx);
+                                            break;
+                                        }
+                                    } else if sync_block.header.index > local_chain.get_last_index()
+                                    {
+                                        // 到了需要追加的新块部分
+                                        start_idx = i;
+                                        found_fork = true;
+                                        break;
+                                    }
+                                }
+
+                                if found_fork {
+                                    for sync_idx in start_idx..sync_blocks.len() {
+                                        let sync_block = &sync_blocks[sync_idx];
+                                        match local_chain.add_block(sync_block.clone()) {
+                                            Ok(_) => {
+                                                debug!(
+                                                    "World State: synced block #{}",
+                                                    sync_block.header.index
+                                                );
+                                            }
+                                            Err(e) => {
+                                                error!(
+                                                    "World State: failed to sync block #{}: {:?}",
+                                                    sync_block.header.index, e
+                                                );
+                                                break;
+                                            }
+                                        }
+                                    }
+                                    info!(
+                                        "World State: synced chain to index {}",
+                                        local_chain.get_last_index()
+                                    );
                                 }
                             }
                         }
@@ -621,8 +642,10 @@ impl WorldState {
                 debug!("World State time trigger: {}", tools::get_time_string());
 
                 // 对于 PoW 协议，需要等待区块链长度增加后才进入下一个 slot
-
                 if consensus_name == "pow" {
+                    let pow_wait_start = Instant::now();
+                    let pow_timeout =
+                        Duration::from_secs(shared_self.read().await.slot_duration.as_secs() * 16);
                     loop {
                         if last_index == 0 {
                             time::sleep(Duration::from_secs(
@@ -642,6 +665,12 @@ impl WorldState {
                         };
                         if current_index > last_index {
                             // 区块链有新块，可以进入下一个 slot
+                            break;
+                        }
+
+                        // 检查超时
+                        if pow_wait_start.elapsed() > pow_timeout {
+                            warn!("PoW wait timeout, force entering next slot");
                             break;
                         }
 
@@ -725,7 +754,14 @@ mod tests {
             5,
             20,
             8,
-            0.0,
+            1.0, // omega
+            0.5, // beta
+            0.0, // base_reward
+            20,
+            10,
+            "ba".to_string(),
+            500,
+            "metrics".to_string(),
         );
         tokio::spawn(async move {
             world.run(world_receiver).await;
@@ -749,7 +785,14 @@ mod tests {
             5,
             20,
             8,
-            0.0,
+            1.0, // omega
+            0.5, // beta
+            0.0, // base_reward
+            20,
+            10,
+            "ba".to_string(),
+            500,
+            "metrics".to_string(),
         );
 
         let validators = world.validators.clone();
@@ -761,7 +804,7 @@ mod tests {
             blockchain.clone(),
             world_sender.clone(),
             1000,
-            ConsensusType::POG,
+            ConsensusType::TopoStake,
             0,
         );
         let mut node1 = Node::new(
@@ -771,7 +814,7 @@ mod tests {
             blockchain,
             world_sender.clone(),
             1000,
-            ConsensusType::POG,
+            ConsensusType::TopoStake,
             0,
         );
         let node0_sender = node0.sender.clone();
@@ -816,14 +859,14 @@ mod tests {
         for (i, address) in nodes_address.iter().enumerate() {
             stake_map.insert(address.clone(), 1.0);
         }
-        let stake_json = serde_json::to_vec(&stake_map).unwrap_or_default();
+        // let stake_json = serde_json::to_vec(&stake_map).unwrap_or_default();
 
         node0_sender
-            .send(Message::new_become_validator_msg(stake_json.clone()))
+            .send(Message::new_become_validator_msg(stake_map.clone()))
             .await
             .unwrap();
         node1_sender
-            .send(Message::new_become_validator_msg(stake_json))
+            .send(Message::new_become_validator_msg(stake_map))
             .await
             .unwrap();
         tokio::time::sleep(Duration::from_secs(1)).await;
@@ -852,7 +895,7 @@ mod tests {
         let transaction_paths = TransactionPaths::new(transaction);
         node0_sender
             .send(Message::new_transaction_paths_msg(
-                transaction_paths,
+                Arc::new(transaction_paths),
                 "".to_string(),
             ))
             .await
@@ -873,7 +916,7 @@ mod tests {
         let transaction_paths = TransactionPaths::new(transaction);
         node1_sender
             .send(Message::new_transaction_paths_msg(
-                transaction_paths,
+                Arc::new(transaction_paths),
                 "".to_string(),
             ))
             .await

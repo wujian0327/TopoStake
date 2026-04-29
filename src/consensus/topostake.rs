@@ -1,4 +1,4 @@
-use crate::blockchain::block::Block;
+﻿use crate::blockchain::block::Block;
 use crate::blockchain::Blockchain;
 use crate::consensus::{Consensus, Validator, ValidatorError};
 use log::{debug, info};
@@ -6,28 +6,26 @@ use rand::prelude::StdRng;
 use rand::{Rng, SeedableRng};
 use std::collections::HashMap;
 
-pub struct PogConsensus {
-    ntd: usize,
+pub struct TopoStakeConsensus {
+    d: usize,
     base_reward: f64,
-    // Temporal smoothing state: Score(n,t) for each node
     score_history: HashMap<String, f64>,
-    // Parameters for contribution calculation
-    alpha: f64,
+    beta: f64,
     k_sat: f64,
     k_base: f64,
     omega: f64,
 }
 
-impl PogConsensus {
-    pub fn new(initial_ntd: usize, base_reward: f64) -> Self {
-        PogConsensus {
-            ntd: initial_ntd,
+impl TopoStakeConsensus {
+    pub fn new(initial_d: usize, base_reward: f64, omega: f64, beta: f64) -> Self {
+        TopoStakeConsensus {
+            d: initial_d,
             base_reward,
             score_history: HashMap::new(),
-            alpha: 0.5,  // EMA factor: smaller alpha = longer memory
+            beta,        // EMA factor: smaller beta = longer memory
             k_sat: 1.0,  // Saturation scale
             k_base: 1.0, // Saturation base
-            omega: 0.0,  // Start with pure PoS (omega=0), gradually increase to 1
+            omega,
         }
     }
 
@@ -124,12 +122,12 @@ impl PogConsensus {
         map.iter().map(|(k, v)| (k.clone(), v / sum)).collect()
     }
 
-    /// Calculate path propagation value: c(p) = 1 if L(p) <= NTD, else 1/(1 + (L(p) - NTD))
+    /// Calculate path propagation value: c(p) = 1 if L(p) <= D, else 1/(1 + (L(p) - D))
     fn compute_path_value(&self, path_length: usize) -> f64 {
-        if path_length <= self.ntd {
+        if path_length <= self.d {
             1.0
         } else {
-            1.0 / (1.0 + (path_length - self.ntd) as f64)
+            1.0 / (1.0 + (path_length - self.d) as f64)
         }
     }
 
@@ -193,7 +191,7 @@ impl PogConsensus {
     }
 
     /// Update temporal score history using EMA
-    /// Score(n,t) = alpha * C_slot(n,t) + (1 - alpha) * Score(n,t-1)
+    /// Score(n,t) = beta * C_slot(n,t) + (1 - beta) * Score(n,t-1)
     fn update_score_history(
         &mut self,
         slot_contribution: &HashMap<String, f64>,
@@ -203,7 +201,7 @@ impl PogConsensus {
             let current_slot = slot_contribution.get(&validator.address).unwrap_or(&0.0);
             let previous_score = self.score_history.get(&validator.address).unwrap_or(&0.0);
 
-            let new_score = self.alpha * current_slot + (1.0 - self.alpha) * previous_score;
+            let new_score = self.beta * current_slot + (1.0 - self.beta) * previous_score;
             self.score_history
                 .insert(validator.address.clone(), new_score);
         }
@@ -240,9 +238,9 @@ impl PogConsensus {
     }
 }
 
-impl Consensus for PogConsensus {
+impl Consensus for TopoStakeConsensus {
     fn name(&self) -> &'static str {
-        "POG"
+        "TopoStake"
     }
 
     fn select_proposer(
@@ -256,12 +254,15 @@ impl Consensus for PogConsensus {
 
     fn on_epoch_end(&mut self, blocks: &[Block]) {
         let paths: Vec<Vec<String>> = blocks.iter().flat_map(|b| b.get_all_paths()).collect();
-        self.adjust_ntd(&paths);
-        self.set_omega(self.omega + 0.1);
+        self.adjust_d(&paths);
+        // self.set_omega(self.omega + 0.1);
     }
 
     fn state_summary(&self) -> String {
-        format!("pog(ntd={}_omega={:.2})", self.ntd, self.omega)
+        format!(
+            "pog(D={}_omega={:.2}_beta={:.2})",
+            self.d, self.omega, self.beta
+        )
     }
 
     fn distribute_rewards(
@@ -270,22 +271,15 @@ impl Consensus for PogConsensus {
         validators: &mut [Validator],
         nodes_index: HashMap<String, u32>,
     ) {
-        // POG: 根据论文的两层奖励分配机制
-        // 第1层：矿工直接获得交易费的一部分
-        // 第2层：剩余费用按网络贡献（虚拟股份）分配给所有验证者
-
         let block_reward = self.base_reward;
-        // 计算本块总费用
         let total_fees: f64 = block.body.transactions.iter().map(|tx| tx.fee).sum();
 
-        // 计算路径统计用于奖励惩罚
         let paths: Vec<Vec<String>> = block.get_all_paths();
         if paths.is_empty() {
             info!(
                 "POG: No paths in block {}, miner gets all fees {:.6}",
                 block.header.index, total_fees
             );
-            // 如果没有路径，矿工获得所有费用
             if let Some(validator) = validators
                 .iter_mut()
                 .find(|v| v.address == block.header.miner)
@@ -307,9 +301,8 @@ impl Consensus for PogConsensus {
             .sum::<f64>()
             / paths.len() as f64;
 
-        // 计算惩罚因子：P(B) = (NTD / L_avg)^2，当 L_avg > NTD 时
-        let penalty_factor = if avg_path_length > self.ntd as f64 {
-            let ratio = self.ntd as f64 / avg_path_length;
+        let penalty_factor = if avg_path_length > self.d as f64 {
+            let ratio = self.d as f64 / avg_path_length;
             ratio * ratio
         } else {
             1.0
@@ -319,7 +312,6 @@ impl Consensus for PogConsensus {
             "POG: rewards distribution - total_fees={:.6}, avg_path_length={:.2}, penalty_factor={:.6}",
             total_fees, avg_path_length, penalty_factor
         );
-        // 重新计算虚拟股份进行分配
         let s_real_map: HashMap<String, f64> = validators
             .iter()
             .map(|v| (v.address.clone(), v.stake))
@@ -329,10 +321,8 @@ impl Consensus for PogConsensus {
         let virtual_stake_map =
             self.cal_virtual_stake(&s_real_map, &normalized_stake, &normalized_contribution);
 
-        // 第1层：矿工奖励 = 0.5 * total_fees * penalty_factor
         let miner_share = block_reward + 0.5 * total_fees * penalty_factor;
 
-        // 矿工获得挖矿费用
         if let Some(validator) = validators
             .iter_mut()
             .find(|v| v.address == block.header.miner)
@@ -346,10 +336,8 @@ impl Consensus for PogConsensus {
             );
         }
 
-        // 第2层：网络费用池 = total_fees * (1 - 0.5 * penalty_factor)
         let network_pool = total_fees * (1.0 - 0.5 * penalty_factor);
 
-        // 按虚拟股份分配网络费用池
         for validator in validators.iter_mut() {
             if validator.address == block.header.miner {
                 continue;
@@ -359,7 +347,7 @@ impl Consensus for PogConsensus {
             validator.stake += network_reward;
             if network_reward > 0.0 {
                 let index = nodes_index.get(&validator.address).unwrap_or(&0);
-                info!(
+                debug!(
                     "POG: Node[{}] received network reward: {:.6} (virtual_stake: {:.6}), new stake: {:.6}",
                     index, network_reward, virtual_stake, validator.stake
                 );
@@ -368,8 +356,8 @@ impl Consensus for PogConsensus {
     }
 }
 
-impl PogConsensus {
-    fn adjust_ntd(&mut self, paths: &[Vec<String>]) {
+impl TopoStakeConsensus {
+    fn adjust_d(&mut self, paths: &[Vec<String>]) {
         if paths.is_empty() {
             return;
         }
@@ -379,10 +367,10 @@ impl PogConsensus {
             .sum::<usize>() as f64
             / paths.len() as f64;
         let target = p_ave.ceil() as usize;
-        if self.ntd > target {
-            self.ntd -= 1;
-        } else if self.ntd < target {
-            self.ntd += 1;
+        if self.d > target {
+            self.d -= 1;
+        } else if self.d < target {
+            self.d += 1;
         }
     }
 }
@@ -391,7 +379,7 @@ impl PogConsensus {
 mod tests {
     use crate::blockchain::path::{AggregatedSignedPaths, TransactionPaths};
     use crate::blockchain::transaction::Transaction;
-    use crate::consensus::pog::PogConsensus;
+    use crate::consensus::topostake::TopoStakeConsensus;
     use crate::consensus::Validator;
     use crate::wallet::Wallet;
     use log::info;
@@ -425,7 +413,7 @@ mod tests {
         let miner_v = Validator::new(miner.address, 4.0, 1.0);
         let validators = vec![v1, v2, v3, miner_v];
 
-        let mut pog = PogConsensus::new(3, 1.0);
+        let mut pog = TopoStakeConsensus::new(3, 1.0, 1.0, 0.5);
 
         // Test with pure PoS (omega = 0)
         pog.set_omega(0.0);

@@ -12,6 +12,7 @@ use std::fs::File;
 pub enum TopologyType {
     ER,
     BA,
+    WS,
 }
 
 impl Display for TopologyType {
@@ -22,6 +23,9 @@ impl Display for TopologyType {
             }
             TopologyType::BA => {
                 write!(f, "ba")
+            }
+            TopologyType::WS => {
+                write!(f, "ws")
             }
         }
     }
@@ -138,7 +142,7 @@ pub fn random_er_graph(nodes_address: Vec<String>, probability: f64) -> Graph<St
     graph
 }
 
-pub fn random_graph_with_ba_network(nodes_address: Vec<String>, seed: u64) -> Graph<String, ()> {
+pub fn random_ba_graph(nodes_address: Vec<String>, seed: u64) -> Graph<String, ()> {
     let node_number = nodes_address.len();
     let ba_network = BANetwork::generate_ba_network(node_number, 3, 2, seed);
     let adj = ba_network.adjacency;
@@ -156,11 +160,70 @@ pub fn random_graph_with_ba_network(nodes_address: Vec<String>, seed: u64) -> Gr
             graph.add_edge(*from, *to, ());
         }
     }
-    // let mut graph_clone = graph.clone();
-    // graph_clone.node_indices().for_each(|i| {
-    //     let node = graph_clone.node_weight_mut(i).unwrap();
-    //     *node = short_hash(node.clone())[2..].to_string();
-    // });
+
+    print_graph(&graph.clone());
+    graph
+}
+
+// Watts-Strogatz (WS) 小世界网络模型
+pub fn random_ws_graph(
+    nodes_address: Vec<String>,
+    k: usize,
+    p: f64,
+    seed: u64,
+) -> Graph<String, ()> {
+    let n = nodes_address.len();
+    assert!(k < n, "k must be less than n");
+    assert!(k % 2 == 0, "k must be even");
+
+    use rand::SeedableRng;
+    let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
+    let mut graph = Graph::<String, ()>::new();
+    let mut node_indices = Vec::with_capacity(n);
+
+    // 添加所有节点
+    for addr in &nodes_address {
+        node_indices.push(graph.add_node(addr.clone()));
+    }
+
+    // 记录已存在的边，避免重复添加
+    let mut edges = HashSet::new();
+
+    // 1. 构建规则环形格子：每个节点与相邻的 k 个节点相连 (左右各 k/2 个)
+    let half_k = k / 2;
+    for i in 0..n {
+        for j in 1..=half_k {
+            let target = (i + j) % n;
+            // 确保 i < target 以避免无向图重复记录
+            let (u, v) = if i < target { (i, target) } else { (target, i) };
+            edges.insert((u, v));
+        }
+    }
+
+    // 2. 随机重连边
+    let mut final_edges = HashSet::new();
+    for &(u, v) in &edges {
+        if rng.gen::<f64>() < p {
+            // 以概率 p 重连这条边
+            let mut new_v = rng.gen_range(0..n);
+            // 避免自环和重复边
+            while new_v == u
+                || edges.contains(&(std::cmp::min(u, new_v), std::cmp::max(u, new_v)))
+                || final_edges.contains(&(std::cmp::min(u, new_v), std::cmp::max(u, new_v)))
+            {
+                new_v = rng.gen_range(0..n);
+            }
+            final_edges.insert((std::cmp::min(u, new_v), std::cmp::max(u, new_v)));
+        } else {
+            // 保持原边
+            final_edges.insert((u, v));
+        }
+    }
+
+    // 将最终的边添加到图中
+    for (u, v) in final_edges {
+        graph.add_edge(node_indices[u], node_indices[v], ());
+    }
 
     print_graph(&graph.clone());
     graph

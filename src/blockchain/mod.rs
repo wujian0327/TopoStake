@@ -12,6 +12,10 @@ use tokio::io::AsyncWriteExt;
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Blockchain {
     pub blocks: Vec<Block>,
+    #[serde(skip)]
+    pub transaction_index: HashSet<String>,
+    #[serde(skip)]
+    pub max_blocks_in_memory: usize,
 }
 
 impl Blockchain {
@@ -22,11 +26,26 @@ impl Blockchain {
         }
         Blockchain {
             blocks: vec![genesis_block],
+            transaction_index: set,
+            max_blocks_in_memory: 100, // 默认只在内存中保留最近的100个区块
         }
     }
 
-    pub fn get_block(&self, height: u64) -> Block {
-        self.blocks[height as usize - 1].clone()
+    pub fn pop_block(&mut self) -> Option<Block> {
+        let block = self.blocks.pop()?;
+        for tx in &block.body.transactions {
+            self.transaction_index.remove(&tx.hash);
+        }
+        Some(block)
+    }
+
+    pub fn get_block(&self, height: u64) -> Option<Block> {
+        // 因为我们限制了内存中的区块数量，所以不能直接用 height - 1 作为索引
+        // 需要找到对应的区块
+        self.blocks
+            .iter()
+            .find(|b| b.header.index == height)
+            .cloned()
     }
 
     pub fn add_block(&mut self, block: Block) -> Result<(), BlockChainError> {
@@ -37,7 +56,6 @@ impl Blockchain {
             return Err(BlockChainError::InvalidBlock);
         }
         if self.get_last_hash() == block.header.hash {
-            //重复收到
             return Err(BlockChainError::DuplicateBlocksReceived);
         }
         if self.get_last_hash() != block.header.parent_hash {
@@ -55,24 +73,31 @@ impl Blockchain {
             return Err(BlockChainError::SlotError);
         }
         //check transaction if exists
-        for x in block.clone().body.transactions {
-            if self.exist_transaction(x.hash.to_string()) {
+        for x in &block.body.transactions {
+            if self.exist_transaction(&x.hash) {
                 return Err(BlockChainError::TransactionExists);
             }
         }
+        for x in &block.body.transactions {
+            self.transaction_index.insert(x.hash.clone());
+        }
         self.blocks.push(block.clone());
+
+        // 限制内存中的区块数量
+        if self.blocks.len() > self.max_blocks_in_memory {
+            // 移除最老的区块
+            let removed_block = self.blocks.remove(0);
+            // 同时从 transaction_index 中移除这些交易的 hash，防止内存泄漏
+            for tx in removed_block.body.transactions {
+                self.transaction_index.remove(&tx.hash);
+            }
+        }
+
         Ok(())
     }
 
-    pub fn exist_transaction(&self, hash: String) -> bool {
-        for b in &self.blocks {
-            for t in &b.body.transactions {
-                if t.hash == hash {
-                    return true;
-                }
-            }
-        }
-        false
+    pub fn exist_transaction(&self, hash: &str) -> bool {
+        self.transaction_index.contains(hash)
     }
 
     pub fn get_last_block(&self) -> Block {
@@ -93,23 +118,27 @@ impl Blockchain {
 
     pub fn get_last_slot_block(&self) -> Vec<Block> {
         let (epoch, slot) = self.get_last_epoch_slot();
-        let blocks: Vec<Block> = self
+        let mut blocks: Vec<Block> = self
             .blocks
             .iter()
-            .filter(|b| b.header.slot == slot && b.header.epoch == epoch)
+            .rev()
+            .take_while(|b| b.header.slot == slot && b.header.epoch == epoch)
             .map(|b| b.clone())
             .collect();
+        blocks.reverse();
         blocks
     }
 
     pub fn get_last_epoch_block(&self) -> Vec<Block> {
         let (epoch, _slot) = self.get_last_epoch_slot();
-        let blocks: Vec<Block> = self
+        let mut blocks: Vec<Block> = self
             .blocks
             .iter()
-            .filter(|b| b.header.epoch == epoch)
+            .rev()
+            .take_while(|b| b.header.epoch == epoch)
             .map(|b| b.clone())
             .collect();
+        blocks.reverse();
         blocks
     }
 

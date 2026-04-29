@@ -1,4 +1,4 @@
-import networkx as nx
+﻿import networkx as nx
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
@@ -54,9 +54,9 @@ def generate_or_load_graph(node_num=100, m=2, seed=888, use_file=False):
 
 import random
 
-def simulate_pog_logic(G, omega=1, rounds=10):
+def simulate_topostake_logic(G, omega=1, rounds=10):
     """
-    模拟 POG 共识逻辑计算出块概率
+    模拟 topostake 共识逻辑计算出块概率
     通过模拟交易流来计算贡献度
     迭代模式：每一轮的 Miner 选择概率取决于当前的虚拟权益 (Feedback Loop)
     """
@@ -92,7 +92,7 @@ def simulate_pog_logic(G, omega=1, rounds=10):
                 # 假设交易走最短路径
                 path = nx.shortest_path(G, source=src, target=dst)
                 
-                # POG 逻辑
+                # topostake 逻辑
                 path_nodes = path[:-1]
                 path_length = len(path_nodes)
                 
@@ -154,7 +154,7 @@ def plot_simulation(df, omega):
                 line_kws={'color': 'red', 'label': f'Coefficient={corr:.2f}'},
                 color='#2c3e50', x_jitter=0.2) # 添加一点 jitter 防止点重叠
     
-    # ax.set_title(f'POG Topology Bias', fontsize=22, fontweight='bold')
+    # ax.set_title(f'topostake Topology Bias', fontsize=22, fontweight='bold')
     format_axes(ax, xlabel='Node Degree', ylabel='Block Production Probability', grid=True)
     
     # 添加注释说明
@@ -195,7 +195,7 @@ if __name__ == "__main__":
         # 2. 模拟计算 
         # rounds=50: 每个节点发50笔交易，总共约5000笔交易，样本足够大
         omega = 0.8
-        df_result = simulate_pog_logic(G, omega=omega, rounds=50)
+        df_result = simulate_topostake_logic(G, omega=omega, rounds=50)
         
         # 3. 绘图
         plot_simulation(df_result, omega)

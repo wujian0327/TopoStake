@@ -1,4 +1,4 @@
-import numpy as np
+﻿import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import os
@@ -7,27 +7,27 @@ from plot_style import set_plot_style, format_axes, format_figure, format_axes_b
 
 set_plot_style('paper')
 
-def pog_logarithmic_saturation(raw_score, k_sat=1.0, k_base=1.0):
+def topostake_logarithmic_saturation(raw_score, k_sat=1.0, k_base=1.0):
     """
-    PoG 的对数饱和函数 (对应 src/consensus/pog.rs 中的 cal_slot_contribution)
+    topostake 的对数饱和函数 (对应 src/consensus/topostake.rs 中的 cal_slot_contribution)
     C_slot(n,t) = K_sat * log(1 + raw_score / K_base)
     """
     return k_sat * np.log(1 + raw_score / k_base)
 
 def calculate_virtual_stake(normalized_contribution, normalized_stake, omega=1.0):
     """
-    计算虚拟权益 (对应 src/consensus/pog.rs 中的 cal_virtual_stake)
+    计算虚拟权益 (对应 src/consensus/topostake.rs 中的 cal_virtual_stake)
     S_v = omega * hat_C + (1 - omega) * hat_S
     """
     return omega * normalized_contribution + (1 - omega) * normalized_stake
 
 def simulate_saturation_defense():
-    # PoG 参数 (参考 src/consensus/pog.rs)
+    # topostake 参数 (参考 src/consensus/topostake.rs)
     n_honest = 99
     base_raw_score = 100.0
     k_sat = 1.0
     k_base = 1.0
-    omega = 1.0 # 纯 PoG 模式 (omega=1.0)
+    omega = 1.0 # 纯 topostake 模式 (omega=1.0)
     
     # 经济参数
     block_reward = 1.0 # 区块奖励
@@ -49,34 +49,34 @@ def simulate_saturation_defense():
         raw_h = base_raw_score
         raw_a = base_raw_score * m
         
-        # 2. 应用 PoG 饱和函数
-        sat_h = pog_logarithmic_saturation(raw_h, k_sat, k_base)
-        sat_a = pog_logarithmic_saturation(raw_a, k_sat, k_base)
+        # 2. 应用 topostake 饱和函数
+        sat_h = topostake_logarithmic_saturation(raw_h, k_sat, k_base)
+        sat_a = topostake_logarithmic_saturation(raw_a, k_sat, k_base)
         
         # 3. 计算 Normalized Contribution (hat_C)
         total_sat = n_honest * sat_h + sat_a
         hat_c_honest = sat_h / total_sat
         hat_c_attacker = sat_a / total_sat
         
-        # 4. 计算 Virtual Stake (S_v) - PoG 最终选择概率
+        # 4. 计算 Virtual Stake (S_v) - topostake 最终选择概率
         sv_honest = calculate_virtual_stake(hat_c_honest, hat_s_honest, omega)
         sv_attacker = calculate_virtual_stake(hat_c_attacker, hat_s_attacker, omega)
         
         # 归一化 Virtual Stake (作为最终概率)
         total_sv = n_honest * sv_honest + sv_attacker
-        prob_pog = sv_attacker / total_sv
+        prob_topostake = sv_attacker / total_sv
         
         # --- 经济分析 ---
         # 成本: 交易量 * 费率
         cost_attacker = raw_a * fee_rate
         # 收益: 概率 * 区块奖励
-        revenue_attacker = prob_pog * block_reward
+        revenue_attacker = prob_topostake * block_reward
         # 净收益
         net_profit = revenue_attacker - cost_attacker
         
         results.append({
             'Multiplier': m,
-            'Share_Log': prob_pog,
+            'Share_Log': prob_topostake,
             'Cost': cost_attacker,
             'Revenue': revenue_attacker,
             'Net_Profit': net_profit

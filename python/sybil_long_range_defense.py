@@ -1,4 +1,4 @@
-import numpy as np
+﻿import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import os
@@ -10,7 +10,7 @@ set_plot_style('paper')
 
 def compute_position_weight(position, path_length):
     """
-    计算位置权重 (参考 src/consensus/pog.rs)
+    计算位置权重 (参考 src/consensus/topostake.rs)
     alpha_k(L) = 2(L - k + 1) / (L(L + 1))
     注意: position 从 1 开始
     """
@@ -23,7 +23,7 @@ def simulate_sybil_attack_data(honest_path_len=0):
     模拟女巫攻击（长链攻击）下的收益数据
     """
     # 参数设置
-    NTD = 6          # 网络直径阈值 (Network Traversal Diameter)
+    d = 6          # 网络直径阈值 (Network Traversal Diameter)
     HONEST_PATH_LEN = honest_path_len  # 诚实节点的路径长度部分
     
     results = []
@@ -40,9 +40,9 @@ def simulate_sybil_attack_data(honest_path_len=0):
             weight = compute_position_weight(position, total_path_len)
             sybil_raw_score_sum += weight
             
-        # 3. 计算 NTD 惩罚因子
-        if total_path_len > NTD:
-            penalty_factor = (NTD / total_path_len) ** 2
+        # 3. 计算 d 惩罚因子
+        if total_path_len > d:
+            penalty_factor = (d / total_path_len) ** 2
         else:
             penalty_factor = 1.0
             
@@ -69,7 +69,7 @@ def plot_sybil_long_range_defense():
     df_single = df_single[df_single['path_length'] <= 15]
     df_mixed = df_mixed[df_mixed['path_length'] <= 15]
 
-    NTD = 6
+    d = 6
     
     # 创建图表
     fig, ax1 = plt.subplots(figsize=(10, 7))
@@ -94,11 +94,11 @@ def plot_sybil_long_range_defense():
     line2, = ax1.plot(df_single['path_length'], df_single['propagation_score'], 'D-', color=color_single,  label='Single Honest (Honest=1)')
     line3, = ax1.plot(df_mixed['path_length'], df_mixed['propagation_score'], '^-', color=color_mixed, label='Mixed Sybil (Honest=3)')
 
-    # 标记 NTD 阈值区域 (统一为 NTD=6)
-    plt.axvline(x=NTD, color='#d62728', linestyle='--', alpha=0.8, linewidth=2)
+    # 标记 d 阈值区域 (统一为 d=6)
+    plt.axvline(x=d, color='#d62728', linestyle='--', alpha=0.8, linewidth=2)
     
     # 区域
-    ax1.axvspan(NTD, 15, color='#d62728', alpha=0.1)
+    ax1.axvspan(d, 15, color='#d62728', alpha=0.1)
     
     # 设置X轴范围
     ax1.set_xlim(left=0, right=15)
@@ -137,9 +137,9 @@ def plot_sybil_long_range_defense():
     #              arrowprops=dict(facecolor=color_mixed, shrink=0.05),
     #              fontsize=14, fontweight='bold', ha='center', color=color_mixed)
 
-    ax1.annotate(f'NTD Threshold\n(Path>{NTD})', 
-                 xy=(NTD, df_pure.loc[df_pure['path_length'] >= NTD, 'propagation_score'].iloc[0]), 
-                 xytext=(NTD - 4.5, max_pure_y - 0.15),
+    ax1.annotate(f'd Threshold\n(Path>{d})', 
+                 xy=(d, df_pure.loc[df_pure['path_length'] >= d, 'propagation_score'].iloc[0]), 
+                 xytext=(d - 4.5, max_pure_y - 0.15),
                  arrowprops=dict(facecolor='#d62728', shrink=0.05),
                  fontsize=18, color='#d62728', fontweight='bold')
 
@@ -171,3 +171,4 @@ if __name__ == "__main__":
     except Exception as e:
         import traceback
         traceback.print_exc()
+

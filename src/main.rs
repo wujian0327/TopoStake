@@ -1,15 +1,15 @@
 use clap::Parser;
 use log::LevelFilter;
-use pog::consensus::ConsensusType;
-use pog::network;
-use pog::network::graph::TopologyType;
 use simplelog::{
     ColorChoice, CombinedLogger, ConfigBuilder, TermLogger, TerminalMode, WriteLogger,
 };
 use std::fs::File;
+use topostake::consensus::ConsensusType;
+use topostake::network;
+use topostake::network::graph::TopologyType;
 
 #[derive(Parser, Debug)]
-#[clap(version = "1.0", author = "wujian", about = "POG协议模拟")]
+#[clap(version = "1.0", author = "wujian", about = "TopoStake协议模拟")]
 struct Args {
     /// 节点个数(Node number)
     #[clap(short, long, default_value = "20")]
@@ -37,7 +37,7 @@ struct Args {
     trans_num: u32,
 
     /// 时隙持续时间（秒）(Slot duration in seconds)
-    #[clap(long, default_value = "3")]
+    #[clap(long, default_value = "2")]
     slot_duration: u64,
 
     /// 每个epoch的时隙数量 (Slots per epoch)
@@ -53,7 +53,7 @@ struct Args {
     pow_max_threads: usize,
 
     /// 共识算法类型 (Consensus algorithm type)
-    #[arg(short, long, default_value_t = ConsensusType::POG)]
+    #[arg(short, long, default_value_t = ConsensusType::TopoStake)]
     consensus: ConsensusType,
 
     ///拓扑结构 (Topology)
@@ -62,12 +62,12 @@ struct Args {
 
     /// 初始Gini指数 (Initial Gini coefficient for stake distribution)
     /// 0 = 完全平等，1 = 完全不平等
-    #[clap(short, long, default_value = "0.0")]
+    #[clap(short, long, default_value = "0.6")]
     gini: f64,
 
     /// 交易手续费 (Transaction fee)
     /// 每笔交易的手续费，设置为0表示禁用手续费
-    #[clap(long, default_value = "0.0")]
+    #[clap(long, default_value = "0.00001")]
     transaction_fee: f64,
 
     /// 图拓扑生成种子 (Graph topology generation seed)
@@ -80,7 +80,7 @@ struct Args {
     base_reward: f64,
 
     /// 每个区块最大交易数量 (Max transactions per block)
-    #[clap(long, default_value = "200")]
+    #[clap(long, default_value = "250")]
     max_tx_per_block: usize,
 
     /// 钱包生成种子 (Wallet generation seed)
@@ -88,6 +88,23 @@ struct Args {
     /// 设置为0表示使用随机地址(0 means random).
     #[clap(long, default_value = "8")]
     wallet_seed: u64,
+
+    /// TopoStake的omega参数 (Omega parameter for TopoStake)
+    #[clap(long, default_value = "1.0")]
+    omega: f64,
+
+    /// TopoStake的beta参数 (Beta parameter for TopoStake)
+    #[clap(long, default_value = "0.5")]
+    beta: f64,
+
+    /// 最大运行Epoch数 (Max epochs to run)
+    /// 当达到此Epoch数时，程序将自动退出
+    #[clap(long, default_value = "100")]
+    max_epochs: u64,
+
+    /// Metrics 文件前缀 (Metrics file prefix)
+    #[clap(long, default_value = "metrics")]
+    metrics_prefix: String,
 }
 
 #[tokio::main]
@@ -117,6 +134,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         args.base_reward,
         args.max_tx_per_block,
         args.wallet_seed,
+        args.omega,
+        args.beta,
+        args.max_epochs,
+        args.metrics_prefix,
     )
     .await;
     Ok(())

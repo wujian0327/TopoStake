@@ -1,4 +1,4 @@
-import pandas as pd
+﻿import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
 import os
@@ -8,39 +8,93 @@ from plot_style import set_plot_style, format_axes, format_figure, format_axes_b
 # 设置标准风格（中等字体大小）
 set_plot_style('paper')
 
-def simulate_pow_consensus(n_miners=50, n_slots=1000, difficulty_variance=3.0):
+def calculate_gini(values):
+    """计算Gini系数"""
+    sorted_values = np.sort(values)
+    n = len(sorted_values)
+    cumsum = np.cumsum(sorted_values)
+    gini = (2 * np.sum(np.arange(1, n + 1) * sorted_values)) / (n * cumsum[-1]) - (n + 1) / n
+    return gini
+
+def generate_distribution_with_gini(n_agents=50, target_gini=0.6, seed=42):
+    """
+    生成具有目标Gini系数的分配
+    使用二分查找调整Pareto分布的参数
+    """
+    np.random.seed(seed)
+    
+    # 二分查找找到合适的Pareto参数
+    low, high = 0.5, 5.0
+    pareto_param = None
+    
+    for _ in range(20):  # 迭代20次找到合适参数
+        mid = (low + high) / 2
+        values = np.random.pareto(mid, n_agents) + 1
+        values = values / np.sum(values)
+        gini = calculate_gini(values)
+        
+        if gini < target_gini:
+            high = mid  # Gini太小，需要参数更小（更不均等）
+        else:
+            low = mid   # Gini太大，需要参数更大（更均等）
+        
+        pareto_param = mid
+    
+    # 用最终参数生成分配
+    distribution = np.random.pareto(pareto_param, n_agents) + 1
+    distribution = distribution / np.sum(distribution)
+    return distribution
+
+def simulate_pow_consensus(n_miners=50, n_slots=1000, target_gini=0.6):
     """
     模拟 PoW 共识：基于算力的概率出块
     - 模拟不同矿工拥有不同的算力
-    - 算力采用幂律分布（更贴近现实）
+    - 算力分配服从目标Gini系数
     """
-    # 生成幂律分布的算力 (相对计算能力)
-    np.random.seed(42)
-    powers = np.random.pareto(difficulty_variance, n_miners) + 1  # Pareto分布，指数越小越不均匀
-    powers = powers / np.sum(powers)  # 归一化为概率
+    # 生成具有目标Gini系数的算力分配
+    powers = generate_distribution_with_gini(n_miners, target_gini=target_gini, seed=42)
     
     # 模拟出块
     miners = np.random.choice(range(n_miners), size=n_slots, p=powers)
     return pd.DataFrame({'miner': miners})
 
-def simulate_pos_consensus(n_validators=50, n_slots=1000, stake_variance=2.0):
+def simulate_pos_consensus(n_validators=50, n_slots=1000, target_gini=0.6):
     """
     模拟 PoS 共识：基于权益的概率出块
-    - 权益采用幂律分布（富者愈富）
+    - 权益分配服从目标Gini系数
     - 选择概率与权益成正比
     """
-    np.random.seed(42)
-    # 生成幂律分布的权益
-    stakes = np.random.pareto(stake_variance, n_validators) + 1
-    stakes = stakes / np.sum(stakes)  # 归一化为概率
+    # 生成具有目标Gini系数的权益分配
+    stakes = generate_distribution_with_gini(n_validators, target_gini=target_gini, seed=42)
     
     # 模拟出块
     validators = np.random.choice(range(n_validators), size=n_slots, p=stakes)
     return pd.DataFrame({'miner': validators})
 
-def simulate_pog_consensus(n_nodes=50, n_slots=1000, n_transactions_per_slot=100):
+def simulate_minotaur_consensus(n_nodes=50, n_slots=1000, target_gini=0.6):
     """
-    模拟 POG 共识：基于路径贡献的概率出块
+    模拟 Minotaur 共识：混合PoW和PoS
+    - 50%权重来自PoW算力分配
+    - 50%权重来自PoS权益分配
+    - 两者都服从目标Gini系数
+    """
+    np.random.seed(42)
+    # 生成PoW算力分配
+    pow_distribution = generate_distribution_with_gini(n_nodes, target_gini=target_gini, seed=42)
+    # 生成PoS权益分配
+    pos_distribution = generate_distribution_with_gini(n_nodes, target_gini=target_gini, seed=42)
+    
+    # 混合分配：50% PoW + 50% PoS
+    combined_distribution = 0.5 * pow_distribution + 0.5 * pos_distribution
+    combined_distribution = combined_distribution / np.sum(combined_distribution)  # 归一化
+    
+    # 模拟出块
+    nodes = np.random.choice(range(n_nodes), size=n_slots, p=combined_distribution)
+    return pd.DataFrame({'miner': nodes})
+
+def simulate_topostake_consensus(n_nodes=50, n_slots=1000, n_transactions_per_slot=100):
+    """
+    模拟 topostake 共识：基于路径贡献的概率出块
     - 模拟交易流生成路径贡献分数
     - 计算虚拟权益并选择出块者
     """
@@ -70,19 +124,19 @@ def simulate_pog_consensus(n_nodes=50, n_slots=1000, n_transactions_per_slot=100
                 node_idx = (src + k) % n_nodes  # 简化：线性路径
                 contributions[node_idx] += alpha_k
     
-    # 应用 NTD 惩罚和虚拟权益计算
-    ntd = 6
+    # 应用 d 惩罚和虚拟权益计算
+    d = 6
     total_contrib = np.sum(contributions)
     if total_contrib > 0:
         c_normalized = contributions / total_contrib
     else:
         c_normalized = np.ones(n_nodes) / n_nodes
     
-    # 假设真实权益均匀分布
-    s_real = np.ones(n_nodes) / n_nodes
+    # 假设真实权益服从Gini=0.6的分布
+    s_real = generate_distribution_with_gini(n_nodes, target_gini=0.6, seed=42)
     
     # 虚拟权益: S_v = omega * C + (1-omega) * S
-    omega = 0.8  # POG配置参数
+    omega = 0.8  # topostake配置参数
     s_virtual = omega * c_normalized + (1 - omega) * s_real
     s_virtual = s_virtual / np.sum(s_virtual)  # 归一化
     
@@ -109,8 +163,10 @@ def read_metrics_csv(consensus_type):
             return simulate_pow_consensus(n_miners=50, n_slots=1000)
         elif consensus_type == 'pos':
             return simulate_pos_consensus(n_validators=50, n_slots=1000)
-        elif consensus_type == 'pog':
-            return simulate_pog_consensus(n_nodes=50, n_slots=1000)
+        elif consensus_type == 'topostake':
+            return simulate_topostake_consensus(n_nodes=50, n_slots=1000)
+        elif consensus_type == 'minotaur':
+            return simulate_minotaur_consensus(n_nodes=50, n_slots=1000)
         else:
             return generate_dummy_data(consensus_type)
     return pd.read_csv(csv_file)
@@ -122,8 +178,8 @@ def generate_dummy_data(consensus_type):
     # PoS: 幂律分布 (Rich get richer)
     if consensus_type == 'pos':
         weights = [1.0 / (i+1)**1.5 for i in range(n_nodes)]
-    # POG: 相对平滑 (Middle class rises)
-    elif consensus_type == 'pog':
+    # topostake: 相对平滑 (Middle class rises)
+    elif consensus_type == 'topostake':
         weights = [1.0 / (i+1)**0.8 for i in range(n_nodes)]
     # PoW: 高度中心化 (Mining pools)
     else:
@@ -162,23 +218,26 @@ def calculate_nakamoto_coefficient(df, threshold=0.51):
     return nakamoto
 
 def plot_lorenz_comparison():
-    df_pog = read_metrics_csv('pog')
+    df_topostake = read_metrics_csv('topostake')
     df_pos = read_metrics_csv('pos')
+    df_pow = read_metrics_csv('pow')
+    df_minotaur = read_metrics_csv('minotaur')
     
-    x_pog, y_pog = calculate_lorenz_curve(df_pog)
+    x_topostake, y_topostake = calculate_lorenz_curve(df_topostake)
     x_pos, y_pos = calculate_lorenz_curve(df_pos)
+    x_pow, y_pow = calculate_lorenz_curve(df_pow)
+    x_minotaur, y_minotaur = calculate_lorenz_curve(df_minotaur)
     
     fig, ax = plt.subplots(figsize=(10, 8))
     
     # 绘制对角线 (Perfect Equality)
     ax.plot([0, 1], [0, 1], linestyle='--', color='gray', label='Perfect Equality', alpha=0.6)
     
-    # 绘制 POG 和 PoS
-    ax.plot(x_pog, y_pog, label='POG (Gini Low)', color='#1f77b4', linewidth=3)
-    ax.plot(x_pos, y_pos, label='PoS (Gini High)', color='#2ca02c', linewidth=3)
-    
-    # 填充面积 (可选，增加视觉冲击力)
-    ax.fill_between(x_pos, y_pos, x_pog, color='#1f77b4', alpha=0.1, label='Improvement Area')
+    # 绘制 topostake、PoS、PoW 和 Minotaur
+    ax.plot(x_topostake, y_topostake, label='topostake', color='#1f77b4', linewidth=3)
+    ax.plot(x_pos, y_pos, label='PoS', color='#2ca02c', linewidth=3)
+    ax.plot(x_pow, y_pow, label='PoW', color='#d62728', linewidth=3)
+    ax.plot(x_minotaur, y_minotaur, label='Minotaur', color='#9467bd', linewidth=3)
     
     # 应用标准格式化
     format_axes(ax, xlabel='Cumulative Share of Nodes', 
@@ -198,19 +257,21 @@ def plot_lorenz_comparison():
     plt.close()
 
 def plot_nakamoto_bar():
-    df_pog = read_metrics_csv('pog')
+    df_topostake = read_metrics_csv('topostake')
     df_pos = read_metrics_csv('pos')
-    df_pow = read_metrics_csv('pow') # 如果有pow数据
+    df_pow = read_metrics_csv('pow')
+    df_minotaur = read_metrics_csv('minotaur')
     
-    nk_pog = calculate_nakamoto_coefficient(df_pog)
+    nk_topostake = calculate_nakamoto_coefficient(df_topostake)
     nk_pos = calculate_nakamoto_coefficient(df_pos)
-    nk_pow = calculate_nakamoto_coefficient(df_pow) if df_pow is not None else 3
+    nk_pow = calculate_nakamoto_coefficient(df_pow)
+    nk_minotaur = calculate_nakamoto_coefficient(df_minotaur)
     
     fig, ax = plt.subplots(figsize=(10, 8))
     
-    protocols = ['POG', 'PoS', 'PoW']
-    values = [nk_pog, nk_pos, nk_pow]
-    colors = ['#1f77b4', '#2ca02c', '#d62728']
+    protocols = ['topostake', 'PoS', 'PoW', 'Minotaur']
+    values = [nk_topostake, nk_pos, nk_pow, nk_minotaur]
+    colors = ['#1f77b4', '#2ca02c', '#d62728', '#9467bd']
     
     bars = ax.bar(protocols, values, color=colors, alpha=0.8, width=0.6, edgecolor='black', linewidth=1.5)
     
@@ -240,3 +301,4 @@ def plot_nakamoto_bar():
 if __name__ == '__main__':
     plot_lorenz_comparison()
     plot_nakamoto_bar()
+

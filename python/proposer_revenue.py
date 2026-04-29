@@ -1,4 +1,4 @@
-import numpy as np
+﻿import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import os
@@ -8,19 +8,19 @@ from plot_style import set_plot_style, format_axes, format_figure, format_axes_b
 # 设置论文风格（大号字体）
 set_plot_style('paper')
 
-def compute_penalty_factor(avg_path_length, ntd=10):
+def compute_penalty_factor(avg_path_length, d=10):
     """
-    计算惩罚因子 P(B) (对应 src/consensus/pog.rs 中的 distribute_rewards)
-    P(B) = (NTD / L_avg)^2 if L_avg > NTD
+    计算惩罚因子 P(B) (对应 src/consensus/topostake.rs 中的 distribute_rewards)
+    P(B) = (d / L_avg)^2 if L_avg > d
     P(B) = 1.0 otherwise
     """
-    if avg_path_length <= ntd:
+    if avg_path_length <= d:
         return 1.0
     else:
-        return (ntd / avg_path_length) ** 2
+        return (d / avg_path_length) ** 2
 
 def simulate_proposer_revenue():
-    ntd = 6
+    d = 6
     max_length = 30
     lengths = np.arange(1, max_length + 1)
     
@@ -30,8 +30,8 @@ def simulate_proposer_revenue():
     
     # 修改：使用交易个数定义容量
     block_tx_count = 2000 # 区块容量 (标准交易个数)
-    # 意味着如果所有交易长度都为 NTD，则刚好能打包 block_tx_count 个交易
-    block_capacity_hops = block_tx_count * ntd
+    # 意味着如果所有交易长度都为 d，则刚好能打包 block_tx_count 个交易
+    block_capacity_hops = block_tx_count * d
     
     results = []
     
@@ -44,7 +44,7 @@ def simulate_proposer_revenue():
         total_fees = num_tx * base_fee_per_tx
         
         # 3. 计算惩罚因子 P(B)
-        penalty = compute_penalty_factor(l, ntd)
+        penalty = compute_penalty_factor(l, d)
         
         # 4. 计算矿工收益 (Miner Share)
         # Miner Reward = Block Reward + 0.5 * Total Fees * Penalty
@@ -70,7 +70,7 @@ def simulate_proposer_revenue():
 
 def plot_proposer_revenue():
     df = simulate_proposer_revenue()
-    ntd = 6
+    d = 6
     
     fig, ax = plt.subplots(figsize=(10, 7))
     
@@ -118,13 +118,13 @@ def plot_proposer_revenue():
     format_figure(fig)
     format_axes_background(ax)
 
-    # NTD 线
-    ax.axvline(x=ntd, color='black', linestyle='--', linewidth=2, alpha=0.5)
+    # d 线
+    ax.axvline(x=d, color='black', linestyle='--', linewidth=2, alpha=0.5)
     
-    # 标注 NTD 区域
+    # 标注 d 区域
     # 动态计算文本位置
     y_max = (miner_base + miner_fee + network_pool).max()
-    ax.text(ntd + 0.5, y_max * 0.8, f'NTD Threshold\n(Path>{ntd})', 
+    ax.text(d + 0.5, y_max * 0.8, f'd Threshold\n(Path>{d})', 
              fontsize=16, color='black', fontweight='bold')
 
     # 图例
@@ -148,3 +148,4 @@ if __name__ == "__main__":
     except Exception as e:
         import traceback
         traceback.print_exc()
+

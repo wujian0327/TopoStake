@@ -11,3 +11,9 @@ blockchain.json
 __pycache__/
 .github/
 back/*
+!/result/*
+!/python/icon/*
+!/python2/icon/*
+*.pdf
+.codex
+.DS_Store

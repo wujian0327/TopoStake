@@ -1,4 +1,4 @@
-import numpy as np
+﻿import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib.ticker import MaxNLocator
@@ -8,14 +8,14 @@ from plot_style import set_plot_style, format_axes, format_figure, format_axes_b
 
 set_plot_style('paper')
 
-def simulate_ntd_dynamics():
+def simulate_d_dynamics():
     epochs = 100
     attack_start = 20
     attack_end = 50
     
     # 真实网络参数
     true_diameter = 6
-    honest_mean = 6 # 修改为 6，使 NTD 收敛值与真实直径重合，便于观察
+    honest_mean = 6 # 修改为 6，使 d 收敛值与真实直径重合，便于观察
     honest_std = 1.5
     
     # 攻击参数
@@ -23,8 +23,8 @@ def simulate_ntd_dynamics():
     attack_len_max = 20
     attack_ratio = 0.1 # 10% 的交易是攻击交易
     
-    # 初始 NTD
-    ntd_naive = 0.0
+    # 初始 d
+    d_naive = 0.0
     
     history = []
     
@@ -53,22 +53,22 @@ def simulate_ntd_dynamics():
             
         paths = np.array(paths)
         
-        # 2. 计算本轮的目标 NTD
+        # 2. 计算本轮的目标 d
         # 策略 A: Naive (复刻 Rust 代码: 基于平均值)
         # Rust: p_ave = sum(len-1) / count; target = ceil(p_ave)
         # 注意: 这里的 paths 已经是 hop 数了 (len-1)
         target_naive = np.ceil(np.mean(paths))
         
-        # 3. 更新 NTD (步进式 +1/-1)
-        if ntd_naive < target_naive:
-            ntd_naive += 1.0
-        elif ntd_naive > target_naive:
-            ntd_naive -= 1.0
+        # 3. 更新 d (步进式 +1/-1)
+        if d_naive < target_naive:
+            d_naive += 1.0
+        elif d_naive > target_naive:
+            d_naive -= 1.0
             
         
         history.append({
             'epoch': epoch,
-            'ntd_naive': ntd_naive,
+            'd_naive': d_naive,
             'true_diameter': true_diameter,
             'honest_avg': np.mean(honest_paths),
             'all_paths_avg': np.mean(paths), # 添加这一行
@@ -79,7 +79,7 @@ def simulate_ntd_dynamics():
     df = pd.DataFrame(history)
     return df
 
-def plot_ntd_dynamics(df):
+def plot_d_dynamics(df):
     fig, ax = plt.subplots(figsize=(10, 7))
     
     # 1. 绘制背景区域 (攻击区间)
@@ -90,8 +90,8 @@ def plot_ntd_dynamics(df):
     # 2. 绘制基准线 (Ground Truth)
     ax.plot(df['epoch'], df['honest_avg'], color='gray', linestyle='--',  label='Avg Honest Path Length', alpha=0.8)
     
-    # 3. 绘制 Naive NTD
-    ax.plot(df['epoch'], df['ntd_naive'], color='#ff7f0e', linestyle='-', label='Dynamic NTD')
+    # 3. 绘制 Naive d
+    ax.plot(df['epoch'], df['d_naive'], color='#ff7f0e', linestyle='-', label='Dynamic d')
     
     # 4. 绘制攻击信号 (散点示意)
     attack_phase = df[df['attack_active'] == 1]
@@ -102,7 +102,7 @@ def plot_ntd_dynamics(df):
         ax.scatter(x_scatter, y_scatter, color='#d62728', alpha=0.3, s=30, marker='x', label='Attack Paths (15-20 hops)')
 
     # 应用标准格式化
-    format_axes(ax, xlabel='Epoch', ylabel='NTD', grid=True)
+    format_axes(ax, xlabel='Epoch', ylabel='d', grid=True)
     
     # 强制纵坐标为整数
     ax.yaxis.set_major_locator(MaxNLocator(integer=True))
@@ -118,11 +118,14 @@ def plot_ntd_dynamics(df):
     output_dir = os.path.join(root_dir, 'figures')
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
-    output_path = os.path.join(output_dir, 'ntd_dynamics_simulation.png')
+    output_path = os.path.join(output_dir, 'd_dynamics_simulation.png')
     plt.savefig(output_path, dpi=300, bbox_inches='tight', facecolor='white')
     print(f"Plot saved to: {output_path}")
     plt.close()
 
 if __name__ == "__main__":
-    df = simulate_ntd_dynamics()
-    plot_ntd_dynamics(df)
+    df = simulate_d_dynamics()
+    plot_d_dynamics(df)
+
+
+

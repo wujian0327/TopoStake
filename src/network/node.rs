@@ -1,14 +1,14 @@
-use crate::blockchain::block::{Block, BlockError, Body};
+﻿use crate::blockchain::block::{Block, BlockError, Body};
 use crate::blockchain::path::{AggregatedSignedPaths, TransactionPaths};
 use crate::blockchain::transaction::Transaction;
 use crate::blockchain::{BlockChainError, Blockchain};
 use crate::consensus::{ConsensusType, RandaoSeed, Validator};
-use crate::network::message::{Message, MessageType};
-use crate::network::world_state::SlotManager;
+use crate::network::message::Message;
+// use crate::network::world_state::SlotManager;
 use crate::wallet::Wallet;
 use log::{debug, error, info, warn};
 use rand::Rng;
-use serde_json;
+// use serde_json;
 use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
 use std::sync::Arc;
@@ -27,19 +27,20 @@ pub struct Node {
     pub receiver: Receiver<Message>,
     pub neighbors: Vec<Neighbor>,
     pub world_state_sender: Sender<Message>,
-    pub transaction_paths_cache: Arc<RwLock<HashMap<String, TransactionPaths>>>,
+    pub transaction_paths_cache: Arc<RwLock<HashMap<String, Arc<TransactionPaths>>>>,
     pub node_type: NodeType,
     pub sybil_nodes: Vec<Node>,
     pub is_online: bool,
     pub offline_until_epoch: Option<u64>,
     pub offline_probability: f64,
     pub sync_in_progress: bool,
-    pub transaction_fee: f64,     // 交易手续费
-    pub balance: f64,             // 账户余额
-    pub max_tx_per_block: usize,  // 每个区块最大交易数量
-    pub consensus: ConsensusType, // 共识算法类型
-    pub max_mempool_size: usize,  // 内存池最大容量
-    pub hash_power: f64,          // 节点算力
+    pub transaction_fee: f64,      // 交易手续费
+    pub balance: f64,              // 账户余额
+    pub max_tx_per_block: usize,   // 每个区块最大交易数量
+    pub consensus: ConsensusType,  // 共识算法类型
+    pub max_mempool_size: usize,   // 内存池最大容量
+    pub hash_power: f64,           // 节点算力
+    pub tx_propagation_delay: u64, // 交易传播延迟(ms)
 }
 
 #[derive(Clone)]
@@ -84,7 +85,7 @@ impl Node {
         } else {
             Wallet::new_deterministic(wallet_seed, index)
         };
-        let (sender, receiver) = tokio::sync::mpsc::channel(4096);
+        let (sender, receiver) = tokio::sync::mpsc::channel(1024 * 32);
         Node {
             index,
             epoch,
@@ -108,6 +109,7 @@ impl Node {
             consensus,
             max_mempool_size: max_tx_per_block,
             hash_power: 1.0,
+            tx_propagation_delay: 50, // 默认50ms
         }
     }
 
@@ -121,7 +123,7 @@ impl Node {
         max_tx_per_block: usize,
         consensus: ConsensusType,
     ) -> Self {
-        let (sender, receiver) = tokio::sync::mpsc::channel(8);
+        let (sender, receiver) = tokio::sync::mpsc::channel(1024 * 32);
         Node {
             index,
             epoch,
@@ -145,6 +147,7 @@ impl Node {
             consensus,
             max_mempool_size: max_tx_per_block,
             hash_power: 1.0,
+            tx_propagation_delay: 50, // 默认50ms
         }
     }
 
@@ -179,7 +182,7 @@ impl Node {
         } else {
             Wallet::new_deterministic(wallet_seed, index)
         };
-        let (sender, receiver) = tokio::sync::mpsc::channel(4096);
+        let (sender, receiver) = tokio::sync::mpsc::channel(1024 * 32);
         Node {
             index,
             epoch,
@@ -203,6 +206,7 @@ impl Node {
             consensus,
             max_mempool_size: max_tx_per_block,
             hash_power: 1.0,
+            tx_propagation_delay: 50, // 默认50ms
         }
     }
 
@@ -218,89 +222,47 @@ impl Node {
         self.hash_power = hash_power;
     }
 
-    pub async fn create_block_template(&self, epoch: u64, slot: u64) -> Result<Block, BlockError> {
+    pub fn set_tx_propagation_delay(&mut self, delay: u64) {
+        self.tx_propagation_delay = delay;
+    }
+
+    pub async fn generate_block(&self, epoch: u64, slot: u64) -> Result<Block, BlockError> {
         let transaction_paths_to_pack = {
             let transaction_paths_cache = self.transaction_paths_cache.read().await;
             let blockchain = self.blockchain.read().await;
 
             // 1. 过滤掉已经在区块链中的交易
-            let mut valid_paths: Vec<TransactionPaths> = transaction_paths_cache
+            let mut valid_paths: Vec<&Arc<TransactionPaths>> = transaction_paths_cache
                 .values()
-                .filter(|x| !blockchain.exist_transaction(x.transaction.hash.clone()))
-                .cloned()
+                .filter(|x| !blockchain.exist_transaction(&x.transaction.hash))
                 .collect();
 
-            // 2. 按手续费从高到低排序
+            // 2. 按手续费从高到低排序，如果手续费相同，则按交易创建时间从早到晚排序
             valid_paths.sort_by(|a, b| {
                 b.transaction
                     .fee
                     .partial_cmp(&a.transaction.fee)
                     .unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| a.transaction.timestamp.cmp(&b.transaction.timestamp))
             });
 
             // 3. 截取前 max_tx_per_block 个
             let pack_count = std::cmp::min(valid_paths.len(), self.max_tx_per_block);
-            valid_paths[..pack_count].to_vec()
-        };
-
-        let mut transactions: Vec<Transaction> =
-            Vec::with_capacity(transaction_paths_to_pack.len());
-        let mut paths: Vec<AggregatedSignedPaths> =
-            Vec::with_capacity(transaction_paths_to_pack.len());
-
-        for x in transaction_paths_to_pack {
-            transactions.push(x.transaction.clone());
-            paths.push(x.to_aggregated_signed_paths());
-        }
-
-        // 获取需要的信息后再释放读锁
-        let blockchain = self.blockchain.read().await;
-        let last_index = blockchain.get_last_index();
-        let last_hash = blockchain.get_last_hash();
-        drop(blockchain);
-
-        let body = Body::new(transactions, paths);
-        let new_block = Block::new(
-            last_index + 1,
-            epoch,
-            slot,
-            last_hash,
-            body,
-            self.wallet.clone(),
-        )?;
-
-        Ok(new_block)
-    }
-
-    pub async fn generate_block(&self, epoch: u64, slot: u64) -> Result<Block, BlockError> {
-        let transaction_paths_to_pack = {
-            let mut transaction_paths_cache = self.transaction_paths_cache.write().await;
-            let blockchain = self.blockchain.read().await;
-
-            // 1. 过滤掉已经在区块链中的交易
-            let mut valid_paths: Vec<TransactionPaths> = transaction_paths_cache
-                .values()
-                .filter(|x| !blockchain.exist_transaction(x.transaction.hash.clone()))
-                .cloned()
+            let to_pack: Vec<Arc<TransactionPaths>> = valid_paths[..pack_count]
+                .iter()
+                .map(|&x| x.clone())
                 .collect();
 
-            // 2. 按手续费从高到低排序
-            valid_paths.sort_by(|a, b| {
-                b.transaction
-                    .fee
-                    .partial_cmp(&a.transaction.fee)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            });
-
-            // 3. 截取前 max_tx_per_block 个
-            let pack_count = std::cmp::min(valid_paths.len(), self.max_tx_per_block);
-            let to_pack = valid_paths[..pack_count].to_vec();
+            drop(blockchain);
+            drop(transaction_paths_cache);
 
             // 4. 更新缓存：移除已打包的交易
-            let packed_hashes: std::collections::HashSet<String> =
-                to_pack.iter().map(|x| x.transaction.hash.clone()).collect();
-
-            transaction_paths_cache.retain(|hash, _| !packed_hashes.contains(hash));
+            if !to_pack.is_empty() {
+                let mut cache_write = self.transaction_paths_cache.write().await;
+                for tx in &to_pack {
+                    cache_write.remove(&tx.transaction.hash);
+                }
+            }
 
             to_pack
         };
@@ -395,13 +357,10 @@ impl Node {
         while let Some(msg) = self.receiver.recv().await {
             // 离线逻辑：如果节点离线，跳过大多数消息处理
             // 但 UpdateSlot 消息用于恢复在线逻辑，需要处理
-            if !self.is_online && !matches!(msg.msg_type, MessageType::UpdateSlot) {
-                debug!(
-                    "Node[{}] is offline, skipping message[{}]",
-                    self.index, msg.msg_type
-                );
-                match msg.msg_type {
-                    MessageType::GenerateBlock => {
+            if !self.is_online && !matches!(msg, Message::UpdateSlot(_)) {
+                debug!("Node[{}] is offline, skipping message", self.index);
+                match msg {
+                    Message::GenerateBlock => {
                         warn!(
                             "Node[{}] missed block generation due to being offline at slot {}",
                             self.index, self.slot
@@ -426,23 +385,16 @@ impl Node {
                 continue;
             }
 
-            match msg.msg_type {
-                MessageType::SendBlock => {
-                    let block = match Block::from_json(msg.data) {
-                        Ok(b) => b,
-                        Err(e) => {
-                            error!("Node[{}] error: {}", self.index, e);
-                            continue;
-                        }
-                    };
+            match msg {
+                Message::SendBlock { block, from } => {
                     debug!(
-                        "Node[{}] received msg[{}]: block hash[{}]",
-                        self.index, msg.msg_type, block.header.hash
+                        "Node[{}] received msg[SendBlock]: block hash[{}]",
+                        self.index, block.header.hash
                     );
                     {
                         //添加到自己的区块链
                         let mut blockchain = self.blockchain.write().await;
-                        if let Err(e) = blockchain.add_block(block.clone()) {
+                        if let Err(e) = blockchain.add_block((*block).clone()) {
                             match e {
                                 BlockChainError::DuplicateBlocksReceived => {
                                     debug!("Node[{}] add block error: {}", self.index, e);
@@ -461,11 +413,11 @@ impl Node {
 
                                     if !self.neighbors.is_empty() {
                                         self.sync_in_progress = true;
-                                        for neighbor in self.neighbors.clone() {
+                                        for neighbor in &self.neighbors {
                                             let self_address = self.get_address();
+                                            let sender = neighbor.sender.clone();
                                             tokio::spawn(async move {
-                                                neighbor
-                                                    .sender
+                                                sender
                                                     .send(Message::new_request_block_sync_msg(
                                                         last_block_index,
                                                         self_address,
@@ -486,21 +438,15 @@ impl Node {
                     }
                     {
                         //清除交易缓存
-                        let tx_hashs: Vec<String> = block
-                            .body
-                            .transactions
-                            .iter()
-                            .map(|t| t.hash.to_string())
-                            .collect();
                         let mut transaction_paths_cache =
                             self.transaction_paths_cache.write().await;
-                        for tx_hash in tx_hashs {
-                            transaction_paths_cache.remove(&tx_hash);
+                        for t in &block.body.transactions {
+                            transaction_paths_cache.remove(&t.hash);
                         }
                     }
                     //广播到其他邻居
-                    for neighbor_sender in self.neighbors.clone() {
-                        if msg.from == neighbor_sender.address {
+                    for neighbor_sender in &self.neighbors {
+                        if from == neighbor_sender.address {
                             continue;
                         }
                         let block = block.clone();
@@ -509,46 +455,32 @@ impl Node {
                             self.index, neighbor_sender.index
                         );
                         let self_address = self.get_address();
+                        let sender = neighbor_sender.sender.clone();
                         tokio::spawn(async move {
-                            neighbor_sender
-                                .sender
+                            sender
                                 .send(Message::new_block_msg(block, self_address))
                                 .await
                                 .unwrap();
                         });
                     }
                 }
-                MessageType::SendTransactionPaths => {
-                    let mut transaction_paths = match TransactionPaths::from_json(msg.data) {
-                        Ok(t) => t,
-                        Err(e) => {
-                            error!("Node[{}] error: {}", self.index, e);
-                            continue;
-                        }
-                    };
-
+                Message::SendTransactionPaths {
+                    transaction_paths,
+                    from,
+                } => {
                     // if !transaction_paths.verify_last(self.wallet.address.clone()) {
                     //     error!("Node[{}] invalid transaction paths", self.index);
                     //     continue;
                     // }
-                    {
-                        let bc = self.blockchain.read().await;
-                        if bc.exist_transaction(transaction_paths.transaction.hash.clone()) {
-                            debug!(
-                                "Node[{}] received transaction[{}] already in blockchain",
-                                self.index, transaction_paths.transaction.hash
-                            );
-                            continue;
-                        }
-                    }
-                    //判断交易是否已经收到了,判断交易的paths是否最短 (O(1)查找)
+
+                    //判断交易是否已经收到了,判断交易的paths是否最短
                     {
                         let transactions_cache = self.transaction_paths_cache.read().await;
                         let tx_hash = &transaction_paths.transaction.hash;
 
                         if let Some(cached_tx) = transactions_cache.get(tx_hash) {
-                            if self.consensus == ConsensusType::POG {
-                                // POG: 只有当缓存的路径长度更短或相等时才跳过
+                            if self.consensus == ConsensusType::TopoStake {
+                                // TopoStake: 只有当缓存的路径长度更短或相等时才跳过
                                 if cached_tx.paths.len() <= transaction_paths.paths.len() {
                                     continue;
                                 }
@@ -558,32 +490,36 @@ impl Node {
                             }
                         }
                     }
+
+                    {
+                        let bc = self.blockchain.read().await;
+                        if bc.exist_transaction(&transaction_paths.transaction.hash) {
+                            debug!(
+                                "Node[{}] received transaction[{}] already in blockchain",
+                                self.index, transaction_paths.transaction.hash
+                            );
+                            continue;
+                        }
+                    }
                     debug!(
-                        "Node[{}] received msg[{}]: transaction hash[{}],path[{}]",
+                        "Node[{}] received msg[SendTransactionPaths]: transaction hash[{}],path[{}]",
                         self.short_address_with_index(),
-                        msg.msg_type,
                         transaction_paths.transaction.hash,
                         transaction_paths.to_paths_string(),
                     );
                     //收到交易，存储
+                    let mut is_cached = false;
                     {
                         let mut transactions_cache = self.transaction_paths_cache.write().await;
                         let tx_hash = transaction_paths.transaction.hash.clone();
 
-                        // 检查内存池是否已满
-                        if transactions_cache.len() >= self.max_mempool_size {
-                            // 如果内存池满了，且这是一个新交易，则丢弃
-                            if !transactions_cache.contains_key(&tx_hash) {
-                                debug!(
-                                    "Node[{}] mempool full, dropping transaction[{}]",
-                                    self.index, tx_hash
-                                );
-                                continue;
-                            }
-                        }
-
-                        //插入或更新交易
+                        // 取消内存池容量限制，确保交易完整传播
                         transactions_cache.insert(tx_hash, transaction_paths.clone());
+                        is_cached = true;
+                    }
+
+                    if !is_cached {
+                        continue;
                     }
 
                     match self.node_type {
@@ -598,15 +534,19 @@ impl Node {
                         NodeType::Sybil => {
                             //Sybil,伪造路径,再广播
                             let mut wallet = self.wallet.clone();
+
+                            // Create a modifiable copy
+                            let mut fake_paths = (*transaction_paths).clone();
+
                             self.sybil_nodes.iter().for_each(|s| {
-                                transaction_paths.add_path(s.get_address(), wallet.clone());
+                                fake_paths.add_path(s.get_address(), wallet.clone());
                                 wallet = s.wallet.clone();
                             });
-                            for neighbor_sender in self.neighbors.clone() {
-                                if msg.from == neighbor_sender.address {
+                            for neighbor_sender in &self.neighbors {
+                                if from == neighbor_sender.address {
                                     continue;
                                 }
-                                let mut new_trans_paths = transaction_paths.clone();
+                                let mut new_trans_paths = fake_paths.clone();
                                 new_trans_paths
                                     .add_path(neighbor_sender.address.clone(), wallet.clone());
                                 debug!(
@@ -617,11 +557,16 @@ impl Node {
                                     neighbor_sender.short_address_with_index()
                                 );
                                 let self_address = self.get_address();
+                                let sender = neighbor_sender.sender.clone();
+                                let delay = self.tx_propagation_delay;
                                 tokio::spawn(async move {
-                                    neighbor_sender
-                                        .sender
+                                    if delay > 0 {
+                                        tokio::time::sleep(std::time::Duration::from_millis(delay))
+                                            .await;
+                                    }
+                                    sender
                                         .send(Message::new_transaction_paths_msg(
-                                            new_trans_paths,
+                                            Arc::new(new_trans_paths),
                                             self_address,
                                         ))
                                         .await
@@ -634,11 +579,11 @@ impl Node {
                     }
 
                     //并广播到邻居
-                    for neighbor_sender in self.neighbors.clone() {
-                        if msg.from == neighbor_sender.address {
+                    for neighbor_sender in &self.neighbors {
+                        if from == neighbor_sender.address {
                             continue;
                         }
-                        let mut new_trans_paths = transaction_paths.clone();
+                        let mut new_trans_paths = (*transaction_paths).clone();
                         new_trans_paths
                             .add_path(neighbor_sender.address.clone(), self.wallet.clone());
                         debug!(
@@ -649,11 +594,15 @@ impl Node {
                             neighbor_sender.short_address_with_index()
                         );
                         let self_address = self.get_address();
+                        let sender = neighbor_sender.sender.clone();
+                        let delay = self.tx_propagation_delay;
                         tokio::spawn(async move {
-                            neighbor_sender
-                                .sender
+                            if delay > 0 {
+                                tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+                            }
+                            sender
                                 .send(Message::new_transaction_paths_msg(
-                                    new_trans_paths,
+                                    Arc::new(new_trans_paths),
                                     self_address,
                                 ))
                                 .await
@@ -662,7 +611,7 @@ impl Node {
                     }
                 }
 
-                MessageType::GenerateBlock => {
+                Message::GenerateBlock => {
                     // 同步过程中不能出块
                     if self.sync_in_progress {
                         warn!(
@@ -705,12 +654,13 @@ impl Node {
                     );
 
                     //广播区块
-                    for neighbor_sender in self.neighbors.clone() {
-                        let block = block.clone();
+                    let block_arc = Arc::new(block.clone());
+                    for neighbor_sender in &self.neighbors {
+                        let block = block_arc.clone();
                         let self_address = self.get_address();
+                        let sender = neighbor_sender.sender.clone();
                         tokio::spawn(async move {
-                            neighbor_sender
-                                .sender
+                            sender
                                 .send(Message::new_block_msg(block, self_address))
                                 .await
                                 .unwrap();
@@ -719,25 +669,15 @@ impl Node {
                     //告诉下worldState
                     let world_state_sender = self.world_state_sender.clone();
                     let self_address = self.get_address();
+                    let block_to_world = block_arc.clone();
                     tokio::spawn(async move {
                         world_state_sender
-                            .send(Message::new_block_msg(block, self_address))
+                            .send(Message::new_block_msg(block_to_world, self_address))
                             .await
                             .unwrap();
                     });
                 }
-                MessageType::GenerateTransactionPaths => {
-                    let to = match String::from_utf8(msg.data) {
-                        Ok(to) => to,
-                        Err(e) => {
-                            error!(
-                                "Node[{}] generate transaction paths failed:{}",
-                                self.index, e
-                            );
-                            continue;
-                        }
-                    };
-
+                Message::GenerateTransactionPaths { to } => {
                     // 检查余额是否充足
                     if !self.deduct_balance(self.transaction_fee) {
                         warn!(
@@ -760,13 +700,13 @@ impl Node {
                         Transaction::with_fee(to, 0, self.transaction_fee, self.wallet.clone());
                     let mut transaction_paths = TransactionPaths::new(transaction);
                     debug!(
-                        "Node[{}] received msg[{}]: transaction hash[{}],path[{}]",
+                        "Node[{}] received msg[GenerateTransactionPaths]: transaction hash[{}],path[{}]",
                         self.short_address_with_index(),
-                        msg.msg_type,
                         transaction_paths.transaction.hash,
                         transaction_paths.to_paths_string()
                     );
                     //缓存交易
+                    let mut is_cached = false;
                     {
                         let mut transactions_cache = self.transaction_paths_cache.write().await;
                         let tx_hash = transaction_paths.transaction.hash.clone();
@@ -779,11 +719,19 @@ impl Node {
                                     "Node[{}] mempool full, dropping generated transaction[{}]",
                                     self.index, tx_hash
                                 );
-                                continue;
+                            } else {
+                                transactions_cache
+                                    .insert(tx_hash, Arc::new(transaction_paths.clone()));
+                                is_cached = true;
                             }
+                        } else {
+                            transactions_cache.insert(tx_hash, Arc::new(transaction_paths.clone()));
+                            is_cached = true;
                         }
+                    }
 
-                        transactions_cache.insert(tx_hash, transaction_paths.clone());
+                    if !is_cached {
+                        continue;
                     }
                     match self.node_type {
                         NodeType::Sybil => {
@@ -793,10 +741,7 @@ impl Node {
                                 transaction_paths.add_path(s.get_address(), wallet.clone());
                                 wallet = s.wallet.clone();
                             });
-                            for neighbor_sender in self.neighbors.clone() {
-                                if msg.from == neighbor_sender.address {
-                                    continue;
-                                }
+                            for neighbor_sender in &self.neighbors {
                                 let mut new_trans_paths = transaction_paths.clone();
                                 new_trans_paths
                                     .add_path(neighbor_sender.address.clone(), wallet.clone());
@@ -808,11 +753,16 @@ impl Node {
                                     neighbor_sender.short_address_with_index()
                                 );
                                 let self_address = self.get_address();
+                                let sender = neighbor_sender.sender.clone();
+                                let delay = self.tx_propagation_delay;
                                 tokio::spawn(async move {
-                                    neighbor_sender
-                                        .sender
+                                    if delay > 0 {
+                                        tokio::time::sleep(std::time::Duration::from_millis(delay))
+                                            .await;
+                                    }
+                                    sender
                                         .send(Message::new_transaction_paths_msg(
-                                            new_trans_paths,
+                                            Arc::new(new_trans_paths),
                                             self_address,
                                         ))
                                         .await
@@ -824,7 +774,7 @@ impl Node {
                         _ => {}
                     }
                     //广播交易
-                    for neighbor_sender in self.neighbors.clone() {
+                    for neighbor_sender in &self.neighbors {
                         let mut new_trans_paths = transaction_paths.clone();
                         new_trans_paths
                             .add_path(neighbor_sender.address.clone(), self.wallet.clone());
@@ -836,11 +786,15 @@ impl Node {
                             neighbor_sender.short_address_with_index()
                         );
                         let self_address = self.get_address();
+                        let sender = neighbor_sender.sender.clone();
+                        let delay = self.tx_propagation_delay;
                         tokio::spawn(async move {
-                            neighbor_sender
-                                .sender
+                            if delay > 0 {
+                                tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+                            }
+                            sender
                                 .send(Message::new_transaction_paths_msg(
-                                    new_trans_paths,
+                                    Arc::new(new_trans_paths),
                                     self_address,
                                 ))
                                 .await
@@ -848,7 +802,7 @@ impl Node {
                         });
                     }
                 }
-                MessageType::SendRandaoSeed => {
+                Message::SendRandaoSeed => {
                     let seed = RandaoSeed::generate_seed();
                     let signature = self.wallet.sign(Vec::from(seed));
                     let randao_seed = RandaoSeed {
@@ -857,23 +811,16 @@ impl Node {
                         signature,
                     };
                     debug!(
-                        "Node[{}] received msg[{}]: seed[{:?}]",
-                        self.index, msg.msg_type, seed
+                        "Node[{}] received msg[SendRandaoSeed]: seed[{:?}]",
+                        self.index, seed
                     );
                     self.world_state_sender
                         .send(Message::new_receive_random_seed_msg(randao_seed))
                         .await
                         .unwrap();
                 }
-                MessageType::BecomeValidator => {
-                    debug!("Node[{}] received msg[{}]", self.index, msg.msg_type);
-
-                    // Try to parse stake_map from JSON data
-                    let stake_map: std::collections::HashMap<String, f64> =
-                        String::from_utf8(msg.data.clone())
-                            .ok()
-                            .and_then(|json| serde_json::from_str(&json).ok())
-                            .unwrap_or_default();
+                Message::BecomeValidator(stake_map) => {
+                    debug!("Node[{}] received msg[BecomeValidator]", self.index);
 
                     // 从 stake_map 中获取本节点的 stake，并同步到 balance
                     let my_stake = stake_map
@@ -948,32 +895,13 @@ impl Node {
                         }
                     }
                 }
-                MessageType::UpdateNodeBalance => {
+                Message::UpdateNodeBalance(new_balance) => {
                     // WorldState 通知 Node 更新其 balance（例如获得奖励）
-                    if msg.data.len() == 8 {
-                        let new_balance = f64::from_le_bytes([
-                            msg.data[0],
-                            msg.data[1],
-                            msg.data[2],
-                            msg.data[3],
-                            msg.data[4],
-                            msg.data[5],
-                            msg.data[6],
-                            msg.data[7],
-                        ]);
-                        self.set_balance(new_balance);
-                        debug!("Node[{}] updated balance to {}", self.index, new_balance);
-                    }
+                    self.set_balance(new_balance);
+                    debug!("Node[{}] updated balance to {}", self.index, new_balance);
                 }
-                MessageType::UpdateSlot => {
-                    let slot = match SlotManager::from_json(msg.data) {
-                        Ok(t) => t,
-                        Err(e) => {
-                            error!("Node[{}] error: {}", self.index, e);
-                            continue;
-                        }
-                    };
-                    debug!("Node[{}] received msg[{}]", self.index, msg.msg_type);
+                Message::UpdateSlot(slot) => {
+                    debug!("Node[{}] received msg[UpdateSlot]", self.index);
 
                     let old_epoch = self.epoch;
                     self.slot = slot.current_slot;
@@ -992,15 +920,16 @@ impl Node {
 
                             // 向所有邻居发送块同步请求，确保至少有一个在线的邻居能响应
                             if !self.neighbors.is_empty() {
-                                for neighbor in self.neighbors.clone() {
+                                for neighbor in &self.neighbors {
                                     let self_address = self.get_address();
+                                    let sender = neighbor.sender.clone();
+                                    let neighbor_address = neighbor.address.clone();
                                     tokio::spawn(async move {
                                         debug!(
                                             "Node[{}] requests block sync from Node[{}], last block index: {}",
-                                            self_address, neighbor.address, last_block_index
+                                            self_address, neighbor_address, last_block_index
                                         );
-                                        neighbor
-                                            .sender
+                                        sender
                                             .send(Message::new_request_block_sync_msg(
                                                 last_block_index,
                                                 self_address,
@@ -1040,11 +969,14 @@ impl Node {
                         }
                     }
                 }
-                MessageType::PrintBlockchain => {
-                    debug!("Node[{}] received msg[{}]", self.index, msg.msg_type);
+                Message::PrintBlockchain => {
+                    debug!("Node[{}] received msg[PrintBlockchain]", self.index);
                     self.blockchain.read().await.write_to_file_all_json().await;
                 }
-                MessageType::RequestBlockSync => {
+                Message::RequestBlockSync {
+                    last_block_index: requested_index,
+                    from,
+                } => {
                     if self.sync_in_progress {
                         debug!(
                             "Node[{}] is syncing, ignoring new block sync request",
@@ -1052,7 +984,7 @@ impl Node {
                         );
                         continue;
                     }
-                    if msg.from == "world_state" {
+                    if from == "world_state" {
                         info!(
                             "Node[{}] received RequestBlockSync from world_state",
                             self.index
@@ -1072,51 +1004,49 @@ impl Node {
                         });
                         continue;
                     }
-                    // 接收块同步请求，返回从 index+1 开始到最新的所有块
-                    let requested_index = match msg.data.len() {
-                        8 => u64::from_le_bytes([
-                            msg.data[0],
-                            msg.data[1],
-                            msg.data[2],
-                            msg.data[3],
-                            msg.data[4],
-                            msg.data[5],
-                            msg.data[6],
-                            msg.data[7],
-                        ]),
-                        _ => {
-                            error!(
-                                "Node[{}] received invalid RequestBlockSync data",
-                                self.index
-                            );
-                            continue;
-                        }
-                    };
 
                     let blockchain_read = self.blockchain.read().await;
-                    let total_blocks = blockchain_read.blocks.len();
-                    let start_index = requested_index as usize;
-
-                    let sync_blocks = if start_index < total_blocks {
-                        blockchain_read.blocks[start_index..].to_vec()
+                    
+                    let sync_blocks = if let Some(first_block) = blockchain_read.blocks.first() {
+                        let oldest_index = first_block.header.index;
+                        if requested_index >= oldest_index {
+                            // 请求的区块在内存中
+                            let start_index = (requested_index - oldest_index) as usize;
+                            if start_index < blockchain_read.blocks.len() {
+                                blockchain_read.blocks[start_index..].to_vec()
+                            } else {
+                                vec![]
+                            }
+                        } else {
+                            // 请求的老区块已经被移除了，返回所有内存中剩下的区块当作快照拉取
+                            blockchain_read.blocks.clone()
+                        }
                     } else {
-                        continue;
+                        vec![]
                     };
 
+                    if sync_blocks.is_empty() {
+                        continue;
+                    }
+
                     debug!(
-                        "Node[{}] processing block sync request: requested_index={}, total_blocks={}, sending {} blocks to {}",
-                        self.index, requested_index, total_blocks, sync_blocks.len(), msg.from
+                        "Node[{}] processing block sync request: requested_index={}, memory_oldest={}, sending {} blocks to {}",
+                        self.index, 
+                        requested_index, 
+                        blockchain_read.blocks.first().map_or(0, |b| b.header.index), 
+                        sync_blocks.len(), 
+                        from
                     );
 
-                    if !msg.from.is_empty() {
+                    if !from.is_empty() {
                         // 找到发送者并发送响应
-                        for neighbor in self.neighbors.clone() {
-                            if neighbor.address == msg.from {
+                        for neighbor in &self.neighbors {
+                            if neighbor.address == from {
                                 let sync_blocks = sync_blocks.clone();
                                 let self_address = self.get_address();
+                                let sender = neighbor.sender.clone();
                                 tokio::spawn(async move {
-                                    neighbor
-                                        .sender
+                                    sender
                                         .send(Message::new_response_block_sync_msg(
                                             sync_blocks,
                                             self_address,
@@ -1129,27 +1059,11 @@ impl Node {
                         }
                     }
                 }
-                MessageType::ResponseBlockSync => {
+                Message::ResponseBlockSync {
+                    blocks: sync_blocks,
+                    from: _,
+                } => {
                     // 处理块同步响应
-                    let blocks_json = match String::from_utf8(msg.data) {
-                        Ok(s) => s,
-                        Err(e) => {
-                            error!(
-                                "Node[{}] error parsing ResponseBlockSync: {}",
-                                self.index, e
-                            );
-                            continue;
-                        }
-                    };
-
-                    let sync_blocks: Vec<Block> = match serde_json::from_str(&blocks_json) {
-                        Ok(blocks) => blocks,
-                        Err(e) => {
-                            error!("Node[{}] error deserializing blocks: {}", self.index, e);
-                            continue;
-                        }
-                    };
-
                     if sync_blocks.is_empty() {
                         error!("Node[{}] received empty block sync response", self.index);
                         continue;
@@ -1158,6 +1072,7 @@ impl Node {
                     let current_index = { self.blockchain.read().await.get_last_index() };
 
                     let response_index = sync_blocks.last().unwrap().header.index;
+                    let response_start_index = sync_blocks.first().unwrap().header.index;
 
                     // 验证：当前索引必须小于响应中的最大索引
                     if current_index >= response_index {
@@ -1172,109 +1087,109 @@ impl Node {
                     {
                         let mut blockchain = self.blockchain.write().await;
 
-                        // 查找 current_index + 1 在 sync_blocks 中的位置
-                        let target_index = current_index + 1;
-                        let mut start_sync_idx = None;
+                        // 同步的数据比我们当前拥有的新很多，且中间有断层
+                        if current_index + 1 < response_start_index {
+                            warn!(
+                                "Node[{}] received snapshot sync from index {} to {}, replacing local chain",
+                                self.index, response_start_index, response_index
+                            );
+                            
+                            // 清空本地区块链
+                            blockchain.blocks.clear();
+                            blockchain.transaction_index.clear();
+                            
+                            // 将收到的这批块作为新的本地链快照
+                            for sync_block in &sync_blocks {
+                                blockchain.blocks.push(sync_block.clone());
+                                for tx in &sync_block.body.transactions {
+                                    blockchain.transaction_index.insert(tx.hash.clone());
+                                }
+                            }
+                            
+                            // 清理已经被打包的交易的缓存
+                            let mut transaction_paths_cache = self.transaction_paths_cache.write().await;
+                            for tx_hash in &blockchain.transaction_index {
+                                transaction_paths_cache.remove(tx_hash);
+                            }
+                            
+                            self.sync_in_progress = false;
+                            info!(
+                                "Node[{}] completed snapshot sync: applied {} blocks",
+                                self.index, sync_blocks.len()
+                            );
+                            continue;
+                        }
 
-                        for (idx, sync_block) in sync_blocks.iter().enumerate() {
-                            if sync_block.header.index == target_index {
-                                start_sync_idx = Some(idx);
+                        // 寻找分叉点或者追加新块
+                        let mut start_idx = 0;
+                        let mut found_fork = false;
+                        
+                        for (i, sync_block) in sync_blocks.iter().enumerate() {
+                            let local_block_opt = blockchain.blocks.iter().find(|b| b.header.index == sync_block.header.index);
+                            
+                            if let Some(local_block) = local_block_opt {
+                                if local_block.header.hash != sync_block.header.hash {
+                                    warn!("Node[{}]: chain diverged at #{}, resolving", self.index, sync_block.header.index);
+                                    start_idx = i;
+                                    found_fork = true;
+                                    
+                                    let local_start = blockchain.blocks.first().map_or(0, |b| b.header.index);
+                                    let truncate_idx = (sync_block.header.index - local_start) as usize;
+                                    
+                                    let mut hashes_to_remove = Vec::new();
+                                    for b in &blockchain.blocks[truncate_idx..] {
+                                        for tx in &b.body.transactions {
+                                            hashes_to_remove.push(tx.hash.clone());
+                                        }
+                                    }
+                                    for hash in hashes_to_remove {
+                                        blockchain.transaction_index.remove(&hash);
+                                    }
+                                    
+                                    blockchain.blocks.truncate(truncate_idx);
+                                    break;
+                                }
+                            } else if sync_block.header.index > current_index {
+                                start_idx = i;
+                                found_fork = true;
                                 break;
                             }
                         }
-
-                        match start_sync_idx {
-                            None => {
-                                error!(
-                                    "Node[{}] target block index {} not found in sync response",
-                                    self.index, target_index
-                                );
-                                self.sync_in_progress = false;
-                            }
-                            Some(start_idx) => {
-                                // 判断是否成功
-                                let mut success = false;
-                                // 从找到的位置开始同步
-                                for (sync_idx, sync_block) in
-                                    sync_blocks[start_idx..].iter().enumerate()
-                                {
-                                    let expected_block_index = target_index + sync_idx as u64;
-
-                                    // 验证块的索引是否符合预期
-                                    if sync_block.header.index != expected_block_index {
-                                        error!(
-                                            "Node[{}] sync block index mismatch at position {}: expected {}, got {}",
-                                            self.index,
-                                            start_idx + sync_idx,
-                                            expected_block_index,
-                                            sync_block.header.index
-                                        );
+                        
+                        if found_fork {
+                            let mut success = true;
+                            for sync_idx in start_idx..sync_blocks.len() {
+                                let sync_block = &sync_blocks[sync_idx];
+                                match blockchain.add_block(sync_block.clone()) {
+                                    Ok(_) => {
+                                        debug!("Node[{}] synced block #{}", self.index, sync_block.header.index);
+                                        let tx_hashes: Vec<String> = sync_block
+                                            .body
+                                            .transactions
+                                            .iter()
+                                            .map(|t| t.hash.clone())
+                                            .collect();
+                                        let mut transaction_paths_cache =
+                                            self.transaction_paths_cache.write().await;
+                                        for tx_hash in tx_hashes {
+                                            transaction_paths_cache.remove(&tx_hash);
+                                        }
+                                    },
+                                    Err(e) => {
+                                        error!("Node[{}] error adding synced block #{}: {:?}", self.index, sync_block.header.index, e);
+                                        success = false;
                                         break;
                                     }
-
-                                    match blockchain.add_block(sync_block.clone()) {
-                                        Ok(_) => {
-                                            debug!(
-                                                "Node[{}] synced block #{}: hash={}",
-                                                self.index,
-                                                sync_block.header.index,
-                                                sync_block.header.hash
-                                            );
-                                            success = true;
-                                        }
-                                        Err(e) => match e {
-                                            BlockChainError::DuplicateBlocksReceived => {
-                                                warn!(
-                                                    "Node[{}] block #{} already exists",
-                                                    self.index, sync_block.header.index
-                                                );
-                                            }
-                                            BlockChainError::ParentHashMismatch
-                                            | BlockChainError::TransactionExists => {
-                                                //删除最新的一个块，再同步
-                                                if blockchain.blocks.len() == 1 {
-                                                    error!(
-                                                        "Node[{}] no blocks to remove during sync error handling",
-                                                        self.index
-                                                    );
-                                                } else {
-                                                    if let Some(removed_block) =
-                                                        blockchain.blocks.pop()
-                                                    {
-                                                        warn!(
-                                                        "Node[{}] removed block #{} due to {} during sync",
-                                                        self.index, e, removed_block.header.index
-                                                    );
-                                                    } else {
-                                                        error!(
-                                                        "Node[{}] no blocks to remove during sync error handling",
-                                                        self.index
-                                                    );
-                                                        break;
-                                                    }
-                                                }
-                                                break;
-                                            }
-                                            _ => {
-                                                error!(
-                                                    "Node[{}] error adding synced block #{}: {}",
-                                                    self.index, sync_block.header.index, e
-                                                );
-                                                break;
-                                            }
-                                        },
-                                    }
-                                }
-                                if success {
-                                    let synced_count = sync_blocks.len() - start_idx;
-                                    info!(
-                                        "Node[{}] completed block sync: synced {} blocks ",
-                                        self.index, synced_count
-                                    );
-                                    self.sync_in_progress = false;
                                 }
                             }
+                            info!(
+                                "Node[{}] completed block sync to index {}, success: {}",
+                                self.index, blockchain.get_last_index(), success
+                            );
+                        } else {
+                            debug!("Node[{}] sync skipped, no new blocks found or all match", self.index);
                         }
+                        self.sync_in_progress = false;
                     }
                 }
                 _ => {}
@@ -1350,7 +1265,7 @@ mod tests {
             blockchain,
             world_sender,
             1000,
-            ConsensusType::POG,
+            ConsensusType::TopoStake,
             0,
         );
         let node_sender = node.sender.clone();
@@ -1358,9 +1273,8 @@ mod tests {
             node.run().await;
         });
 
-        let msg = Message::new_block_msg(block, "".to_string());
+        let msg = Message::new_block_msg(Arc::new(block), "".to_string());
         let handle2 = tokio::spawn(async move {
-            info!("send msg:{:?}", msg);
             node_sender.send(msg).await.unwrap();
         });
 
@@ -1391,7 +1305,7 @@ mod tests {
             wallet0.clone(),
             world_sender.clone(),
             1000,
-            ConsensusType::POG,
+            ConsensusType::TopoStake,
         );
         let mut node1 = Node::new_with_wallet(
             1,
@@ -1401,7 +1315,7 @@ mod tests {
             wallet1.clone(),
             world_sender.clone(),
             1000,
-            ConsensusType::POG,
+            ConsensusType::TopoStake,
         );
         let mut node2 = Node::new_with_wallet(
             2,
@@ -1411,7 +1325,7 @@ mod tests {
             wallet2.clone(),
             world_sender.clone(),
             1000,
-            ConsensusType::POG,
+            ConsensusType::TopoStake,
         );
         let mut node3 = Node::new_with_wallet(
             3,
@@ -1421,7 +1335,7 @@ mod tests {
             wallet3.clone(),
             world_sender.clone(),
             1000,
-            ConsensusType::POG,
+            ConsensusType::TopoStake,
         );
 
         node0.neighbors.push(Neighbor::new(
@@ -1481,7 +1395,7 @@ mod tests {
         let transaction_paths = TransactionPaths::new(transaction);
         node0_sender
             .send(Message::new_transaction_paths_msg(
-                transaction_paths,
+                Arc::new(transaction_paths),
                 "".to_string(),
             ))
             .await
@@ -1521,7 +1435,7 @@ mod tests {
         let (_tx, _rx) = tokio::sync::mpsc::channel::<Message>(8);
         let (world_tx, _world_rx) = tokio::sync::mpsc::channel::<Message>(8);
         let bc = Blockchain::new(Block::gen_genesis_block());
-        let mut node = Node::new(0, 0, 0, bc, world_tx, 1000, ConsensusType::POG, 0);
+        let mut node = Node::new(0, 0, 0, bc, world_tx, 1000, ConsensusType::TopoStake, 0);
 
         assert_eq!(node.get_balance(), 0.0);
 
