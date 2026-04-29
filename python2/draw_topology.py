@@ -1,218 +1,340 @@
-import matplotlib.pyplot as plt
+import os
+
+import matplotlib.lines as mlines
 import matplotlib.patches as mpatches
+import matplotlib.pyplot as plt
 import networkx as nx
 import numpy as np
 
-np.random.seed(42)
 
-fig, axes = plt.subplots(1, 2, figsize=(10, 4.8))
-plt.subplots_adjust(wspace=-0.3, left=0.02, right=0.98, top=0.80, bottom=0.10)
+plt.rcParams.update({
+    'font.family': 'DejaVu Sans',
+    'font.size': 13,
+    'axes.grid': False,
+})
 
-# ── Node setup ──
+# ---------------------------------------------------------------------
+# Visual constants
+# ---------------------------------------------------------------------
 n_high = 4
-n_low  = 12
+n_low = 12
 n_total = n_high + n_low
 
-# Colors
-color_high = '#1B4F72'   # dark navy blue
-color_low  = '#A9CCE3'   # soft sky blue
-edge_active   = '#2C3E50'
-edge_weak     = '#B0B0B0'
-edge_incentiv = '#1E8449'  # forest green
+color_high = '#203D68'
+color_low = '#D8E8FA'
+edge_core = '#0B1630'
+edge_weak = '#7F7F7F'
+edge_incentivized = '#3D8B34'
 
-# Sizes
-size_high = 550
-size_low  = 200
+size_high = 760
+size_low = 320
 
-node_sizes_list = [size_high]*n_high + [size_low]*n_low
 
-# ── Layout ──
-def make_positions(r_inner=0.75, r_outer=1.75):
-    pos = {}
-    # High-stake: inner ring, rotated for visual balance
-    for i in range(n_high):
-        angle = 2 * np.pi * i / n_high + np.pi/4
-        pos[i] = (r_inner * np.cos(angle), r_inner * np.sin(angle))
-    # Low-stake: outer ring with slight jitter
-    rng = np.random.RandomState(123)
+def make_positions(x_shift=0.0, r_outer=1.68):
+    """Fixed layout: four validators in the core and twelve relays outside."""
+    pos = {
+        0: (-0.44 + x_shift, 0.44),
+        1: (0.44 + x_shift, 0.44),
+        2: (-0.44 + x_shift, -0.44),
+        3: (0.44 + x_shift, -0.44),
+    }
+
+    # Start at the top and go clockwise to match the reference figure.
     for i in range(n_low):
-        angle = 2 * np.pi * i / n_low + np.pi/6
-        jx = rng.uniform(-0.12, 0.12)
-        jy = rng.uniform(-0.12, 0.12)
-        pos[n_high + i] = (r_outer * np.cos(angle) + jx,
-                           r_outer * np.sin(angle) + jy)
+        angle = np.pi / 2 - 2 * np.pi * i / n_low
+        pos[n_high + i] = (
+            x_shift + r_outer * np.cos(angle),
+            r_outer * np.sin(angle),
+        )
     return pos
 
-pos = make_positions()
 
-# ====================================================================
-# LEFT PANEL: Lazy Propagation
-# ====================================================================
+def core_edges():
+    return [(0, 1), (0, 2), (1, 3), (2, 3), (0, 3), (1, 2)]
+
+
+def draw_nodes(ax, pos):
+    nx.draw_networkx_nodes(
+        nx.Graph(),
+        pos,
+        nodelist=range(n_high),
+        node_color=color_high,
+        node_size=size_high,
+        edgecolors=edge_core,
+        linewidths=1.25,
+        ax=ax,
+    )
+    nx.draw_networkx_nodes(
+        nx.Graph(),
+        pos,
+        nodelist=range(n_high, n_total),
+        node_color=color_low,
+        node_size=size_low,
+        edgecolors=color_high,
+        linewidths=1.1,
+        ax=ax,
+    )
+
+
+def format_panel(ax):
+    ax.set_xlim(-2.0, 2.0)
+    ax.set_ylim(-2.0, 2.0)
+    ax.set_aspect('equal')
+    ax.axis('off')
+
+
+def draw_panel_title(ax, title, subtitle):
+    ax.text(
+        0.5,
+        -0.025,
+        title,
+        transform=ax.transAxes,
+        ha='center',
+        va='top',
+        fontsize=18,
+        fontweight='bold',
+        color='black',
+    )
+    ax.text(
+        0.5,
+        -0.105,
+        subtitle,
+        transform=ax.transAxes,
+        ha='center',
+        va='top',
+        fontsize=13,
+        fontstyle='italic',
+        color='#4A4A4A',
+    )
+
+
+def build_lazy_edges():
+    # Outer dashed ring plus sparse, local spokes into the core.
+    weak_edges = []
+    for i in range(n_low):
+        weak_edges.append((n_high + i, n_high + (i + 1) % n_low))
+
+    nearest_core_links = {
+        4: (0, 1),
+        5: (1,),
+        6: (1,),
+        7: (1, 3),
+        8: (3,),
+        9: (3,),
+        10: (2, 3),
+        11: (2,),
+        12: (2,),
+        13: (0, 2),
+        14: (0,),
+        15: (0,),
+    }
+    for low, cores in nearest_core_links.items():
+        weak_edges.extend((low, core) for core in cores)
+    return weak_edges
+
+
+def build_incentivized_edges():
+    relay_edges = []
+
+    # Keep the outer incentivized relay ring visible.
+    for i in range(n_low):
+        relay_edges.append((n_high + i, n_high + (i + 1) % n_low))
+        relay_edges.append((n_high + i, n_high + (i + 3) % n_low))
+
+    # Rewarded paths from low-stake/object nodes into nearby validators.
+    # Apart from the outer ring and every-third relay chords, object nodes
+    # do not connect directly to each other.
+    for i in range(n_low):
+        low = n_high + i
+        if i in {10, 11, 0, 1, 2}:
+            relay_edges.append((low, 0))
+            relay_edges.append((low, 1))
+        elif i in {4, 5, 6, 7, 8}:
+            relay_edges.append((low, 2))
+            relay_edges.append((low, 3))
+        elif i in {3}:
+            relay_edges.append((low, 1))
+            relay_edges.append((low, 3))
+        else:
+            relay_edges.append((low, 0))
+            relay_edges.append((low, 2))
+
+    return list(dict.fromkeys(tuple(sorted(edge)) for edge in relay_edges))
+
+
+fig, axes = plt.subplots(1, 2, figsize=(8.0, 5.0))
+fig.subplots_adjust(left=0.035, right=0.965, top=0.86, bottom=0.19, wspace=0.08)
+
+# ---------------------------------------------------------------------
+# Left: Lazy Propagation
+# ---------------------------------------------------------------------
 ax = axes[0]
-ax.text(0, -2.8, 'Lazy Propagation', fontsize=18, fontweight='bold', ha='center', va='top')
-
-G_lazy = nx.DiGraph()
+pos_left = make_positions()
+G_lazy = nx.Graph()
 G_lazy.add_nodes_from(range(n_total))
 
-# High-stake clique (dense, solid)
-edges_strong = []
-for i in range(n_high):
-    for j in range(n_high):
-        if i != j:
-            edges_strong.append((i, j))
+lazy_core_edges = core_edges()
+lazy_weak_edges = build_lazy_edges()
+G_lazy.add_edges_from(lazy_core_edges + lazy_weak_edges)
 
-# Sparse peripheral links (weak, dashed)
-edges_weak = []
-# Each low-stake connects to just 1 high-stake
-for i in range(n_low):
-    edges_weak.append((n_high + i, i % n_high))
+nx.draw_networkx_edges(
+    G_lazy,
+    pos_left,
+    edgelist=lazy_weak_edges,
+    edge_color=edge_weak,
+    style=(0, (4, 3)),
+    width=1.05,
+    alpha=0.9,
+    ax=ax,
+)
+nx.draw_networkx_edges(
+    G_lazy,
+    pos_left,
+    edgelist=lazy_core_edges,
+    edge_color=edge_core,
+    width=1.85,
+    alpha=1.0,
+    ax=ax,
+)
+draw_nodes(ax, pos_left)
+format_panel(ax)
+draw_panel_title(ax, 'Lazy Propagation', 'core-dominated topology')
 
-# Very few peer-to-peer among low-stake
-edges_weak += [(n_high+0, n_high+1), (n_high+4, n_high+5),
-               (n_high+8, n_high+9), (n_high+6, n_high+7)]
-
-G_lazy.add_edges_from(edges_strong + edges_weak)
-
-# Draw weak edges first (behind)
-nx.draw_networkx_edges(G_lazy, pos, edgelist=edges_weak,
-                       style=(0, (4, 3)), edge_color=edge_weak,
-                       arrows=True, arrowsize=7, width=0.8,
-                       connectionstyle='arc3,rad=0.05',
-                       alpha=0.55, ax=ax, node_size=node_sizes_list,
-                       min_source_margin=8, min_target_margin=8)
-
-# Draw strong edges
-nx.draw_networkx_edges(G_lazy, pos, edgelist=edges_strong,
-                       style='solid', edge_color=edge_active,
-                       arrows=True, arrowsize=9, width=1.3,
-                       connectionstyle='arc3,rad=0.1',
-                       alpha=0.75, ax=ax, node_size=node_sizes_list,
-                       min_source_margin=10, min_target_margin=10)
-
-# Draw nodes
-nx.draw_networkx_nodes(G_lazy, pos, nodelist=range(n_high),
-                       node_color=color_high, node_size=size_high,
-                       edgecolors='#0D2F4F', linewidths=1.5, ax=ax)
-nx.draw_networkx_nodes(G_lazy, pos, nodelist=range(n_high, n_total),
-                       node_color=color_low, node_size=size_low,
-                       edgecolors='#5D6D7E', linewidths=0.8, ax=ax)
-
-ax.set_xlim(-2.6, 2.6)
-ax.set_ylim(-2.6, 2.6)
-ax.set_aspect('equal')
-ax.axis('off')
-
-# ====================================================================
-# RIGHT PANEL: Incentivized Propagation
-# ====================================================================
+# ---------------------------------------------------------------------
+# Right: Incentivized Propagation
+# ---------------------------------------------------------------------
 ax = axes[1]
-ax.text(0, -2.8, 'Incentivized Propagation', fontsize=18, fontweight='bold', ha='center', va='top')
+pos_right = make_positions()
+G_incentivized = nx.Graph()
+G_incentivized.add_nodes_from(range(n_total))
 
-G_inc = nx.DiGraph()
-G_inc.add_nodes_from(range(n_total))
+incentivized_core_edges = core_edges()
+incentivized_relay_edges = build_incentivized_edges()
+G_incentivized.add_edges_from(incentivized_core_edges + incentivized_relay_edges)
 
-# Core links (high-stake still connected)
-edges_core = []
-for i in range(n_high):
-    for j in range(n_high):
-        if i != j:
-            edges_core.append((i, j))
+nx.draw_networkx_edges(
+    G_incentivized,
+    pos_right,
+    edgelist=incentivized_relay_edges,
+    edge_color=edge_incentivized,
+    width=0.95,
+    alpha=0.9,
+    ax=ax,
+)
+nx.draw_networkx_edges(
+    G_incentivized,
+    pos_right,
+    edgelist=incentivized_core_edges,
+    edge_color=edge_core,
+    width=1.85,
+    alpha=1.0,
+    ax=ax,
+)
+draw_nodes(ax, pos_right)
+format_panel(ax)
+draw_panel_title(ax, 'Incentivized Propagation', 'relay-rewarded topology')
 
-# Rich relay links (green, incentivized)
-edges_relay = []
-for i in range(n_low):
-    # Each low-stake connects to 2 high-stake nodes
-    t1 = i % n_high
-    t2 = (i + 1) % n_high
-    edges_relay.append((n_high + i, t1))
-    edges_relay.append((t2, n_high + i))
+# ---------------------------------------------------------------------
+# Central arrow and label
+# ---------------------------------------------------------------------
+arrow = mpatches.FancyArrowPatch(
+    (0.465, 0.535),
+    (0.535, 0.535),
+    transform=fig.transFigure,
+    arrowstyle='simple',
+    mutation_scale=38,
+    linewidth=0,
+    facecolor='black',
+    edgecolor='black',
+)
+fig.add_artist(arrow)
+fig.text(
+    0.50,
+    0.455,
+    'TopoStake',
+    ha='center',
+    va='center',
+    fontsize=12,
+    fontstyle='italic',
+    fontweight='bold',
+    color='#111111',
+)
 
-    # Each low-stake connects to 2-3 neighboring low-stake
-    for offset in [1, 3]:
-        nb = n_high + (i + offset) % n_low
-        edges_relay.append((n_high + i, nb))
-
-# Cross-links for mesh-like appearance
-extras = [(n_high+0, n_high+6), (n_high+2, n_high+8),
-          (n_high+4, n_high+10), (n_high+5, n_high+11),
-          (n_high+1, n_high+9), (n_high+7, n_high+3),
-          (n_high+9, n_high+2), (n_high+11, n_high+5)]
-edges_relay += extras
-
-# High-stake outward to some low-stake
-for i in range(n_high):
-    for offset in [2, 5, 8]:
-        target = n_high + (offset + i * 3) % n_low
-        edges_relay.append((i, target))
-
-G_inc.add_edges_from(edges_core + edges_relay)
-
-# Draw incentivized relay edges
-nx.draw_networkx_edges(G_inc, pos, edgelist=edges_relay,
-                       style='solid', edge_color=edge_incentiv,
-                       arrows=True, arrowsize=6, width=0.8,
-                       connectionstyle='arc3,rad=0.06',
-                       alpha=0.35, ax=ax, node_size=node_sizes_list,
-                       min_source_margin=8, min_target_margin=8)
-
-# Draw core edges
-nx.draw_networkx_edges(G_inc, pos, edgelist=edges_core,
-                       style='solid', edge_color=edge_active,
-                       arrows=True, arrowsize=9, width=1.3,
-                       connectionstyle='arc3,rad=0.1',
-                       alpha=0.75, ax=ax, node_size=node_sizes_list,
-                       min_source_margin=10, min_target_margin=10)
-
-# Draw nodes
-nx.draw_networkx_nodes(G_inc, pos, nodelist=range(n_high),
-                       node_color=color_high, node_size=size_high,
-                       edgecolors='#0D2F4F', linewidths=1.5, ax=ax)
-nx.draw_networkx_nodes(G_inc, pos, nodelist=range(n_high, n_total),
-                       node_color=color_low, node_size=size_low,
-                       edgecolors='#5D6D7E', linewidths=0.8, ax=ax)
-
-ax.set_xlim(-2.6, 2.6)
-ax.set_ylim(-2.6, 2.6)
-ax.set_aspect('equal')
-ax.axis('off')
-
-# ====================================================================
-# Central arrow
-# ====================================================================
-fig.text(0.50, 0.51, '⟹', fontsize=32, ha='center', va='center',
-         fontweight='bold', color='#2C3E50')
-fig.text(0.50, 0.43, 'TopoStake', fontsize=12, ha='center', va='center',
-         fontstyle='italic', color='#2C3E50', fontweight='bold')
-
-# ====================================================================
+# ---------------------------------------------------------------------
 # Legend
-# ====================================================================
+# ---------------------------------------------------------------------
 legend_elements = [
-    mpatches.Patch(facecolor=color_high, edgecolor='#0D2F4F',
-                   linewidth=1.0, label='High-Stake'),
-    mpatches.Patch(facecolor=color_low, edgecolor='#5D6D7E',
-                   linewidth=0.8, label='Low-Stake'),
-    plt.Line2D([0], [0], color=edge_active, linewidth=1.4,
-               linestyle='-', label='Core Link'),
-    plt.Line2D([0], [0], color=edge_weak, linewidth=1.0,
-               linestyle='--', label='Weak Link'),
-    plt.Line2D([0], [0], color=edge_incentiv, linewidth=1.3,
-               linestyle='-', label='Incentivized Link'),
+    mlines.Line2D(
+        [0],
+        [0],
+        marker='o',
+        color='none',
+        markerfacecolor=color_high,
+        markeredgecolor=edge_core,
+        markeredgewidth=1.1,
+        markersize=15,
+        label='High-Stake',
+    ),
+    mlines.Line2D(
+        [0],
+        [0],
+        marker='o',
+        color='none',
+        markerfacecolor=color_low,
+        markeredgecolor=color_high,
+        markeredgewidth=1.0,
+        markersize=13,
+        label='Low-Stake',
+    ),
+    mlines.Line2D([0], [0], color=edge_core, linewidth=2.4, label='Core Link'),
+    mlines.Line2D(
+        [0],
+        [0],
+        color=edge_weak,
+        linewidth=1.7,
+        linestyle=(0, (4, 3)),
+        label='Weak Link',
+    ),
+    mlines.Line2D(
+        [0],
+        [0],
+        color=edge_incentivized,
+        linewidth=2.0,
+        label='Incentivized Link',
+    ),
 ]
 
-fig.legend(handles=legend_elements, loc='upper center', ncol=3,
-           fontsize=12, frameon=True, fancybox=False,
-           edgecolor='#CCCCCC', borderpad=0.5,
-           columnspacing=2.0, handlelength=1.6,
-           bbox_to_anchor=(0.5, 0.90))
+fig.legend(
+    handles=legend_elements,
+    loc='upper center',
+    ncol=5,
+    fontsize=11,
+    frameon=True,
+    fancybox=True,
+    edgecolor='#888888',
+    facecolor='white',
+    framealpha=1.0,
+    borderpad=0.55,
+    columnspacing=1.45,
+    handlelength=1.65,
+    handletextpad=0.45,
+    bbox_to_anchor=(0.5, 0.955),
+)
 
-import os
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 figures_dir = os.path.join(project_root, 'figures')
 os.makedirs(figures_dir, exist_ok=True)
 
-plt.savefig(os.path.join(figures_dir, 'topology_comparison.png'), dpi=400, bbox_inches='tight',
-            facecolor='white', edgecolor='none')
-plt.savefig(os.path.join(figures_dir, 'topology_comparison.pdf'), dpi=400, bbox_inches='tight',
-            facecolor='white', edgecolor='none')
-print("Done!")
+plt.savefig(
+    os.path.join(figures_dir, 'topology_comparison.png'),
+    dpi=400,
+    facecolor='white',
+    edgecolor='none',
+)
+plt.savefig(
+    os.path.join(figures_dir, 'topology_comparison.pdf'),
+    dpi=400,
+    facecolor='white',
+    edgecolor='none',
+)
+print('Done!')

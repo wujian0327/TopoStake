@@ -128,7 +128,7 @@ ax.set_ylabel('Throughput Retention (%)', fontweight='bold')
 
 ax.set_ylim(60, 102)
 ax.set_xlim(0, 51)
-ax.set_xticks(np.arange(0, 55, 15))
+ax.set_xticks(np.arange(0, 55, 10))
 ax.set_yticks(np.arange(60, 105, 10))
 
 # 图例位置

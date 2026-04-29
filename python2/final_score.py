@@ -294,7 +294,7 @@ high_mask = (label_show == 1)
 # =========================================================
 # Step 5. Plot
 # =========================================================
-fig, ax = plt.subplots(figsize=(10, 6.8))
+fig, ax = plt.subplots(figsize=(10, 7.1))
 
 # Two visual regions:
 # Region 1: upper-left  (x <= 40, y >= 60)
@@ -384,7 +384,7 @@ ax.set_yticks(np.arange(0, 101, 20))
 
 ax.legend(
     loc='upper right',
-    fontsize=20,
+    fontsize=21,
     frameon=True,
     fancybox=False,
     edgecolor='black',
@@ -392,7 +392,7 @@ ax.legend(
 )
 
 format_figure(fig)
-fig.subplots_adjust(left=0.12, right=0.97, bottom=0.13, top=0.96)
+fig.subplots_adjust(left=0.12, right=0.985, bottom=0.13, top=0.975)
 
 # =========================================================
 # Step 6. Save
@@ -400,8 +400,8 @@ fig.subplots_adjust(left=0.12, right=0.97, bottom=0.13, top=0.96)
 png_path = os.path.join(SAVE_DIR, "final_score.png")
 pdf_path = os.path.join(SAVE_DIR, "final_score.pdf")
 
-plt.savefig(png_path, dpi=300)
-plt.savefig(pdf_path, dpi=300)
+plt.savefig(png_path, dpi=300, bbox_inches='tight')
+plt.savefig(pdf_path, dpi=300, bbox_inches='tight')
 
 # plt.show()
 
