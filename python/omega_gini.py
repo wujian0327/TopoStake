@@ -317,16 +317,15 @@ def main() -> None:
 
     epoch_df = pd.concat(all_runs, ignore_index=True)
 
-    # Steady-state fairness: average over the last 20% of epochs.
+    # Steady-state Gini: average over the last 20% of epochs.
     steady_start = int(np.floor(EPOCHS * 0.80))
     steady_df = epoch_df[epoch_df["epoch"] >= steady_start]
     summary_df = (
         steady_df
         .groupby("omega", as_index=False)
         .agg(
-            fairness_mean=("fairness_score", "mean"),
-            fairness_std=("fairness_score", "std"),
             gini_mean=("virtual_stake_gini", "mean"),
+            gini_std=("virtual_stake_gini", "std"),
             contribution_gini_mean=("contribution_gini", "mean"),
             target_depth_mean=("target_depth", "mean"),
             avg_path_length_mean=("avg_path_length", "mean"),
@@ -338,13 +337,13 @@ def main() -> None:
     set_plot_style("paper")
     colors, linestyles, markers = get_colors_and_styles()
     fig, ax = plt.subplots(figsize=(10, 6.6))
-    fairness_mean_pct = summary_df["fairness_mean"] * 100.0
-    fairness_std_pct = summary_df["fairness_std"] * 100.0
+    gini_mean = summary_df["gini_mean"]
+    gini_std = summary_df["gini_std"]
 
     ax.errorbar(
         summary_df["omega"],
-        fairness_mean_pct,
-        yerr=fairness_std_pct,
+        gini_mean,
+        yerr=gini_std,
         marker=markers["topostake"],
         linestyle=linestyles["topostake"],
         color=colors["topostake"],
@@ -358,14 +357,15 @@ def main() -> None:
     format_axes(
         ax,
         xlabel=r"Mixing Parameter ($\omega$)",
-        ylabel="Fairness Score (%)",
+        ylabel="Gini Coefficient",
     )
+    ax.text(0.98, 0.42, 'Better Fairness', fontsize=20, color='gray', ha='right', va='center', fontweight='bold', zorder=1)
     ax.set_xlim(-0.03, 1.03)
     ax.set_xticks(np.arange(0.0, 1.01, 0.2))
-    ax.set_ylim(25, 60)
-    ax.set_yticks([30, 40, 50, 60])
+    ax.set_ylim(0.4, 0.75)
+    ax.set_yticks(np.arange(0.4, 0.71, 0.1))
     ax.axhline(
-        y=40,
+        y=0.60,
         color="gray",
         linestyle="--",
         linewidth=1.5,
@@ -375,7 +375,7 @@ def main() -> None:
 
     ax.legend(
         fontsize=22,
-        loc="lower right",
+        loc="best",
         frameon=True,
         fancybox=False,
         edgecolor="black",
@@ -383,8 +383,8 @@ def main() -> None:
     )
     format_figure(fig)
 
-    png_path = FIG_DIR / "omega_fairness.png"
-    pdf_path = FIG_DIR / "omega_fairness.pdf"
+    png_path = FIG_DIR / "omega_gini.png"
+    pdf_path = FIG_DIR / "omega_gini.pdf"
     fig.savefig(png_path, dpi=300, bbox_inches="tight")
     fig.savefig(pdf_path, dpi=300, bbox_inches="tight")
 

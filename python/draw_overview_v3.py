@@ -284,10 +284,10 @@ def draw_step1(ax, x, y, w, h):
     draw_divider(ax, x + 0.40, x + w - 0.40, y + 1.22, BLUE)
 
     ax.text(
-        x + 0.45,
+        x + 1.48,
         y + 0.63,
-        "Trace the transaction\nacross relays and collect\nsignatures.",
-        ha="left",
+        "Trace the transaction\npropagation and collect\nsignatures.",
+        ha="center",
         va="center",
         fontsize=11.6,
         color=BLACK,
@@ -408,10 +408,10 @@ def draw_step2(ax, x, y, w, h):
     draw_divider(ax, x + 0.35, x + w - 0.35, y + 0.88, GREEN)
 
     ax.text(
-        x + 0.45,
+        x + 2.55,
         y + 0.45,
         "Quantify each relay's contribution using path\nfeatures and smoothing.",
-        ha="left",
+        ha="center",
         va="center",
         fontsize=12.3,
         color=BLACK,
@@ -642,7 +642,7 @@ def draw_step4(ax, x, y, w, h):
         prop_y,
         prop_w,
         prop_h,
-        text="Proposer\nreward\n$(base + \\frac{1}{2}\\eta)$",
+        text="Proposer\nreward\n$base + \\frac{1}{2}\\eta \cdot fee$",
         fc="#FFFDF9",
         ec=ORANGE,
         fontsize=10,
@@ -655,7 +655,7 @@ def draw_step4(ax, x, y, w, h):
         rel_y,
         rel_w,
         rel_h,
-        text="Relay\nredistribution\nby score\n$(1-\\frac{1}{2}\\eta)\\,fee$",
+        text="Relay\nredistribution\nby score\n$(1-\\frac{1}{2}\\eta)\\, \cdot fee$",
         fc="#FFFDF9",
         ec=ORANGE,
         fontsize=9.3,
@@ -994,16 +994,13 @@ def draw_transaction_example(ax, x, y, w, h):
         zorder=12,
     )
 
-    ax.text(
-        pc_x + pc_w / 2,
-        pc_y + 1.06,
-        "+",
-        ha="center",
-        va="center",
-        fontsize=14,
+    draw_arrow(
+        ax,
+        (pc_x + pc_w / 2, pc_y + 1.18),
+        (pc_x + pc_w / 2, pc_y + 0.88),
         color=BLACK,
-        fontweight="bold",
-        zorder=15,
+        lw=1.2,
+        zorder=14,
     )
 
     rounded_box(

@@ -510,7 +510,7 @@ draw_summary_card(
     0.160,
     'Lazy Propagation',
     [
-        'Free-riding',
+        'Free riding',
         'Topology rigidity',
     ],
     title_color='#9B2F26',
@@ -526,7 +526,7 @@ draw_summary_card(
     0.160,
     'Incentivized Propagation',
     [
-        'Rewarded relays',
+        'Rewarded relayers',
         'Better connectivity',
         'Fairer participation',
     ],

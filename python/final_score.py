@@ -377,6 +377,8 @@ ax.plot(
 )
 
 format_axes(ax, xlabel='Stake Percentile (%)', ylabel='Atomic Score Percentile (%)')
+ax.set_xlabel('Stake Percentile (%)', fontsize=34, fontweight='bold')
+ax.set_ylabel('Atomic Score Percentile (%)', fontsize=34, fontweight='bold')
 ax.set_xlim(0, 100)
 ax.set_ylim(0, 100)
 ax.set_xticks(np.arange(0, 101, 20))
