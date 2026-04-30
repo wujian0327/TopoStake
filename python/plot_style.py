@@ -4,6 +4,8 @@
 提供标准化的图表样式设置，用于所有分析脚本的一致性呈现。
 """
 
+import os
+
 import matplotlib.pyplot as plt
 
 
@@ -18,7 +20,8 @@ def set_plot_style(style_name='paper'):
             - 'compact': 紧凑风格（字体小：9-12pt）
     """
     plt.style.use('seaborn-v0_8-whitegrid')
-    plt.rcParams['font.sans-serif'] = ['SimHei', 'DejaVu Sans']
+    # plt.rcParams['font.sans-serif'] = ['SimHei', 'DejaVu Sans']
+    plt.rcParams['font.sans-serif'] = ["Times New Roman", "Times", "DejaVu Serif"]
     plt.rcParams['axes.unicode_minus'] = False
     plt.rcParams['figure.dpi'] = 100
     plt.rcParams['savefig.dpi'] = 300
@@ -125,3 +128,13 @@ def format_axes_background(ax):
         ax: Matplotlib 坐标轴对象
     """
     ax.set_facecolor('white')
+
+
+def get_project_root():
+    """自动查找项目根目录，通过寻找 Cargo.toml 文件"""
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    while current_dir != os.path.dirname(current_dir):
+        if os.path.exists(os.path.join(current_dir, 'Cargo.toml')):
+            return current_dir
+        current_dir = os.path.dirname(current_dir)
+    return current_dir

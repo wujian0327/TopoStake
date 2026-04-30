@@ -1,62 +1,98 @@
-import pandas as pd
-import glob
 import os
+from matplotlib import pyplot as plt
+from matplotlib.ticker import MaxNLocator
+import numpy as np
+from plot_style import get_project_root, set_plot_style, get_colors_and_styles, format_axes, format_figure
+import pandas as pd
 
-def calculate_average_path_length():
-    # 查找当前目录和上一级目录下所有以 metrics_ 开头的 csv 文件
-    search_paths = ['../metrics_*.csv', 'metrics_*.csv']
-    
-    csv_files = []
-    for path in search_paths:
-        csv_files.extend(glob.glob(path))
+project_root = get_project_root()
 
-    # 去重
-    csv_files = list(set(csv_files))
-    
-    if not csv_files:
-        print("未找到任何 metrics_*.csv 文件")
-        return
+# 设置统一后的科研风格
+set_plot_style('paper')
+colors, linestyles, markers = get_colors_and_styles()
 
-    print("交易平均路径长度统计：")
-    print("-" * 50)
-    
-    for file in sorted(csv_files):
+# 图 1: Throughput (吞吐量)
+fig, ax = plt.subplots(figsize=(10, 8))  # 调整尺寸以适应大字体
+
+# --- 真实实验数据 ---
+N = np.array([50, 100, 150, 200, 250, 300])
+
+import pandas as pd
+
+def calculate_path_stats(alg):
+    means = []
+    stds = []
+    for n in N:
+        file = os.path.join(project_root, f'result/metrics_{alg}_n_{n}_t_100_ba.csv')
         try:
+            if not os.path.exists(file):
+                 means.append(np.nan)
+                 stds.append(np.nan)
+                 continue
             df = pd.read_csv(file)
-            
-            # 确保包含所需的列
-            if 'tx_count' not in df.columns or 'avg_path_length' not in df.columns:
-                print(f"{os.path.basename(file)}: 缺少必要的列 (tx_count, avg_path_length)")
-                continue
-            
-            # 过滤掉没有交易的区块
-            df_with_tx = df[df['tx_count'] > 0]
-            
-            if len(df_with_tx) == 0:
-                print(f"{os.path.basename(file)}: 无交易数据")
-                continue
-                
-            # 计算加权平均路径长度 (真实的所有交易的平均路径长度)
-            total_txs = df_with_tx['tx_count'].sum()
-            weighted_avg_path_length = (df_with_tx['avg_path_length'] * df_with_tx['tx_count']).sum() / total_txs
-            
-            # 计算区块平均路径长度的简单平均值
-            simple_avg_path_length = df_with_tx['avg_path_length'].mean()
-            
-            # 获取最大和最小路径长度
-            max_path_length = df_with_tx['max_path_length'].max() if 'max_path_length' in df.columns else "N/A"
-            min_path_length = df_with_tx['min_path_length'].min() if 'min_path_length' in df.columns else "N/A"
-            
-            print(f"文件: {os.path.basename(file)}")
-            print(f"  总交易数: {total_txs}")
-            print(f"  加权平均路径长度 (真实交易平均): {weighted_avg_path_length:.4f}")
-            print(f"  区块平均路径长度 (简单平均): {simple_avg_path_length:.4f}")
-            print(f"  最大路径长度: {max_path_length}")
-            print(f"  最小路径长度: {min_path_length}")
-            print("-" * 50)
-            
-        except Exception as e:
-            print(f"处理文件 {file} 时出错: {e}")
+            if 'avg_path_length' in df.columns:
+                valid_data = df[df['avg_path_length'] > 0]
+                if not valid_data.empty:
+                    means.append(valid_data['avg_path_length'].mean())
+                    stds.append(valid_data['avg_path_length'].std())
+                else:
+                    means.append(np.nan)
+                    stds.append(np.nan)
+            else:
+                means.append(np.nan)
+                stds.append(np.nan)
+        except Exception:
+            means.append(np.nan)
+            stds.append(np.nan)
+    return np.array(means), np.array(stds)
 
-if __name__ == "__main__":
-    calculate_average_path_length()
+path_topostake, err_topostake = calculate_path_stats('topostake')
+path_pos, err_pos = calculate_path_stats('pos')
+path_minotaur, err_minotaur = calculate_path_stats('minotaur')
+path_pow, err_pow = calculate_path_stats('pow')
+
+# --- 绘图 ---
+fig, ax = plt.subplots(figsize=(10, 6.8))
+
+# TopoStake
+ax.plot(N, path_topostake, 
+        marker=markers['topostake'], linestyle=linestyles['topostake'], color=colors['topostake'], 
+        label='TopoStake')
+# ax.fill_between(N, path_topostake - err_topostake, path_topostake + err_topostake, 
+#                 color=colors['topostake'], alpha=0.2)
+
+# PoS
+ax.plot(N, path_pos, 
+        marker=markers['pos'], linestyle=linestyles['pos'], color=colors['pos'], 
+        label='PoS')
+# ax.fill_between(N, path_pos - err_pos, path_pos + err_pos, 
+#                 color=colors['pos'], alpha=0.1)
+
+# Minotaur
+ax.plot(N, path_minotaur, 
+        marker=markers['minotaur'], linestyle=linestyles['minotaur'], color=colors['minotaur'], 
+        label='Minotaur')
+
+# PoW (Baseline Gossip)
+ax.plot(N, path_pow, 
+        marker=markers['pow'], linestyle=linestyles['pow'], color=colors['pow'], 
+        label='PoW')
+
+
+format_axes(ax, 
+            xlabel='Network Size ($N$)', 
+            ylabel='Avg. Path Hops',)
+
+ax.set_xlabel('Network Size ($N$)', fontweight='bold')
+ax.set_ylabel('Avg. Path Hops', fontweight='bold')
+
+# Reduce y-axis tick density for better readability.
+ax.yaxis.set_major_locator(MaxNLocator(nbins=5))
+
+ax.legend(fontsize=22, loc='best', frameon=True, fancybox=False, edgecolor='black', framealpha=0.95)
+format_figure(fig)
+fig.subplots_adjust(left=0.11, right=0.985, bottom=0.13, top=0.975)
+
+plt.savefig(os.path.join(project_root, 'figures', 'path_length_n.png'), dpi=300)
+plt.savefig(os.path.join(project_root, 'figures', 'path_length_n.pdf'), dpi=300)
+# plt.show()
