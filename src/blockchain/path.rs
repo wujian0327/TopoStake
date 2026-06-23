@@ -12,6 +12,7 @@ use std::fmt;
 lazy_static! {
     static ref RECEIPT_COMMITMENT_CACHE: DashMap<String, String> = DashMap::new();
     static ref RECEIPT_CONFLICT_CACHE: DashMap<String, usize> = DashMap::new();
+    static ref PATH_VERIFY_CACHE: DashMap<String, bool> = DashMap::new();
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
@@ -37,6 +38,8 @@ pub struct TransactionPaths {
 /// from the block header during verification.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct AggregatedSignedPaths {
+    #[serde(default)]
+    pub epoch: u64,
     pub signature: String,
     pub paths: Vec<String>,
 }
@@ -284,6 +287,7 @@ impl TransactionPaths {
 pub fn clear_receipt_cache_for_tests() {
     RECEIPT_COMMITMENT_CACHE.clear();
     RECEIPT_CONFLICT_CACHE.clear();
+    PATH_VERIFY_CACHE.clear();
 }
 
 pub fn conflicting_receipt_count(tx_hash: &str, epoch: u64, receiver: &str) -> usize {
@@ -298,6 +302,7 @@ impl AggregatedSignedPaths {
         let full_nodes = paths.node_sequence();
         if full_nodes.is_empty() {
             return AggregatedSignedPaths {
+                epoch: paths.epoch,
                 signature: String::new(),
                 paths: Vec::new(),
             };
@@ -306,12 +311,14 @@ impl AggregatedSignedPaths {
         let non_proposer_nodes = full_nodes[..full_nodes.len().saturating_sub(1)].to_vec();
         if full_nodes.len() == 1 {
             return AggregatedSignedPaths {
+                epoch: paths.epoch,
                 signature: String::new(),
                 paths: Vec::new(),
             };
         }
         if !paths.verify_completed_hops() {
             return AggregatedSignedPaths {
+                epoch: paths.epoch,
                 signature: String::new(),
                 paths: non_proposer_nodes,
             };
@@ -322,6 +329,7 @@ impl AggregatedSignedPaths {
             let Ok(sender_sig) = Wallet::bls_signature_from_string(hop.sender_signature.clone())
             else {
                 return AggregatedSignedPaths {
+                    epoch: paths.epoch,
                     signature: String::new(),
                     paths: non_proposer_nodes,
                 };
@@ -329,6 +337,7 @@ impl AggregatedSignedPaths {
             signatures.push(sender_sig);
             let Some(receiver_signature) = &hop.receiver_signature else {
                 return AggregatedSignedPaths {
+                    epoch: paths.epoch,
                     signature: String::new(),
                     paths: non_proposer_nodes,
                 };
@@ -336,6 +345,7 @@ impl AggregatedSignedPaths {
             let Ok(receiver_sig) = Wallet::bls_signature_from_string(receiver_signature.clone())
             else {
                 return AggregatedSignedPaths {
+                    epoch: paths.epoch,
                     signature: String::new(),
                     paths: non_proposer_nodes,
                 };
@@ -344,6 +354,7 @@ impl AggregatedSignedPaths {
         }
 
         AggregatedSignedPaths {
+            epoch: paths.epoch,
             signature: Wallet::bls_aggregated_sign(signatures),
             paths: non_proposer_nodes,
         }
@@ -353,7 +364,7 @@ impl AggregatedSignedPaths {
         self.verify_at_epoch(transaction, miner, 0)
     }
 
-    pub fn verify_at_epoch(&self, transaction: Transaction, miner: String, epoch: u64) -> bool {
+    pub fn verify_at_epoch(&self, transaction: Transaction, miner: String, _epoch: u64) -> bool {
         if !transaction.verify() {
             return false;
         }
@@ -364,7 +375,7 @@ impl AggregatedSignedPaths {
             return false;
         }
 
-        let full_nodes = self.full_path(miner);
+        let full_nodes = self.full_path(miner.clone());
         if full_nodes.first() != Some(&transaction.from) {
             return false;
         }
@@ -378,11 +389,15 @@ impl AggregatedSignedPaths {
         if self.signature.is_empty() {
             return false;
         }
+        let cache_key = self.verification_cache_key(&transaction.hash, &miner);
+        if let Some(cached) = PATH_VERIFY_CACHE.get(&cache_key) {
+            return *cached.value();
+        }
 
         let mut messages: Vec<Vec<u8>> = Vec::with_capacity(hop_count * 2);
         let mut pks: Vec<PublicKey> = Vec::with_capacity(hop_count * 2);
         for idx in 0..hop_count {
-            let prefix = chain_value_for_nodes(&transaction.hash, epoch, &full_nodes, idx);
+            let prefix = chain_value_for_nodes(&transaction.hash, self.epoch, &full_nodes, idx);
             let message = edge_statement(&prefix, &full_nodes[idx], &full_nodes[idx + 1]);
             let Some(sender_pk) = wallet::get_bls_pub_key(full_nodes[idx].clone()) else {
                 return false;
@@ -396,7 +411,20 @@ impl AggregatedSignedPaths {
             pks.push(receiver_pk);
         }
 
-        Wallet::bls_aggregated_verify(messages, pks, self.signature.clone())
+        let valid = Wallet::bls_aggregated_verify(messages, pks, self.signature.clone());
+        PATH_VERIFY_CACHE.insert(cache_key, valid);
+        valid
+    }
+
+    fn verification_cache_key(&self, tx_hash: &str, miner: &str) -> String {
+        format!(
+            "{}|{}|{}|{}|{}",
+            tx_hash,
+            self.epoch,
+            miner,
+            self.signature,
+            self.paths.join(">")
+        )
     }
 
     pub fn full_path(&self, miner: String) -> Vec<String> {
@@ -568,11 +596,20 @@ mod tests {
     }
 
     #[test]
-    fn modified_epoch_fails() {
+    fn modified_path_epoch_fails() {
+        let (transaction, transaction_paths, _origin, _relay1, _relay2, miner) =
+            build_valid_path(1);
+        let mut aggregated = AggregatedSignedPaths::from_transaction_paths(transaction_paths);
+        aggregated.epoch = 2;
+        assert!(!aggregated.verify_at_epoch(transaction, miner.address, 1));
+    }
+
+    #[test]
+    fn block_epoch_does_not_invalidate_path_epoch() {
         let (transaction, transaction_paths, _origin, _relay1, _relay2, miner) =
             build_valid_path(1);
         let aggregated = AggregatedSignedPaths::from_transaction_paths(transaction_paths);
-        assert!(!aggregated.verify_at_epoch(transaction, miner.address, 2));
+        assert!(aggregated.verify_at_epoch(transaction, miner.address, 2));
     }
 
     #[test]

@@ -689,8 +689,7 @@ impl WorldState {
                     path_lengths.push(full_path.len().saturating_sub(1) as f64);
                     for receiver in &full_path {
                         conflict_count +=
-                            conflicting_receipt_count(&tx.hash, block.header.epoch, receiver)
-                                as u64;
+                            conflicting_receipt_count(&tx.hash, path.epoch, receiver) as u64;
                     }
                 }
                 if block.verify_path_evidence(idx) {

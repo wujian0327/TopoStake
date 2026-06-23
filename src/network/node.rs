@@ -505,24 +505,24 @@ impl Node {
                     transaction_paths,
                     from,
                 } => {
-                    let mut received_transaction_paths = (*transaction_paths).clone();
-                    if !received_transaction_paths.complete_pending_hop(self.wallet.clone()) {
-                        debug!(
-                            "Node[{}] received invalid pending path for tx {}",
-                            self.index, received_transaction_paths.transaction.hash
-                        );
-                        continue;
-                    }
-                    let transaction_paths = Arc::new(received_transaction_paths);
+                    let tx_hash = transaction_paths.transaction.hash.clone();
 
-                    //判断交易是否已经收到了,判断交易的paths是否最短
+                    {
+                        let bc = self.blockchain.read().await;
+                        if bc.exist_transaction(&tx_hash) {
+                            debug!(
+                                "Node[{}] received transaction[{}] already in blockchain",
+                                self.index, tx_hash
+                            );
+                            continue;
+                        }
+                    }
+
                     {
                         let transactions_cache = self.transaction_paths_cache.read().await;
-                        let tx_hash = &transaction_paths.transaction.hash;
 
-                        if let Some(cached_tx) = transactions_cache.get(tx_hash) {
+                        if let Some(cached_tx) = transactions_cache.get(&tx_hash) {
                             if self.consensus == ConsensusType::TopoStake {
-                                // TopoStake: prefer shortest locally observed path; tie-break by sequence.
                                 let cached_len = cached_tx.paths.len();
                                 let incoming_len = transaction_paths.paths.len();
                                 let cached_key = cached_tx.to_paths_string();
@@ -533,22 +533,21 @@ impl Node {
                                     continue;
                                 }
                             } else {
-                                // 其他共识: 只要收到过就跳过
                                 continue;
                             }
                         }
                     }
 
-                    {
-                        let bc = self.blockchain.read().await;
-                        if bc.exist_transaction(&transaction_paths.transaction.hash) {
-                            debug!(
-                                "Node[{}] received transaction[{}] already in blockchain",
-                                self.index, transaction_paths.transaction.hash
-                            );
-                            continue;
-                        }
+                    let mut received_transaction_paths = (*transaction_paths).clone();
+                    if !received_transaction_paths.complete_pending_hop(self.wallet.clone()) {
+                        debug!(
+                            "Node[{}] received invalid pending path for tx {}",
+                            self.index, received_transaction_paths.transaction.hash
+                        );
+                        continue;
                     }
+                    let transaction_paths = Arc::new(received_transaction_paths);
+
                     debug!(
                         "Node[{}] received msg[SendTransactionPaths]: transaction hash[{}],path[{}]",
                         self.short_address_with_index(),
