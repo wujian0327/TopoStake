@@ -16,11 +16,11 @@
     "transaction_fee": 0.00001,
     "base_reward": 1.0,
     "slot_duration": 1,
-    "slot_per_epoch": 10,
-    "max_epochs": 40,
+    "slot_per_epoch": 5,
+    "max_epochs": 20,
     "warmup_epochs": 0,
     "max_tx_per_block": 250,
-    "time_scale": 0.05,
+    "time_scale": 0.1,
     "topostake_initial_depth": 4,
     "beta": 0.2,
     "topostake_saturation_k": 1.0,
@@ -35,7 +35,7 @@
       "protocols": ["pos", "topostake"],
       "node_num": [100],
       "topology": ["ba"],
-      "tx_rate": [25]
+      "tx_rate": [25, 50, 100, 150, 200]
     },
     {
       "name": "performance_scale",

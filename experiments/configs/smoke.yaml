@@ -16,7 +16,7 @@
     "transaction_fee": 0.00001,
     "base_reward": 1.0,
     "slot_duration": 1,
-    "slot_per_epoch": 3,
+    "slot_per_epoch": 10,
     "max_epochs": 3,
     "warmup_epochs": 0,
     "max_tx_per_block": 25,

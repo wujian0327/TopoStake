@@ -7,13 +7,22 @@ Python standard library; if PyYAML is installed, normal YAML is also accepted.
 ## Commands
 
 ```bash
-python3 experiments/run_experiments.py --config experiments/configs/smoke.yaml
-python3 experiments/summarize.py --config experiments/configs/smoke.yaml
-python3 analysis/plot_performance.py
+python scripts/task.py experiments-smoke
+python scripts/task.py experiments-main
+python scripts/task.py figures
 ```
 
-`make experiments-smoke` runs the complete reduced pipeline. `make
-experiments-main` expands the full paper matrix with five paired seeds.
+The Python task runner is the recommended cross-platform entry point,
+especially on Windows where `make` is usually not installed. The Makefile keeps
+equivalent shortcuts for environments that already have `make`.
+
+To run the lower-level scripts directly:
+
+```bash
+python experiments/run_experiments.py --config experiments/configs/smoke.yaml
+python experiments/summarize.py --config experiments/configs/smoke.yaml
+python analysis/plot_performance.py
+```
 
 ## Reproducibility
 

@@ -411,17 +411,28 @@ pub async fn start_network(config: SimulationConfig) {
     );
 
     // 根据度数设置延迟：度数越小，延迟越大
+    let scale_network_delay_ms = |logical_ms: u64| -> u64 {
+        if logical_ms == 0 {
+            return 0;
+        }
+        let scaled_ms = config
+            .scaled_duration(Duration::from_millis(logical_ms))
+            .as_millis();
+        scaled_ms.clamp(1, u64::MAX as u128) as u64
+    };
+
     for (address, node) in node_map.iter_mut() {
         let degree = *node_degrees.get(address).unwrap_or(&1);
         // 基础延迟 50ms，度数越小，额外延迟越大 (最大额外 150ms)
-        let mut delay = 50 + (150.0 * (1.0 - (degree as f64 / max_degree as f64))) as u64;
+        let logical_delay_ms = 50 + (150.0 * (1.0 - (degree as f64 / max_degree as f64))) as u64;
+        let mut delay = scale_network_delay_ms(logical_delay_ms);
         if adversarial_nodes.contains(address) && config.attack_mode == AttackMode::MaxScore {
             delay = 0;
         }
         node.set_tx_propagation_delay(delay);
         debug!(
-            "Node[{}] degree: {}, delay: {}ms",
-            node.index, degree, delay
+            "Node[{}] degree: {}, logical_delay: {}ms, delay: {}ms",
+            node.index, degree, logical_delay_ms, delay
         );
     }
 

@@ -83,11 +83,16 @@ Each run writes `output.log` in the project root and a reproducibility bundle to
 
 The reproducible paper pipeline lives under `experiments/` and `analysis/`.
 
-- `make test`: formatting, check, and unit tests
-- `make bench`: quick BLS path benchmark
-- `make experiments-smoke`: reduced end-to-end pipeline
-- `make experiments-main`: full paper experiment matrix
-- `make figures`: regenerate SVG figures from processed/raw outputs
+Use the cross-platform Python runner on Windows, Linux, or macOS:
+
+- `python scripts/task.py test`: formatting, check, and unit tests
+- `python scripts/task.py bench`: quick BLS path benchmark
+- `python scripts/task.py experiments-smoke`: reduced end-to-end pipeline
+- `python scripts/task.py experiments-main`: full paper experiment matrix
+- `python scripts/task.py figures`: regenerate SVG figures from processed/raw outputs
+
+The Makefile provides the same targets for environments that already have
+`make` installed.
 
 Raw outputs are written under `results/raw/<suite>/`, processed tables under
 `results/processed/`, and figures under `figures/`.

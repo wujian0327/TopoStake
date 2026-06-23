@@ -231,6 +231,9 @@ impl Node {
 
     pub fn set_tx_propagation_delay(&mut self, delay: u64) {
         self.tx_propagation_delay = delay;
+        for sybil in self.sybil_nodes.iter_mut() {
+            sybil.set_tx_propagation_delay(delay);
+        }
     }
 
     pub fn set_failure_seed(&mut self, seed: u64) {
