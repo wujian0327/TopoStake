@@ -17,7 +17,7 @@ pub mod pos;
 pub mod pow;
 pub mod topostake;
 
-#[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ConsensusType {
     POS,
     #[value(name = "topostake")]
@@ -53,30 +53,62 @@ pub trait Consensus: Send + Sync {
         combines_seed: [u8; 32],
         blockchain: &Blockchain,
     ) -> Result<Validator, ValidatorError>;
-    fn on_epoch_end(&mut self, blocks: &[Block]);
+    fn on_epoch_end(&mut self, blocks: &[Block], validators: &[Validator]);
     fn apply_block_feedback(&mut self, _block: &Block) {}
     fn state_summary(&self) -> String {
         String::new()
     }
 
-    /// 分配区块奖励给验证者
+    fn metrics_snapshot(&self) -> ConsensusMetricsSnapshot {
+        ConsensusMetricsSnapshot::default()
+    }
+
+    /// 分配区块奖励到账户余额
     ///
     /// # 参数
     /// * `block` - 单个区块
-    /// * `validators` - 所有验证者的可变引用，奖励会直接加到 stake 中
+    /// * `validators` - 所有验证者快照，经济 stake 不应在这里被修改
     ///
     /// # 说明
     /// - 默认实现不做任何操作，具体共识算法可覆盖此方法
-    /// - 奖励应该直接加到相应验证者的 stake 字段中
+    /// - 奖励以 balance delta 返回，由 WorldState 结算到账户余额
     fn distribute_rewards(
-        &self,
+        &mut self,
         _block: &Block,
-        _validators: &mut [Validator],
+        _validators: &[Validator],
         _nodes_index: HashMap<String, u32>,
-    ) {
+    ) -> Vec<BalanceDelta> {
+        Vec::new()
     }
 
     fn next_slot(&mut self, _validators: &[Validator], _block_index: u64) {}
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+pub struct ConsensusMetricsSnapshot {
+    pub topostake_depth: Option<usize>,
+    pub topostake_beta: Option<f64>,
+    pub topostake_eta: Option<f64>,
+    pub topostake_bonus_cap: Option<f64>,
+    pub topostake_saturation_k: Option<f64>,
+    pub topostake_proposer_fee_ratio: Option<f64>,
+    pub score_history: HashMap<String, f64>,
+    pub normalized_score: HashMap<String, f64>,
+    pub bonuses: HashMap<String, f64>,
+    pub unnormalized_proposer_weights: HashMap<String, f64>,
+    pub normalized_proposer_weights: HashMap<String, f64>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct BalanceDelta {
+    pub address: String,
+    pub amount: f64,
+}
+
+impl BalanceDelta {
+    pub fn new(address: String, amount: f64) -> Self {
+        BalanceDelta { address, amount }
+    }
 }
 
 pub fn combine_seed(validators: Vec<Validator>, vdf_seeds: Vec<RandaoSeed>) -> [u8; 32] {

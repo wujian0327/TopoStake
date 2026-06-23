@@ -4,9 +4,11 @@ use simplelog::{
     ColorChoice, CombinedLogger, ConfigBuilder, TermLogger, TerminalMode, WriteLogger,
 };
 use std::fs::File;
+use topostake::consensus::topostake::TopoStakeConfig;
 use topostake::consensus::ConsensusType;
 use topostake::network;
 use topostake::network::graph::TopologyType;
+use topostake::network::{AdversaryPlacement, AttackMode, SimulationConfig};
 
 #[derive(Parser, Debug)]
 #[clap(version = "1.0", author = "wujian", about = "TopoStake协议模拟")]
@@ -27,6 +29,10 @@ struct Args {
     /// 不稳定节点个数(Unstable node num)
     #[clap(short, long, default_value = "0")]
     unstable_node_num: u32,
+
+    /// 不稳定节点比例，用于不显式指定 unstable-node-num 的实验
+    #[clap(long, default_value = "0.0")]
+    unstable_fraction: f64,
 
     /// 不稳定节点下线概率 (Unstable node offline probability)
     #[clap(long, default_value = "0.5")]
@@ -75,6 +81,22 @@ struct Args {
     #[clap(long, default_value = "888")]
     graph_seed: u64,
 
+    /// 交易负载随机种子 (Poisson workload seed)
+    #[clap(long, default_value = "889")]
+    workload_seed: u64,
+
+    /// 选举采样随机种子 (Election sampling seed)
+    #[clap(long, default_value = "890")]
+    election_seed: u64,
+
+    /// failure/churn 随机种子 (Failure/churn seed)
+    #[clap(long, default_value = "891")]
+    failure_seed: u64,
+
+    /// 攻击者选择/攻击行为随机种子 (Attack seed)
+    #[clap(long, default_value = "892")]
+    attack_seed: u64,
+
     /// 固定奖励 (Base reward per block for all consensus)
     #[clap(long, default_value = "1.0")]
     base_reward: f64,
@@ -89,13 +111,33 @@ struct Args {
     #[clap(long, default_value = "8")]
     wallet_seed: u64,
 
-    /// TopoStake的omega参数 (Omega parameter for TopoStake)
-    #[clap(long, default_value = "1.0")]
-    omega: f64,
-
     /// TopoStake的beta参数 (Beta parameter for TopoStake)
-    #[clap(long, default_value = "0.5")]
+    #[clap(long, default_value = "0.2")]
     beta: f64,
+
+    /// Revised TopoStake initial target depth
+    #[clap(long, default_value = "4")]
+    topostake_initial_depth: usize,
+
+    /// Revised TopoStake saturation parameter K
+    #[clap(long, default_value = "1.0")]
+    topostake_saturation_k: f64,
+
+    /// Revised TopoStake proposer bonus strength eta
+    #[clap(long, default_value = "0.5")]
+    eta: f64,
+
+    /// Revised TopoStake maximum propagation bonus
+    #[clap(long, default_value = "1.0")]
+    bonus_cap: f64,
+
+    /// Revised TopoStake proposer fee ratio theta
+    #[clap(long, default_value = "0.7")]
+    proposer_fee_ratio: f64,
+
+    /// Canonical block depth before revised TopoStake rewards settle
+    #[clap(long, default_value = "2")]
+    reward_settlement_depth: u64,
 
     /// 最大运行Epoch数 (Max epochs to run)
     /// 当达到此Epoch数时，程序将自动退出
@@ -105,6 +147,42 @@ struct Args {
     /// Metrics 文件前缀 (Metrics file prefix)
     #[clap(long, default_value = "metrics")]
     metrics_prefix: String,
+
+    /// Run id used for output directory naming
+    #[clap(long, default_value = "")]
+    run_id: String,
+
+    /// Output directory. Defaults to results/<run-id>
+    #[clap(long, default_value = "")]
+    output_dir: String,
+
+    /// Use wall-clock slot sleeps. Without this, --time-scale can accelerate sleeps.
+    #[clap(long, default_value_t = false)]
+    real_time: bool,
+
+    /// Scale real sleeps without changing logical metrics
+    #[clap(long, default_value = "1.0")]
+    time_scale: f64,
+
+    /// Target corrupted real-stake fraction
+    #[clap(long, default_value = "0.0")]
+    adversary_stake_fraction: f64,
+
+    /// Corrupted validator placement strategy
+    #[arg(long, default_value_t = AdversaryPlacement::Random)]
+    adversary_placement: AdversaryPlacement,
+
+    /// Attack behavior
+    #[arg(long, default_value_t = AttackMode::None)]
+    attack_mode: AttackMode,
+
+    /// Controlled identities used by path-padding experiments
+    #[clap(long, default_value = "0")]
+    padding_identities: u32,
+
+    /// Extra adversarial transaction rate multiplier for flooding
+    #[clap(long, default_value = "0.0")]
+    attack_tx_rate_multiplier: f64,
 }
 
 #[tokio::main]
@@ -115,50 +193,84 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     //log setting
     init_logger()?;
 
-    network::start_network(
-        args.node_num,
-        args.sybil_node_num,
-        args.fake_node_num,
-        args.unstable_node_num,
-        args.offline_probability,
-        args.trans_num,
-        args.slot_duration,
-        args.slot_per_epoch,
-        args.pow_difficulty,
-        args.pow_max_threads,
-        args.consensus,
-        args.topology,
-        args.gini,
-        args.transaction_fee,
-        args.graph_seed,
-        args.base_reward,
-        args.max_tx_per_block,
-        args.wallet_seed,
-        args.omega,
-        args.beta,
-        args.max_epochs,
-        args.metrics_prefix,
-    )
-    .await;
+    let topostake_config = TopoStakeConfig {
+        initial_depth: args.topostake_initial_depth,
+        beta: args.beta,
+        saturation_k: args.topostake_saturation_k,
+        eta: args.eta,
+        bonus_cap: args.bonus_cap,
+        proposer_fee_ratio: args.proposer_fee_ratio,
+        reward_settlement_depth: args.reward_settlement_depth,
+    };
+    topostake_config
+        .validate()
+        .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidInput, err))?;
+
+    let config = SimulationConfig {
+        node_num: args.node_num,
+        sybil_node_num: args.sybil_node_num,
+        fake_node_num: args.fake_node_num,
+        unstable_node_num: args.unstable_node_num,
+        unstable_fraction: args.unstable_fraction,
+        offline_probability: args.offline_probability,
+        trans_num_per_second: args.trans_num,
+        slot_duration: args.slot_duration,
+        slot_per_epoch: args.slot_per_epoch,
+        pow_difficulty: args.pow_difficulty,
+        pow_max_threads: args.pow_max_threads,
+        consensus: args.consensus,
+        topology: args.topology,
+        gini: args.gini,
+        transaction_fee: args.transaction_fee,
+        graph_seed: args.graph_seed,
+        wallet_seed: args.wallet_seed,
+        workload_seed: args.workload_seed,
+        election_seed: args.election_seed,
+        failure_seed: args.failure_seed,
+        attack_seed: args.attack_seed,
+        base_reward: args.base_reward,
+        max_tx_per_block: args.max_tx_per_block,
+        topostake_config,
+        max_epochs: args.max_epochs,
+        metrics_prefix: args.metrics_prefix,
+        run_id: args.run_id,
+        output_dir: args.output_dir,
+        real_time: args.real_time,
+        time_scale: args.time_scale,
+        adversary_stake_fraction: args.adversary_stake_fraction,
+        adversary_placement: args.adversary_placement,
+        attack_mode: args.attack_mode,
+        padding_identities: args.padding_identities,
+        attack_tx_rate_multiplier: args.attack_tx_rate_multiplier,
+    };
+    network::start_network(config).await;
     Ok(())
 }
 
 pub fn init_logger() -> Result<(), Box<dyn std::error::Error>> {
+    let level = match std::env::var("TOPOSTAKE_LOG_LEVEL")
+        .unwrap_or_else(|_| "info".to_string())
+        .to_lowercase()
+        .as_str()
+    {
+        "off" => LevelFilter::Off,
+        "error" => LevelFilter::Error,
+        "warn" => LevelFilter::Warn,
+        "debug" => LevelFilter::Debug,
+        "trace" => LevelFilter::Trace,
+        _ => LevelFilter::Info,
+    };
     let config = ConfigBuilder::new()
         .set_time_format_str("%Y-%m-%d %H:%M:%S")
         .build();
     CombinedLogger::init(vec![
         TermLogger::new(
-            LevelFilter::Info,
+            level,
             config.clone(),
             TerminalMode::Mixed,
             ColorChoice::Auto,
         ),
-        WriteLogger::new(
-            LevelFilter::Info,
-            config,
-            File::create("output.log").unwrap(),
-        ),
+        WriteLogger::new(level, config, File::create("output.log").unwrap()),
     ])
     .unwrap();
     Ok(())

@@ -49,6 +49,16 @@ impl Blockchain {
     }
 
     pub fn add_block(&mut self, block: Block) -> Result<(), BlockChainError> {
+        if self.blocks.is_empty() {
+            if !block.verify() {
+                return Err(BlockChainError::InvalidBlock);
+            }
+            for x in &block.body.transactions {
+                self.transaction_index.insert(x.hash.clone());
+            }
+            self.blocks.push(block);
+            return Ok(());
+        }
         if self.get_last_index() + 1 > block.header.index {
             return Err(BlockChainError::IndexTooSmall);
         }
@@ -83,14 +93,10 @@ impl Blockchain {
         }
         self.blocks.push(block.clone());
 
-        // 限制内存中的区块数量
+        // 限制内存中的区块数量；transaction_index 保留完整的已打包交易集合，
+        // 用于全链去重，不能随区块内存裁剪一起删除。
         if self.blocks.len() > self.max_blocks_in_memory {
-            // 移除最老的区块
-            let removed_block = self.blocks.remove(0);
-            // 同时从 transaction_index 中移除这些交易的 hash，防止内存泄漏
-            for tx in removed_block.body.transactions {
-                self.transaction_index.remove(&tx.hash);
-            }
+            self.blocks.remove(0);
         }
 
         Ok(())
@@ -252,8 +258,11 @@ mod tests {
         let transaction = Transaction::new("123".to_string(), 32, wallet.clone());
         let mut transaction_paths = TransactionPaths::new(transaction.clone());
         transaction_paths.add_path(wallet2.address.clone(), wallet);
+        assert!(transaction_paths.complete_pending_hop(wallet2.clone()));
         transaction_paths.add_path(wallet3.address.clone(), wallet2);
+        assert!(transaction_paths.complete_pending_hop(wallet3.clone()));
         transaction_paths.add_path(miner.address.clone(), wallet3);
+        assert!(transaction_paths.complete_pending_hop(miner.clone()));
         let body = Body::new(
             vec![transaction],
             vec![AggregatedSignedPaths::from_transaction_paths(
@@ -271,5 +280,71 @@ mod tests {
         .unwrap();
         blockchain.add_block(block).unwrap();
         blockchain.simple_print_last_five_block();
+    }
+
+    #[test]
+    fn pruned_blocks_keep_transaction_dedup_index() {
+        let mut blockchain = Blockchain::new(Block::gen_genesis_block());
+        blockchain.max_blocks_in_memory = 1;
+
+        let miner = Wallet::new();
+        let wallet1 = Wallet::new();
+        let wallet2 = Wallet::new();
+        let tx1 = Transaction::new("recipient-1".to_string(), 1, wallet1);
+        let tx2 = Transaction::new("recipient-2".to_string(), 1, wallet2);
+
+        let block1 = Block::new(
+            blockchain.get_last_index() + 1,
+            0,
+            1,
+            blockchain.get_last_hash(),
+            Body::new(
+                vec![tx1.clone()],
+                vec![AggregatedSignedPaths::from_transaction_paths(
+                    TransactionPaths::new(tx1.clone()),
+                )],
+            ),
+            miner.clone(),
+        )
+        .unwrap();
+        blockchain.add_block(block1).unwrap();
+
+        let block2 = Block::new(
+            blockchain.get_last_index() + 1,
+            0,
+            2,
+            blockchain.get_last_hash(),
+            Body::new(
+                vec![tx2.clone()],
+                vec![AggregatedSignedPaths::from_transaction_paths(
+                    TransactionPaths::new(tx2),
+                )],
+            ),
+            miner.clone(),
+        )
+        .unwrap();
+        blockchain.add_block(block2).unwrap();
+
+        assert_eq!(blockchain.blocks.len(), 1);
+        assert!(blockchain.exist_transaction(&tx1.hash));
+
+        let duplicate_block = Block::new(
+            blockchain.get_last_index() + 1,
+            0,
+            3,
+            blockchain.get_last_hash(),
+            Body::new(
+                vec![tx1.clone()],
+                vec![AggregatedSignedPaths::from_transaction_paths(
+                    TransactionPaths::new(tx1),
+                )],
+            ),
+            miner,
+        )
+        .unwrap();
+        assert_eq!(
+            blockchain.add_block(duplicate_block),
+            Err(BlockChainError::TransactionExists)
+        );
     }
 }

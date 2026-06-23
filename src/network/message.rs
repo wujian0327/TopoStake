@@ -35,6 +35,10 @@ pub enum Message {
         address: String,
         new_stake: f64,
     },
+    UpdateAccountBalance {
+        address: String,
+        new_balance: f64,
+    },
     UpdateNodeBalance(f64),
     BlockProductionFailed {
         node_index: u32,
@@ -103,6 +107,13 @@ impl Message {
 
     pub fn new_update_validator_stake_msg(address: String, new_stake: f64) -> Message {
         Message::UpdateValidatorStake { address, new_stake }
+    }
+
+    pub fn new_update_account_balance_msg(address: String, new_balance: f64) -> Message {
+        Message::UpdateAccountBalance {
+            address,
+            new_balance,
+        }
     }
 
     pub fn new_update_node_balance_msg(new_balance: f64) -> Message {

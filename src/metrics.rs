@@ -34,6 +34,72 @@ pub struct TxPackingDelayStats {
     pub avg_delay_s: f64, // 平均打包延迟 (s)
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+pub struct EpochMetrics {
+    pub epoch: u64,
+    pub generated_tx: u64,
+    pub included_tx: u64,
+    pub throughput: f64,
+    pub p50_inclusion_latency_s: f64,
+    pub p95_inclusion_latency_s: f64,
+    pub p99_inclusion_latency_s: f64,
+    pub block_success_ratio: f64,
+    pub avg_path_length: f64,
+    pub p95_path_length: f64,
+    pub valid_path_count: u64,
+    pub invalid_path_count: u64,
+    pub conflicting_receipt_count: u64,
+    pub total_proposer_reward: f64,
+    pub total_relay_reward: f64,
+    pub burned_relay_fee: f64,
+    pub stake_gini: f64,
+    pub stake_hhi: f64,
+    pub proposer_weight_gini: f64,
+    pub proposer_weight_hhi: f64,
+    pub adversary_real_stake_share: f64,
+    pub adversary_score_share: f64,
+    pub adversary_proposer_weight_share: f64,
+    pub theoretical_proposer_weight_bound: f64,
+    pub observed_adversary_proposer_share: f64,
+    pub bound_violation: bool,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+pub struct NodeEpochMetrics {
+    pub epoch: u64,
+    pub validator_id: String,
+    pub adversarial: bool,
+    pub economic_stake: f64,
+    pub balance: f64,
+    pub raw_contribution: f64,
+    pub saturated_contribution: f64,
+    pub ema_score: f64,
+    pub normalized_score: f64,
+    pub bonus: f64,
+    pub unnormalized_proposer_weight: f64,
+    pub normalized_proposer_weight: f64,
+    pub proposer_count: u64,
+    pub relay_reward: f64,
+    pub proposer_reward: f64,
+    pub fee_spent: f64,
+    pub net_income: f64,
+    pub degree: usize,
+    pub betweenness: f64,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+pub struct RunSummary {
+    pub run_id: String,
+    pub completed_epochs: u64,
+    pub generated_tx: u64,
+    pub included_tx: u64,
+    pub block_production_success: usize,
+    pub block_production_failed: usize,
+    pub adversary_fee_spent: f64,
+    pub adversary_reward_income: f64,
+    pub adversary_net_income: f64,
+}
+
 impl SlotMetrics {
     pub fn to_csv_header() -> String {
         "epoch,slot,miner,proposer_stake,timestamp,block_hash,tx_count,throughput,avg_path_length,\
@@ -64,6 +130,83 @@ impl SlotMetrics {
             self.tx_packing_delay_stats.avg_delay_s,
             self.block_production_success,
             self.block_production_failed,
+        )
+    }
+}
+
+impl EpochMetrics {
+    pub fn to_csv_header() -> String {
+        "epoch,generated_tx,included_tx,throughput,p50_inclusion_latency_s,p95_inclusion_latency_s,p99_inclusion_latency_s,\
+         block_success_ratio,avg_path_length,p95_path_length,valid_path_count,invalid_path_count,conflicting_receipt_count,\
+         total_proposer_reward,total_relay_reward,burned_relay_fee,stake_gini,stake_hhi,proposer_weight_gini,proposer_weight_hhi,\
+         adversary_real_stake_share,adversary_score_share,adversary_proposer_weight_share,theoretical_proposer_weight_bound,\
+         observed_adversary_proposer_share,bound_violation"
+            .to_string()
+    }
+
+    pub fn to_csv_row(&self) -> String {
+        format!(
+            "{},{},{},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{},{},{},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{}",
+            self.epoch,
+            self.generated_tx,
+            self.included_tx,
+            self.throughput,
+            self.p50_inclusion_latency_s,
+            self.p95_inclusion_latency_s,
+            self.p99_inclusion_latency_s,
+            self.block_success_ratio,
+            self.avg_path_length,
+            self.p95_path_length,
+            self.valid_path_count,
+            self.invalid_path_count,
+            self.conflicting_receipt_count,
+            self.total_proposer_reward,
+            self.total_relay_reward,
+            self.burned_relay_fee,
+            self.stake_gini,
+            self.stake_hhi,
+            self.proposer_weight_gini,
+            self.proposer_weight_hhi,
+            self.adversary_real_stake_share,
+            self.adversary_score_share,
+            self.adversary_proposer_weight_share,
+            self.theoretical_proposer_weight_bound,
+            self.observed_adversary_proposer_share,
+            self.bound_violation,
+        )
+    }
+}
+
+impl NodeEpochMetrics {
+    pub fn to_csv_header() -> String {
+        "epoch,validator_id,adversarial,economic_stake,balance,raw_contribution,saturated_contribution,ema_score,normalized_score,\
+         bonus,unnormalized_proposer_weight,normalized_proposer_weight,proposer_count,relay_reward,proposer_reward,fee_spent,\
+         net_income,degree,betweenness"
+            .to_string()
+    }
+
+    pub fn to_csv_row(&self) -> String {
+        format!(
+            "{},{},{},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{},{:.6},{:.6},{:.6},{:.6},{},{}",
+            self.epoch,
+            self.validator_id,
+            self.adversarial,
+            self.economic_stake,
+            self.balance,
+            self.raw_contribution,
+            self.saturated_contribution,
+            self.ema_score,
+            self.normalized_score,
+            self.bonus,
+            self.unnormalized_proposer_weight,
+            self.normalized_proposer_weight,
+            self.proposer_count,
+            self.relay_reward,
+            self.proposer_reward,
+            self.fee_spent,
+            self.net_income,
+            self.degree,
+            self.betweenness,
         )
     }
 }
@@ -106,6 +249,36 @@ pub fn calculate_stake_concentration(stakes: &[f64]) -> f64 {
     }
     let shares: Vec<f64> = stakes.iter().map(|s| s / total).collect();
     shares.iter().map(|s| s * s).sum()
+}
+
+pub fn calculate_hhi(values: &[f64]) -> f64 {
+    calculate_stake_concentration(values)
+}
+
+pub fn percentile_f64(values: &[f64], percentile: f64) -> f64 {
+    if values.is_empty() {
+        return 0.0;
+    }
+    let mut sorted = values.to_vec();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let p = percentile.clamp(0.0, 1.0);
+    let idx = ((sorted.len() - 1) as f64 * p).ceil() as usize;
+    sorted[idx.min(sorted.len() - 1)]
+}
+
+pub fn share_for(
+    addresses: &std::collections::HashSet<String>,
+    values: &std::collections::HashMap<String, f64>,
+) -> f64 {
+    let total: f64 = values.values().sum();
+    if total <= 0.0 {
+        return 0.0;
+    }
+    addresses
+        .iter()
+        .map(|address| values.get(address).copied().unwrap_or(0.0))
+        .sum::<f64>()
+        / total
 }
 
 /// 计算路径长度统计

@@ -1,0 +1,1184 @@
+\documentclass[lettersize,journal]{IEEEtran}
+\usepackage{amsmath,amsfonts}
+\usepackage{algorithmic}
+\usepackage{algorithm}
+\usepackage{array}
+\usepackage[caption=false,font=normalsize,labelfont=sf,textfont=sf]{subfig}
+\usepackage{textcomp}
+\usepackage{stfloats}
+\usepackage{url}
+\usepackage{verbatim}
+\usepackage{graphicx}
+\usepackage{cite}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{amsthm}
+
+\newtheorem{theorem}{Theorem}
+\newtheorem{lemma}{Lemma}
+\newtheorem{corollary}{Corollary}
+\hyphenation{op-tical net-works semi-conduc-tor IEEE-Xplore}
+% updated with editorial comments 8/9/2021
+
+\begin{document}
+
+\title{A Sample Article Using IEEEtran.cls\\ for IEEE Journals and Transactions}
+
+\author{IEEE Publication Technology,~\IEEEmembership{Staff,~IEEE,}
+        % <-this % stops a space
+\thanks{This paper was produced by the IEEE Publication Technology Group. They are in Piscataway, NJ.}% <-this % stops a space
+\thanks{Manuscript received April 19, 2021; revised August 16, 2021.}}
+
+% The paper headers
+\markboth{Journal of \LaTeX\ Class Files,~Vol.~14, No.~8, August~2021}%
+{Shell \MakeLowercase{\textit{et al.}}: A Sample Article Using IEEEtran.cls for IEEE Journals}
+
+% \IEEEpubid{0000--0000/00\$00.00~\copyright~2021 IEEE}
+% Remember, if you use this you must call \IEEEpubidadjcol in the second
+% column for its text to clear the IEEEpubid mark.
+
+\maketitle
+
+\begin{abstract}
+This document describes the most common article elements and how to use the IEEEtran class with \LaTeX \ to produce files that are suitable for submission to the IEEE.  IEEEtran can produce conference, journal, and technical note (correspondence) papers with a suitable choice of class options. 
+\end{abstract}
+
+\begin{IEEEkeywords}
+Article submission, IEEE, IEEEtran, journal, \LaTeX, paper, template, typesetting.
+\end{IEEEkeywords}
+
+\section{Introduction}
+\IEEEPARstart{T}{his} file is intended to serve as a ``sample article file''
+for IEEE journal papers produced under \LaTeX\ using
+IEEEtran.cls version 1.8b and later. The most common elements are covered in the simplified and updated instructions in ``New\_IEEEtran\_how-to.pdf''. For less common elements you can refer back to the original ``IEEEtran\_HOWTO.pdf''. It is assumed that the reader has a basic working knowledge of \LaTeX. Those who are new to \LaTeX \ are encouraged to read Tobias Oetiker's ``The Not So Short Introduction to \LaTeX ,'' available at: \url{http://tug.ctan.org/info/lshort/english/lshort.pdf} which provides an overview of working with \LaTeX.
+
+
+
+\section{Preliminaries, Threat Model, and Design Goals}
+\label{sec:system_model}
+
+\subsection{Preliminaries}
+\label{subsec:preliminaries}
+
+\subsubsection{Network and Epochs}
+
+We consider a permissionless P2P blockchain network.
+During epoch $e$, the active validator set is
+$\mathcal{V}_e=\{v_1,\dots,v_{N_e}\}$.
+The communication network at slot $t$ is represented by a directed graph
+$G_t=(\mathcal{V}_e,\mathcal{E}_t)$, where
+$(v_i,v_j)\in\mathcal{E}_t$ means that $v_i$ can send messages to $v_j$.
+The reverse direction is not implied.
+
+Time is divided into fixed-duration slots and epochs.
+The $e$-th epoch contains $L$ consecutive slots:
+\begin{equation}
+\mathcal{I}_e
+=
+\{t\mid (e-1)L\leq t<eL\}.
+\end{equation}
+For clarity, the validator set and the economic-stake snapshot are fixed within each epoch.
+Stake changes take effect only at epoch boundaries according to the rules of the underlying PoS protocol.
+
+The network is partially synchronous.
+Before the unknown Global Stabilization Time (GST), message delay may be unbounded.
+After GST, messages exchanged over honest communication paths are delivered within a known bound $\Delta$.
+We further assume that the honest-validator subgraph remains connected after GST, as required by the underlying PoS protocol.
+
+Validators use traceable gossip for transaction propagation.
+Each relay verifies the existing path evidence and signs its incoming and outgoing propagation edges.
+Section~\ref{subsec:path-tracing} gives the complete path construction.
+
+\subsubsection{Epoch Snapshots and Protocol Weights}
+
+Let $S_i(e)>0$ be the economic stake of validator $v_i$ in the snapshot used for epoch $e$.
+Its normalized economic stake is
+\begin{equation}
+\label{eq:normalized_economic_stake}
+\hat S_i(e)
+=
+\frac{S_i(e)}
+{\sum_{v_j\in\mathcal{V}_e}S_j(e)}.
+\end{equation}
+Economic stake is the root security resource of TopoStake.
+It is used directly for finality voting.
+
+Propagation behavior observed in epoch $e$ is summarized by
+$\mathrm{Score}_i(e)$ after the epoch is finalized.
+This score is bound to the registered validator identity and is not transferable.
+A newly registered validator starts with zero propagation score.
+
+The score from epoch $e-1$ is used together with the economic-stake snapshot of epoch $e$ to derive the proposer-selection weight $W_i(e)$.
+Therefore,
+\begin{equation}
+\text{propagation in epoch } e-1
+\longrightarrow
+\text{proposer weight in epoch } e.
+\end{equation}
+In contrast, relay fees are calculated from the verified path contribution in the containing block and are settled after that block is finalized.
+
+TopoStake therefore separates three quantities:
+economic stake $\hat S_i(e)$, propagation score $\mathrm{Score}_i(e)$, and proposer-selection weight $W_i(e)$.
+Only economic stake is used for finality voting.
+
+\subsubsection{Underlying PoS Protocol}
+
+TopoStake is layered on an existing PoS protocol with a chain-selection rule, a randomness beacon, and a stake-weighted finality gadget.
+We make the following modular assumptions about the underlying protocol.
+
+First, if the adversarial proposer-selection share is below one half and the randomness beacon is unpredictable and sufficiently unbiased, the protocol provides probabilistic persistence, chain growth, and chain quality after GST.
+
+Second, a block is finalized only after receiving votes representing at least two thirds of the economic-stake snapshot.
+If Byzantine validators control less than one third of that stake, conflicting blocks cannot both be finalized.
+
+Third, propagation metadata affects only relay rewards, propagation scores, and proposer bonuses.
+A missing or invalid path record gives zero relay credit.
+It does not invalidate the underlying transaction or stop the base PoS protocol from making progress.
+Validators recompute relay payments from verified path records.
+
+These assumptions allow the security analysis to separate propagation accountability from the safety of the underlying ledger.
+
+\subsubsection{Security Properties}
+\label{subsec:security_def}
+
+Let $\mathcal{C}_t^i$ be the local chain of honest validator $v_i$ at slot $t$,
+and let $\mathcal{C}_t^i\lceil k$ denote the chain after removing its last $k$ blocks.
+Let $\mathcal{F}_t^i$ be the set of blocks finalized by $v_i$.
+
+\begin{enumerate}
+\item \textit{Safety.}
+For any honest validators $v_i$ and $v_j$, the probability that a $k$-deep prefix of one honest chain is absent from another honest chain decreases exponentially in $k$:
+\begin{equation}
+\Pr\!\left[
+\mathcal{C}_t^i\lceil k
+\not\preceq
+\mathcal{C}_{t'}^j
+\right]
+\leq
+e^{-\Omega(k)}.
+\end{equation}
+In addition, honest validators do not finalize conflicting blocks at the same height.
+If conflicting finality occurs, the signatures identify the validators that voted for both blocks.
+
+\item \textit{Liveness.}
+After GST, the ledger satisfies chain growth and chain quality.
+There exist constants $\tau,\mu\in(0,1]$ and $s_0\in\mathbb{N}$ such that, for any honest validator and any window of $s\geq s_0$ slots,
+\begin{equation}
+|\mathcal{C}_{t+s}^i|-|\mathcal{C}_t^i|
+\geq
+\tau s,
+\end{equation}
+and at least a $\mu$ fraction of the blocks in the window are honestly proposed.
+The value of $\mu$ depends on the honest share of proposer-selection weight.
+\end{enumerate}
+
+In addition to ledger safety and liveness, we analyze path authenticity, reward-budget balance, Sybil non-amplification, and bounded proposer influence.
+
+\subsubsection{Cryptographic Assumptions}
+
+TopoStake uses BLS signatures to compress the signatures on a propagation path.
+Given signatures $\{\sigma_1,\dots,\sigma_n\}$ on messages
+$\{m_1,\dots,m_n\}$, the aggregate signature is
+\begin{equation}
+\sigma_{\mathrm{agg}}
+=
+\sum_{i=1}^{n}\sigma_i.
+\end{equation}
+Its validity is checked by
+\begin{equation}
+e(\sigma_{\mathrm{agg}},g_2)
+=
+\prod_{i=1}^{n}
+e\!\left(
+H_{\mathbb{G}_1}(m_i),pk_i
+\right).
+\end{equation}
+
+We assume existential unforgeability of the signature scheme,
+collision resistance of the hash function,
+and proofs of possession for registered BLS public keys.
+The aggregate signature has constant size, but the validator sequence and verification work remain linear in the path length.
+
+
+\subsection{Threat Model}
+\label{subsec:problem_threat}
+
+A computationally bounded adversary $\mathcal{A}$ may adaptively corrupt validators and control their forwarding behavior, path signatures, block proposals, and finality votes.
+Let $\mathcal{A}_e\subseteq\mathcal{V}_e$ be the corrupted validators during epoch $e$.
+Their economic-stake fraction is
+\begin{equation}
+\label{eq:adversarial_stake_fraction}
+f_{\mathcal{A}}^{S}(e)
+=
+\sum_{v_i\in\mathcal{A}_e}
+\hat S_i(e).
+\end{equation}
+For finality safety, we assume
+\begin{equation}
+\label{eq:real_stake_assumption}
+f_{\mathcal{A}}^{S}(e)
+<
+\frac{1}{3}
+\end{equation}
+throughout each finality voting period.
+
+The adversary's network position is not assumed to be proportional to its stake.
+Corrupted validators may have high degree, large bandwidth, or advantageous positions in the propagation graph.
+They may also provide apparently valid relay service and obtain high propagation scores.
+Such scores do not increase their finality voting weight.
+
+Let
+\begin{equation}
+\label{eq:adversarial_proposer_fraction}
+f_{\mathcal{A}}^{W}(e)
+=
+\frac{
+\sum_{v_i\in\mathcal{A}_e}W_i(e)
+}{
+\sum_{v_j\in\mathcal{V}_e}W_j(e)
+}
+\end{equation}
+be the adversarial proposer-selection share.
+Section~\ref{sec:security} proves that protocol parameters can ensure
+$f_{\mathcal{A}}^{W}(e)<1/2$ whenever
+$f_{\mathcal{A}}^{S}(e)<1/3$.
+
+We consider the following attacks:
+
+\begin{enumerate}
+\item \textit{Path forgery:}
+the adversary attempts to insert, remove, or reorder honest validators in a propagation path.
+
+\item \textit{Receipt equivocation:}
+a validator signs several incompatible incoming paths for the same transaction and epoch.
+
+\item \textit{Sybil splitting and path padding:}
+the adversary divides stake across identities or inserts consecutive controlled identities into a path.
+
+\item \textit{Transaction flooding:}
+the adversary creates transactions to increase relay rewards or propagation scores.
+
+\item \textit{Proposer manipulation:}
+a proposer selects valid paths that favor colluding relayers or omits paths that favor honest relayers.
+
+\item \textit{Lazy propagation:}
+rational validators reduce forwarding effort while attempting to retain normal PoS rewards.
+\end{enumerate}
+
+A fully colluding set of validators can sign a syntactically valid path.
+TopoStake does not claim that signatures prove physical latency or useful network service.
+Instead, it prevents the fabrication of honest participation and bounds the reward and proposer influence obtainable from any accepted path.
+
+The adversary may delay, drop, or reorder messages passing through corrupted validators.
+After GST, it cannot prevent delivery over honest communication paths.
+Security proofs treat non-corrupted validators as protocol-following.
+The economic effect of rational relay behavior is evaluated separately from ledger safety.
+
+
+\subsection{Design Goals}
+\label{subsec:goals}
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=\linewidth]{figures/topology_comparison.pdf}
+  \caption{Propagation-unaware and propagation-accountable incentives.}
+  \label{fig:motivation}
+\end{figure}
+
+PoS protocols reward block production and finality voting, but usually do not reward transaction relay.
+This creates a free-rider problem: validators can rely on other nodes to propagate transactions while avoiding bandwidth and computation costs.
+It can also leave active low-stake relayers with little economic recognition.
+
+TopoStake adds a propagation-accountability layer without replacing economic stake as the security resource.
+Its design has four goals:
+
+\begin{enumerate}
+\item \textbf{Verifiable path evidence.}
+Relay credit must be based on publicly verifiable path records rather than self-reported claims.
+
+\item \textbf{Budgeted and accountable rewards.}
+Each transaction must have a bounded relay budget.
+Invalid paths, repeated identities, and conflicting receipts must not create relay credit.
+
+\item \textbf{Real-stake-bounded proposer influence.}
+Propagation scores may improve proposer opportunities, but the increase must be capped by protocol parameters.
+Finality voting must remain based only on economic stake.
+
+\item \textbf{Improved relay participation.}
+Immediate relay fees and bounded future proposer opportunities should encourage sustained forwarding behavior.
+Topology improvement is treated as an empirical result rather than an unconditional security guarantee.
+\end{enumerate}
+
+
+\section{The TopoStake Protocol}
+\label{sec:protocol}
+
+\subsection{Overview}
+
+TopoStake adds a propagation-accountability layer to a PoS blockchain.
+It makes relay behavior verifiable and rewardable, while keeping finality voting based on real economic stake.
+As shown in Fig.~\ref{fig:overview}, TopoStake contains four stages:
+\emph{Path Tracing}, \emph{Contribution Quantification},
+\emph{Bounded Proposer Selection}, and \emph{Reward Allocation}.
+
+\textbf{Step 1: Path Tracing.}
+Each relay signs the incoming and outgoing propagation edges of a transaction.
+The resulting path is publicly verifiable and is compressed into one BLS aggregate signature for block inclusion.
+
+\textbf{Step 2: Contribution Quantification.}
+Each verified path receives a bounded contribution budget.
+The budget is divided among intermediate relayers and decreases with path length.
+Path contributions are then aggregated and smoothed into a long-term propagation score.
+
+\textbf{Step 3: Bounded Proposer Selection.}
+Economic stake remains the base proposer-selection weight.
+A propagation score provides only a capped bonus, so proposer influence remains bounded by real stake and protocol parameters.
+Finality voting does not use this bonus.
+
+\textbf{Step 4: Reward Allocation.}
+A fraction of each transaction fee is paid to intermediate relayers according to their path-level contribution.
+The same contributions update future propagation scores, creating both immediate relay rewards and bounded future proposer opportunities.
+
+
+\subsection{Chained-Signature Path Tracing}
+\label{subsec:path-tracing}
+
+\subsubsection{Two-sided path certificates}
+Consider a propagation path
+$P=(v_0,v_1,\dots,v_m)$,
+where $v_0$ is the transaction originator and $v_m$ is the block proposer.
+Each transaction carries a route array
+$R=[r_0,\dots,r_{m-1}]$.
+
+Let $e$ be the current epoch and let $H(\cdot)$ be a collision-resistant hash function.
+The originator initializes
+\begin{equation}
+\label{eq:path_chain_init}
+c_0 =
+H\bigl(H(tx)\mathbin\Vert e\mathbin\Vert H(v_0)\bigr).
+\end{equation}
+For $i>0$, the chain value is updated as
+\begin{equation}
+\label{eq:path_chain_update}
+c_i =
+H\bigl(c_{i-1}\mathbin\Vert H(v_i)\bigr).
+\end{equation}
+Thus, $c_i$ commits to the transaction, the epoch, and the ordered path prefix ending at $v_i$.
+
+For the edge $(v_i,v_{i+1})$, define
+\begin{equation}
+\label{eq:edge_statement}
+M_i =
+c_i\mathbin\Vert H(v_i)\mathbin\Vert H(v_{i+1}).
+\end{equation}
+The sender and receiver proofs are
+\begin{equation}
+\label{eq:path_proofs}
+\begin{aligned}
+\sigma_i^{\mathsf{S}}
+&=
+\mathsf{Sign}(sk_i,M_i),
+&& 0\leq i<m,\\
+\sigma_i^{\mathsf{R}}
+&=
+\mathsf{Sign}(sk_i,M_{i-1}),
+&& 0<i\leq m.
+\end{aligned}
+\end{equation}
+
+The route array uses a node-centric encoding:
+\begin{equation}
+\label{eq:route_entries}
+\begin{aligned}
+r_0
+&=
+\bigl(v_1,\sigma_0^{\mathsf{S}}\bigr),\\
+r_i
+&=
+\bigl(v_{i+1},\sigma_i^{\mathsf{R}},
+      \sigma_i^{\mathsf{S}}\bigr),
+&& 0<i<m.
+\end{aligned}
+\end{equation}
+The proposer does not create a route entry because it has no next hop.
+Its receiving proof $\sigma_m^{\mathsf{R}}$ is included in the final aggregate proof.
+
+A hop $(v_i,v_{i+1})$ is valid only if
+\begin{align}
+\mathsf{Verify}\!\left(
+pk_i,M_i,\sigma_i^{\mathsf{S}}
+\right)
+&=\mathsf{true}, \\
+\mathsf{Verify}\!\left(
+pk_{i+1},M_i,\sigma_{i+1}^{\mathsf{R}}
+\right)
+&=\mathsf{true}.
+\end{align}
+The proposer verifies all hop certificates before including the path in a block.
+Paths containing repeated validator identities are rejected.
+
+For each transaction and epoch, a validator signs at most one receiving proof.
+This rule commits the validator to one incoming predecessor for contribution accounting.
+It does not restrict gossip fanout: the validator may still forward the transaction to several peers and create sender proofs for several outgoing edges.
+Two receiving proofs signed by the same validator for the same transaction and epoch form public equivocation evidence.
+
+\subsubsection{Path selection}
+At most one path is recorded for each transaction in a block.
+An honest proposer selects the shortest valid path in its local cache and uses a canonical ordering to break ties.
+This is a local rule rather than a global fastest-path guarantee.
+A verifier can check path validity, but cannot prove that the proposer did not observe another path.
+The security analysis therefore bounds the effect of path selection instead of assuming an honest proposer.
+
+\subsubsection{BLS compression and block encoding}
+For a path $P=(v_0,\dots,v_m)$, the proposer aggregates all sender and receiver proofs as
+\begin{equation}
+\label{eq:path_aggregate}
+\sigma_{\mathrm{agg}}
+=
+\sigma_0^{\mathsf{S}}
++
+\sum_{i=1}^{m-1}
+\left(
+\sigma_i^{\mathsf{R}}+\sigma_i^{\mathsf{S}}
+\right)
++
+\sigma_m^{\mathsf{R}}
+\in\mathbb{G}_1.
+\end{equation}
+The aggregate is verified using the standard BLS aggregate-verification equation over the corresponding $2m$ signer-message pairs.
+The aggregate signature has constant size, although verification and the validator sequence remain linear in $m$.
+
+A block is represented as
+\begin{equation}
+\label{eq:block_struct}
+\mathcal{B}
+=
+(\mathcal{H},\mathcal{T},\mathcal{P}),
+\end{equation}
+where $\mathcal{H}$ is the block header,
+$\mathcal{T}=\{tx_0,\dots,tx_n\}$ is the transaction set, and
+$\mathcal{P}=\{p_0,\dots,p_n\}$ contains the path records.
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=\linewidth]{figures/block_structure.pdf}
+  \caption{Block-level path encoding in TopoStake.}
+  \label{fig:block}
+\end{figure}
+
+For transaction $tx_k$, the path record is
+\begin{equation}
+\label{eq:path_record}
+p_k =
+\left(
+\sigma_{\mathrm{agg}}^k,
+[v_0^k,v_1^k,\dots,v_{m_k-1}^k]
+\right).
+\end{equation}
+The proposer $v_{m_k}^k$ is obtained from the block header and is therefore not repeated in the sequence.
+Given the transaction, the stored sequence, and the proposer identity, a verifier can reconstruct all edge statements and verify the aggregate proof.
+
+If the proposer generated the transaction, the path record is empty.
+If the originator sends the transaction directly to the proposer, the path contains no intermediate relayer and receives no relay contribution.
+
+The certificate proves that both endpoints endorsed each recorded edge.
+It does not prove physical latency or prevent a fully colluding path.
+Such paths are instead limited by the path budget, score saturation, and bounded proposer influence defined below.
+
+
+\subsection{Quantification of Propagation Contribution}
+\label{subsec:contribution-quantification}
+
+TopoStake scores only paths that pass public verification.
+Each transaction contributes at most one path, and only intermediate nodes receive relay credit.
+For a path $p=(v_0,\dots,v_m)$, define
+\begin{equation}
+\label{eq:relay_set}
+\mathcal{R}(p)
+=
+\{v_1,\dots,v_{m-1}\}.
+\end{equation}
+The originator and proposer are excluded.
+A direct path with $m\leq1$ has no eligible relayer.
+
+\subsubsection{Target depth and path budget}
+TopoStake maintains a target propagation depth $D_e\geq1$ for each epoch.
+Let $\widetilde L_e$ be the median hop length of eligible paths finalized in epoch $e$.
+The target changes by at most one hop per epoch:
+\begin{equation}
+\label{eq:target_update}
+D_{e+1}
+=
+\begin{cases}
+D_e, & \mathcal{P}_e=\emptyset,\\
+D_e+1, & \widetilde L_e>D_e,\\
+D_e, & \widetilde L_e=D_e,\\
+\max\{1,D_e-1\}, & \widetilde L_e<D_e.
+\end{cases}
+\end{equation}
+Using the median and a one-step update reduces the effect of short-term path manipulation.
+The value of $D_e$ changes reward scaling only; it does not affect finality voting.
+
+For a path of $m\geq2$ hops, define its total contribution budget as
+\begin{equation}
+\label{eq:path_budget_def}
+B_e(m)
+=
+\min\left\{1,\frac{D_e}{m}\right\}
+\lambda_e^{m-1},
+\qquad
+\lambda_e
+=
+\frac{2D_e+1}{3D_e+1}.
+\end{equation}
+Since $0<\lambda_e<1$, longer paths receive a smaller budget.
+
+The budget is divided among the intermediate relayers using
+\begin{equation}
+\label{eq:position_weight}
+\alpha_k^{(m,e)}
+=
+\frac{(1-r_e)r_e^{k-1}}
+{1-r_e^{m-1}},
+\qquad
+r_e
+=
+\frac{D_e}{2D_e+1},
+\end{equation}
+where $1\leq k\leq m-1$.
+The contribution of relay $v_k$ is
+\begin{equation}
+\label{eq:atomic_credit}
+\gamma(v_k,p)
+=
+B_e(m)\alpha_k^{(m,e)}.
+\end{equation}
+
+The construction satisfies
+
+
+\begin{align}
+\sum_{k=1}^{m-1}\alpha_k^{(m,e)} &= 1, \label{eq:path_credit_1} \\
+\sum_{v_k\in\mathcal{R}(p)} \gamma(v_k,p) &= B_e(m)\leq1, \label{eq:path_credit_2} \\
+\lambda_e(1+r_e) &= 1. \label{eq:path_credit_3}
+\end{align}
+The first two identities give every path a bounded budget.
+The last identity is used in Section~\ref{sec:security} to show that replacing one relay position with consecutive Sybil identities does not increase their total path credit.
+The decreasing positional weights reward nodes that make the transaction available earlier along the recorded path.
+
+\subsubsection{Epoch-level score update}
+Let $\mathcal{P}_e(v_i)$ be the eligible paths finalized in epoch $e$ that contain $v_i$ as an intermediate relayer.
+The raw contribution of $v_i$ is
+\begin{equation}
+\label{eq:raw_epoch_credit}
+A_i(e)
+=
+\sum_{p\in\mathcal{P}_e(v_i)}
+\gamma(v_i,p).
+\end{equation}
+
+TopoStake applies a stake-scaled logarithmic function:
+\begin{equation}
+\label{eq:saturated_credit}
+C_i(e)
+=
+\hat S_i(e)
+\log\left(
+1+
+\frac{A_i(e)}
+{K\hat S_i(e)}
+\right),
+\end{equation}
+where $K>0$ is a saturation parameter.
+The logarithm gives diminishing returns to repeated relay activity.
+Its stake-scaled form also supports the stake-splitting bound proved in Section~\ref{sec:security}.
+
+The long-term propagation score is updated by EMA:
+\begin{equation}
+\label{eq:score_ema}
+\mathrm{Score}_i(e)
+=
+\beta C_i(e)
++
+(1-\beta)\mathrm{Score}_i(e-1),
+\end{equation}
+where $\beta\in(0,1)$ and $\mathrm{Score}_i(0)=0$.
+The score is computed after epoch $e$ is finalized and is used only from epoch $e+1$.
+
+For proposer selection, scores are normalized as
+\begin{equation}
+\label{eq:normalized_score}
+\hat C_i(e)
+=
+\begin{cases}
+\dfrac{\mathrm{Score}_i(e)}
+{\sum_{v_j\in\mathcal{V}_e}\mathrm{Score}_j(e)},
+&
+\sum_{v_j\in\mathcal{V}_e}\mathrm{Score}_j(e)>0,\\[1.2ex]
+0, & \text{otherwise}.
+\end{cases}
+\end{equation}
+
+
+\subsection{Bounded Influence Weight and Leader Election}
+\label{subsec:bounded-influence}
+
+TopoStake uses propagation scores only for proposer selection.
+The underlying finality gadget continues to use economic stake.
+
+\subsubsection{Bounded proposer weight}
+A validator receives a propagation bonus in epoch $e$ only when its previous propagation-score share exceeds its current stake share:
+\begin{equation}
+\label{eq:prop_bonus}
+b_i(e)
+=
+\min\left\{
+b_{\max},
+\left[
+\frac{\hat C_i(e-1)}
+{\hat S_i(e)}
+-1
+\right]^+
+\right\},
+\end{equation}
+where $[x]^+=\max\{x,0\}$ and $b_{\max}$ is the maximum bonus.
+
+The proposer-selection weight for epoch $e$ is
+\begin{equation}
+\label{eq:bounded_weight}
+W_i(e)
+=
+\hat S_i(e)
+\bigl(1+\eta b_i(e)\bigr),
+\end{equation}
+where $\eta\geq0$ controls the strength of the propagation incentive.
+The normalized weight is
+\begin{equation}
+\label{eq:normalized_weight}
+\hat W_i(e)
+=
+\frac{W_i(e)}
+{\sum_{v_j\in\mathcal{V}_e}W_j(e)}.
+\end{equation}
+
+Because $b_i(e)\leq b_{\max}$,
+\begin{equation}
+\label{eq:weight_bound}
+W_i(e)
+\leq
+\bigl(1+\eta b_{\max}\bigr)\hat S_i(e).
+\end{equation}
+For any adversarial coalition $\mathcal{A}$, this implies
+\begin{equation}
+\label{eq:coalition_weight_bound}
+f_{\mathcal{A}}^{W}(e)
+\leq
+\bigl(1+\eta b_{\max}\bigr)
+f_{\mathcal{A}}^{S}(e).
+\end{equation}
+TopoStake requires
+\begin{equation}
+\label{eq:bonus_parameter_bound}
+\eta b_{\max}\leq\frac{1}{2}.
+\end{equation}
+Therefore, an adversary with less than one third of the real stake has less than one half of the proposer-selection weight.
+When no previous propagation score exists, all bonuses are zero and proposer selection reduces to ordinary PoS.
+
+
+\subsubsection{Leader election and finality}
+TopoStake reuses the unpredictable randomness beacon of the underlying PoS protocol, such as a bias-resistant RANDAO or VRF construction.
+Within epoch $e+1$, validator $v_i$ is selected as proposer with probability
+\begin{equation}
+\label{eq:leader_probability}
+\Pr[v_i\text{ is selected}]
+=
+\hat W_i(e).
+\end{equation}
+
+Finality voting uses only the economic-stake snapshot:
+\begin{equation}
+\label{eq:finality_weight}
+V_i^{\mathrm{final}}(e)
+=
+\hat S_i(e).
+\end{equation}
+A finality quorum $Q$ must satisfy
+\begin{equation}
+\label{eq:finality_quorum}
+\sum_{v_i\in Q}\hat S_i(e)
+\geq
+\frac{2}{3}.
+\end{equation}
+Propagation scores and proposer bonuses therefore affect block-production opportunities, but not finality voting power.
+
+
+\subsection{Incentive and Reward Mechanism}
+\label{subsec:reward}
+
+TopoStake provides two incentives for relay service:
+an immediate share of transaction fees and a bounded increase in future proposer opportunities.
+
+\subsubsection{Fee split and relay reward}
+Let $f(tx)$ be the fee of transaction $tx$, and let $\theta\in[0,1)$ be the proposer fee ratio.
+For block $\mathcal{B}$, the proposer receives
+\begin{equation}
+\label{eq:proposer_reward}
+R_{\mathrm{prop}}(\mathcal{B})
+=
+R_{\mathrm{base}}(\mathcal{B})
++
+\theta
+\sum_{tx\in\mathcal{T}}f(tx).
+\end{equation}
+
+For an eligible path $p$ of transaction $tx$, intermediate relay $v_i$ receives
+\begin{equation}
+\label{eq:relay_reward}
+R_i^{\mathrm{relay}}(tx)
+=
+(1-\theta)f(tx)\gamma(v_i,p).
+\end{equation}
+Because the total path credit is at most one,
+\begin{equation}
+\label{eq:relay_reward_bound}
+\sum_{v_i\in\mathcal{R}(p)}
+R_i^{\mathrm{relay}}(tx)
+=
+(1-\theta)f(tx)B_e(m)
+\leq
+(1-\theta)f(tx).
+\end{equation}
+Thus, relay payments never exceed the relay-fee budget.
+Long or padded paths receive a smaller total payment because $B_e(m)$ decreases with $m$.
+Any undistributed part of the relay budget is burned and cannot be claimed by the proposer or the relayers on that path.
+
+Relay rewards are settled only after the containing block is finalized.
+The originator and proposer receive no relay reward.
+A proposer-generated transaction or a direct originator-to-proposer path therefore produces no relay payment.
+
+The same values $\gamma(v_i,p)$ update the epoch-level propagation score.
+Current paths determine current relay payments, while finalized scores affect only future proposer weights.
+This avoids a circular dependence within the same block or epoch.
+
+\subsubsection{Invalid and conflicting evidence}
+An invalid path receives no relay reward and contributes no score.
+A path is invalid if a hop certificate fails verification, the path repeats a validator identity, or the path record is malformed.
+
+If validator $v_i$ signs two different receiving proofs for the same transaction and epoch, both signatures form public equivocation evidence.
+The conflicting paths are excluded, and the validator's propagation score for the next epoch is revoked:
+\begin{equation}
+\label{eq:score_revocation}
+\mathrm{Score}_i(e+1)=0.
+\end{equation}
+This penalty affects relay rewards and proposer bonuses only.
+Finality equivocation remains subject to the real-stake slashing rules of the underlying PoS protocol.
+
+
+
+\section{Security Analysis}
+\label{sec:security}
+
+This section analyzes the security properties introduced in Sections~\ref{sec:system_model} and~\ref{sec:protocol}.
+The analysis is modular.
+TopoStake proves the authenticity and bounded economic effect of propagation evidence, while ledger safety and liveness are inherited from the underlying PoS protocol under the proposer- and stake-threshold conditions stated earlier.
+
+\subsection{Path Authenticity and Accountability}
+
+\begin{theorem}[Path Authenticity]
+\label{thm:path_authenticity}
+Suppose a propagation path is accepted by an honest verifier.
+Except with negligible probability, every honest validator recorded as an endpoint of a hop signed the corresponding edge statement, and the accepted validator sequence is bound to the transaction and epoch.
+\end{theorem}
+
+\begin{proof}
+For hop $(v_i,v_{i+1})$, a valid certificate contains a sender signature from $v_i$ and a receiver signature from $v_{i+1}$ on the same edge statement $M_i$.
+If either endpoint is honest, producing its signature without its participation would break signature unforgeability.
+
+The initial chain value contains the transaction hash, epoch, and originator identity.
+Each later chain value contains the previous chain value and the next validator identity.
+Therefore, inserting, removing, substituting, or reordering an earlier validator changes the downstream edge statements.
+Keeping the old signatures valid would require either a signature forgery or a hash collision.
+\end{proof}
+
+Theorem~\ref{thm:path_authenticity} proves endorsement, not physical transmission time.
+If both endpoints are corrupted, they may jointly endorse an edge.
+The later reward and influence bounds limit the effect of such collusion.
+
+\begin{lemma}[Receipt Accountability]
+\label{lem:receipt_accountability}
+If a validator signs two receiving proofs for the same transaction and epoch but with different predecessors or path prefixes, the two signatures form publicly verifiable equivocation evidence.
+An honest validator cannot be falsely accused except with negligible probability.
+\end{lemma}
+
+\begin{proof}
+The two receiving proofs are signatures under the same validator key on two different edge statements.
+Both statements are bound to the same transaction and epoch through their chain values.
+Any verifier can check both signatures and compare the predecessor or prefix.
+Creating such evidence without the validator's signatures would require a forgery.
+\end{proof}
+
+The single-receipt rule does not restrict gossip fanout.
+A validator may forward a transaction to several peers, but only one incoming edge is eligible for contribution accounting.
+
+
+\subsection{Reward-Budget and Padding Bounds}
+
+\begin{theorem}[Path-Budget Balance]
+\label{thm:path_budget}
+For every eligible path $p$ with $m\geq2$ hops,
+\begin{equation}
+\sum_{v_i\in\mathcal{R}(p)}
+\gamma(v_i,p)
+=
+B_e(m)
+\leq
+1.
+\end{equation}
+Moreover, for fixed $D_e$, $B_e(m)$ decreases as $m$ increases.
+Consequently, the total relay payment for transaction $tx$ satisfies
+\begin{equation}
+\sum_{v_i\in\mathcal{R}(p)}
+R_i^{\mathrm{relay}}(tx)
+\leq
+(1-\theta)f(tx).
+\end{equation}
+\end{theorem}
+
+\begin{proof}
+The positional weights are normalized:
+\begin{equation}
+\sum_{k=1}^{m-1}
+\alpha_k^{(m,e)}
+=
+1.
+\end{equation}
+Therefore, summing
+$\gamma(v_k,p)=B_e(m)\alpha_k^{(m,e)}$
+over all intermediate relayers gives $B_e(m)$.
+
+The efficiency term
+$\min\{1,D_e/m\}$ is non-increasing in $m$,
+and $0<\lambda_e<1$.
+Hence
+\begin{equation}
+B_e(m)
+=
+\min\left\{1,\frac{D_e}{m}\right\}
+\lambda_e^{m-1}
+\end{equation}
+decreases with path length.
+Multiplying the path budget by $(1-\theta)f(tx)$ gives the relay-payment bound.
+\end{proof}
+
+This theorem means that a proposer may include a long valid path, but a longer path cannot create a larger total relay pool.
+Any undistributed fee is burned and cannot be returned to the proposer or the selected relayers.
+
+\begin{theorem}[Consecutive Identity-Padding Non-Amplification]
+\label{thm:path_padding}
+Consider a relay at position $k$ in an $m$-hop path.
+Suppose the relay is replaced by $q+1$ consecutive identities controlled by the same coalition, increasing the path length to $m+q$.
+For fixed $D_e$, the total atomic credit of the inserted identities is no greater than the credit of the original relay.
+\end{theorem}
+
+\begin{proof}
+Write
+\begin{equation}
+\psi_e(m)
+=
+\min\left\{1,\frac{D_e}{m}\right\}.
+\end{equation}
+The original relay credit is
+\begin{equation}
+\Gamma_0
+=
+\psi_e(m)\lambda_e^{m-1}
+\frac{(1-r_e)r_e^{k-1}}
+{1-r_e^{m-1}}.
+\end{equation}
+After inserting $q$ additional identities, their total credit is
+\begin{equation}
+\Gamma_q
+=
+\psi_e(m+q)\lambda_e^{m+q-1}
+\frac{(1-r_e)r_e^{k-1}
+\sum_{\ell=0}^{q}r_e^\ell}
+{1-r_e^{m+q-1}}.
+\end{equation}
+Their ratio satisfies
+\begin{equation}
+\frac{\Gamma_q}{\Gamma_0}
+=
+\frac{\psi_e(m+q)}{\psi_e(m)}
+\lambda_e^q
+\left(
+\sum_{\ell=0}^{q}r_e^\ell
+\right)
+\frac{1-r_e^{m-1}}
+{1-r_e^{m+q-1}}.
+\end{equation}
+The first and last factors are at most one.
+Since
+$\lambda_e(1+r_e)=1$ and
+\begin{equation}
+\sum_{\ell=0}^{q}r_e^\ell
+\leq
+(1+r_e)^q,
+\end{equation}
+the middle factors are also at most one.
+Thus $\Gamma_q\leq\Gamma_0$.
+\end{proof}
+
+Theorem~\ref{thm:path_padding} addresses identity splitting inside an existing relay position.
+It does not prove that a proposer always selects an honest path.
+A malicious proposer may favor a fully colluding valid path, but Theorem~\ref{thm:path_budget} still limits the total payment for that transaction.
+
+
+\subsection{Score Robustness}
+
+\begin{theorem}[Stake-Splitting Non-Amplification]
+\label{thm:stake_splitting}
+Suppose a coalition has total normalized stake $s$ and total raw contribution $a$ in an epoch.
+If it splits these resources among identities
+$(s_1,a_1),\dots,(s_n,a_n)$, where
+\begin{equation}
+\sum_{j=1}^{n}s_j=s,
+\qquad
+\sum_{j=1}^{n}a_j=a,
+\end{equation}
+then the aggregate saturated contribution of the split identities is no greater than that of one identity holding $(s,a)$:
+\begin{equation}
+\sum_{j=1}^{n}
+s_j
+\log\left(
+1+\frac{a_j}{Ks_j}
+\right)
+\leq
+s
+\log\left(
+1+\frac{a}{Ks}
+\right).
+\end{equation}
+\end{theorem}
+
+\begin{proof}
+Let $w_j=s_j/s$.
+Then $\sum_j w_j=1$.
+By concavity of the logarithm,
+\begin{align}
+\sum_{j=1}^{n}
+s_j
+\log\left(
+1+\frac{a_j}{Ks_j}
+\right)
+&=
+s\sum_{j=1}^{n}
+w_j
+\log\left(
+1+\frac{a_j}{Ks_j}
+\right)\\
+&\leq
+s\log\left(
+1+
+\sum_{j=1}^{n}
+w_j\frac{a_j}{Ks_j}
+\right)\\
+&=
+s\log\left(
+1+\frac{a}{Ks}
+\right).
+\end{align}
+\end{proof}
+
+The EMA update is a linear combination of the current saturated contribution and the previous score.
+Therefore, it does not reverse the inequality in Theorem~\ref{thm:stake_splitting}.
+New identities start with zero score, and existing scores cannot be transferred to newly created identities.
+
+\begin{lemma}[Fee-Bounded Transaction Flooding]
+\label{lem:flooding}
+Consider a self-generated transaction with fee $f$.
+Even if the adversary controls the transaction originator, proposer, and all intermediate relayers, the total fee returned to the adversarial coalition is at most $f$:
+\begin{equation}
+R_{\mathcal{A}}(tx)
+\leq
+\theta f
++
+(1-\theta)fB_e(m)
+\leq
+f.
+\end{equation}
+If $\theta<1$ and the transaction contains an intermediate relay path, the returned amount is strictly less than $f$.
+\end{lemma}
+
+\begin{proof}
+The proposer receives at most $\theta f$.
+By Theorem~\ref{thm:path_budget}, all relayers together receive at most
+$(1-\theta)fB_e(m)$.
+Since $B_e(m)\leq1$, the total is at most $f$.
+For $m\geq2$, $\lambda_e^{m-1}<1$, so $B_e(m)<1$ and part of the fee is burned.
+\end{proof}
+
+Thus, transaction flooding cannot mint a positive fee profit.
+An adversary may still spend fees to purchase propagation score, but logarithmic saturation limits marginal score growth, and the proposer-weight cap below limits its consensus effect.
+
+
+\subsection{Bounded Proposer Influence}
+
+\begin{theorem}[Real-Stake-Bounded Proposer Influence]
+\label{thm:bounded_influence}
+For any adversarial coalition $\mathcal{A}$ in epoch $e$,
+\begin{equation}
+f_{\mathcal{A}}^{W}(e)
+\leq
+\bigl(1+\eta b_{\max}\bigr)
+f_{\mathcal{A}}^{S}(e).
+\end{equation}
+\end{theorem}
+
+\begin{proof}
+For every validator,
+$0\leq b_i(e)\leq b_{\max}$.
+Therefore,
+\begin{equation}
+\sum_{v_i\in\mathcal{A}_e}
+W_i(e)
+\leq
+\bigl(1+\eta b_{\max}\bigr)
+\sum_{v_i\in\mathcal{A}_e}
+\hat S_i(e).
+\end{equation}
+Since all bonuses are non-negative,
+\begin{equation}
+\sum_{v_j\in\mathcal{V}_e}W_j(e)
+\geq
+\sum_{v_j\in\mathcal{V}_e}\hat S_j(e)
+=
+1.
+\end{equation}
+Dividing the two expressions gives the result.
+\end{proof}
+
+\begin{corollary}[Honest Proposer Majority]
+\label{cor:honest_proposer_majority}
+If
+\begin{equation}
+f_{\mathcal{A}}^{S}(e)<\frac{1}{3}
+\qquad\text{and}\qquad
+\eta b_{\max}\leq\frac{1}{2},
+\end{equation}
+then
+\begin{equation}
+f_{\mathcal{A}}^{W}(e)<\frac{1}{2}.
+\end{equation}
+\end{corollary}
+
+\begin{proof}
+By Theorem~\ref{thm:bounded_influence},
+\begin{equation}
+f_{\mathcal{A}}^{W}(e)
+\leq
+\frac{3}{2}
+f_{\mathcal{A}}^{S}(e)
+<
+\frac{1}{2}.
+\end{equation}
+\end{proof}
+
+This bound holds regardless of how the adversary distributes its propagation score among identities.
+Therefore, an advantageous network position may increase proposer opportunities, but cannot create an unbounded proposer majority.
+
+
+\subsection{Ledger Safety and Liveness}
+
+\begin{theorem}[Real-Stake Finality Safety]
+\label{thm:finality_safety}
+If Byzantine validators control less than one third of the economic-stake snapshot, two conflicting blocks cannot both be finalized by honest validators.
+If conflicting finality occurs, the signed votes identify at least one third of the economic stake that voted for both blocks.
+\end{theorem}
+
+\begin{proof}
+Let $Q_1$ and $Q_2$ be the voting quorums for two conflicting blocks.
+Each quorum contains at least two thirds of the economic stake.
+Therefore,
+\begin{equation}
+\hat S(Q_1\cap Q_2)
+\geq
+\hat S(Q_1)+\hat S(Q_2)-1
+\geq
+\frac{1}{3}.
+\end{equation}
+Every validator in the intersection signed both conflicting blocks.
+Honest validators do not sign conflicting finality votes.
+Hence conflicting finality would require at least one third of the economic stake to equivocate, contradicting
+$f_{\mathcal{A}}^{S}<1/3$.
+The two sets of signed votes also identify the equivocating validators.
+\end{proof}
+
+Propagation scores do not appear in this proof.
+A validator may obtain a larger proposer probability, but its finality voting weight remains its economic-stake share.
+
+\begin{theorem}[Persistence, Chain Growth, and Chain Quality]
+\label{thm:ledger_liveness}
+Assume GST has occurred, the honest communication graph satisfies the connectivity assumption, the randomness beacon satisfies the assumptions of the base PoS protocol, and the conditions of Corollary~\ref{cor:honest_proposer_majority} hold.
+Then TopoStake inherits probabilistic persistence, chain growth, and chain quality from the underlying PoS protocol.
+\end{theorem}
+
+\begin{proof}
+Corollary~\ref{cor:honest_proposer_majority} gives
+$f_{\mathcal{A}}^{W}(e)<1/2$.
+Thus, honest validators hold a strict majority of proposer-selection weight.
+
+The randomness beacon selects proposers according to the normalized weights.
+Over a sufficiently long slot window, standard concentration bounds imply a linear number of honest proposer slots except with negligible probability.
+After GST, blocks and votes created by honest validators are delivered within the network bound.
+The persistence, chain-growth, and chain-quality results of the underlying PoS protocol therefore apply.
+
+Propagation records do not weaken this argument.
+A missing or invalid record produces no reward or score, but does not invalidate the underlying block or prevent finality.
+\end{proof}
+
+
+\subsection{Security Scope and Limitations}
+
+The above results establish the following boundaries.
+
+First, TopoStake proves that honest validator identities cannot be inserted into a path without their signatures.
+It does not prove that a fully corrupted path represents useful physical propagation.
+
+Second, a malicious proposer may select a valid path that favors colluding relayers.
+The protocol does not prove globally optimal path selection.
+Instead, it bounds the total payment of every path and bounds all propagation-derived proposer influence by real stake.
+
+Third, the target depth $D_e$ may affect the relative reward assigned to paths.
+However, Theorems~\ref{thm:path_budget} and~\ref{thm:bounded_influence} hold for every $D_e\geq1$.
+Therefore, manipulating $D_e$ may distort reward allocation, but it cannot violate the relay-fee budget, create unbounded proposer weight, or change finality voting power.
+
+Finally, the security analysis does not claim that local timestamps prove global propagation latency.
+Timing information is used only for epochs and scoring windows.
+
+
+
+\section{Conclusion}
+The conclusion goes here.
+
+
+\section*{Acknowledgments}
+This should be a simple paragraph before the References to thank those individuals and institutions who have supported your work on this article.
+
+
+
+
+
+
+
+
+
+
+ 
+
+
+
+
+
+\end{document}
+
+

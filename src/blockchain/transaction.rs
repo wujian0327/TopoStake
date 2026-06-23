@@ -9,7 +9,7 @@ pub struct Transaction {
     pub from: String,
     pub to: String,
     pub amount: i64,
-    pub fee: f64,  // 交易手续费
+    pub fee: f64, // 交易手续费
     pub hash: String,
     pub signature: String,
     pub timestamp: u64,
