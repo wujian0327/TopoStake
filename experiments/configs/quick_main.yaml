@@ -40,16 +40,16 @@
     {
       "name": "performance_scale",
       "protocols": ["pos", "topostake"],
-      "node_num": [100],
+      "node_num": [50, 100, 200],
       "topology": ["ba"],
-      "tx_rate": [25]
+      "tx_rate": [100]
     },
     {
       "name": "topology_robustness",
       "protocols": ["pos", "topostake"],
       "node_num": [100],
-      "topology": ["ba"],
-      "tx_rate": [25]
+      "topology": ["ba", "er", "ws"],
+      "tx_rate": [100]
     },
     {
       "name": "reward_fairness",
