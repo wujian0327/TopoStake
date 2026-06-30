@@ -12,7 +12,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Tuple
 
-from run_experiments import RAW_ROOT, ROOT, load_yaml
+from run_experiments import RAW_ROOT, ROOT, expand_runs, load_yaml
 
 
 PROCESSED_ROOT = ROOT / "results" / "processed"
@@ -42,6 +42,13 @@ META_FIELDS = [
     "unstable_fraction",
     "offline_probability",
     "attack_mode",
+    "max_tx_per_block",
+    "network_delay_multiplier",
+    "validator_scale_capacity_penalty",
+    "topostake_scale_capacity_bonus",
+    "validator_scale_latency_penalty",
+    "topostake_scale_latency_reduction",
+    "topostake_latency_reduction_s",
     "warmup_epochs",
     "output_dir",
 ]
@@ -103,6 +110,13 @@ GROUP_FIELDS = [
     "unstable_fraction",
     "offline_probability",
     "attack_mode",
+    "max_tx_per_block",
+    "network_delay_multiplier",
+    "validator_scale_capacity_penalty",
+    "topostake_scale_capacity_bonus",
+    "validator_scale_latency_penalty",
+    "topostake_scale_latency_reduction",
+    "topostake_latency_reduction_s",
 ]
 
 
@@ -168,6 +182,17 @@ def load_config_suites(configs: List[str]) -> List[str]:
         spec = load_yaml((ROOT / config).resolve())
         suites.append(spec.get("suite", Path(config).stem))
     return suites
+
+
+def load_config_meta_files(configs: List[str], only: Iterable[str] | None = None) -> List[Path]:
+    meta_files = []
+    for config in configs:
+        spec = load_yaml((ROOT / config).resolve())
+        for run in expand_runs(spec, only):
+            meta_path = Path(run["output_dir"]) / "experiment_meta.json"
+            if meta_path.exists():
+                meta_files.append(meta_path)
+    return sorted(set(meta_files))
 
 
 def enrich_rows(rows: List[Dict[str, str]], meta: Dict[str, Any], source: Path) -> List[Dict[str, Any]]:
@@ -285,11 +310,15 @@ def paper_summary(run_rows: List[Dict[str, Any]], suites: List[str]) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", action="append", default=[])
+    parser.add_argument("--only", action="append", help="Summarize only this experiment group from the config")
     parser.add_argument("--suite", action="append", default=[])
     args = parser.parse_args()
 
     suites = args.suite or load_config_suites(args.config)
-    meta_files = discover_meta_files(suites if suites else None)
+    if args.config:
+        meta_files = load_config_meta_files(args.config, args.only)
+    else:
+        meta_files = discover_meta_files(suites if suites else None)
     epoch_all: List[Dict[str, Any]] = []
     node_all: List[Dict[str, Any]] = []
     run_rows: List[Dict[str, Any]] = []

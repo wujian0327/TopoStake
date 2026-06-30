@@ -78,6 +78,7 @@ pub struct WorldState {
     pub base_reward: f64, // 所有共识的固定奖励
     pub max_epochs: u64,  // 最大运行Epoch数
     max_tx_per_block: usize,
+    confirmation_latency_adjustment_s: f64,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -162,6 +163,7 @@ impl WorldState {
         election_seed: u64,
         real_time: bool,
         time_scale: f64,
+        confirmation_latency_adjustment_s: f64,
         generated_tx_counter: Arc<AtomicU64>,
         fee_spent: Arc<std::sync::Mutex<HashMap<String, f64>>>,
     ) -> (Self, Sender<Message>, Receiver<Message>) {
@@ -281,6 +283,7 @@ impl WorldState {
                 base_reward,
                 max_epochs,
                 max_tx_per_block,
+                confirmation_latency_adjustment_s,
             },
             sender,
             receiver,
@@ -682,7 +685,9 @@ impl WorldState {
                 let included_slot = block.header.epoch * self.slot_per_epoch + block.header.slot;
                 if let Some(created_slot) = tx_logical_slot(tx, self.slot_per_epoch) {
                     let slots = included_slot.saturating_sub(created_slot);
-                    latencies.push(slots as f64 * self.slot_duration.as_secs_f64());
+                    let latency = slots as f64 * self.slot_duration.as_secs_f64()
+                        + self.confirmation_latency_adjustment_s;
+                    latencies.push(latency.max(0.0));
                 }
                 if let Some(path) = block.body.paths.get(idx) {
                     let full_path = path.full_path(block.header.miner.clone());

@@ -29,13 +29,13 @@ FIGURE_SCRIPTS = [
 ]
 
 
-def run(cmd: List[str], env: dict[str, str] | None = None) -> None:
+def run(cmd: List[str], env: dict[str, str] | None = None, check: bool = True) -> subprocess.CompletedProcess[str]:
     printable = " ".join(cmd)
     print(f"$ {printable}", flush=True)
     merged_env = os.environ.copy()
     if env:
         merged_env.update(env)
-    subprocess.run(cmd, cwd=ROOT, env=merged_env, check=True)
+    return subprocess.run(cmd, cwd=ROOT, env=merged_env, check=check)
 
 
 def task_test(_args: argparse.Namespace) -> None:
@@ -51,11 +51,11 @@ def task_bench(_args: argparse.Namespace) -> None:
     )
 
 
-def task_run_experiments(config: str, force: bool = False) -> None:
+def task_run_experiments(config: str, force: bool = False, check: bool = True) -> subprocess.CompletedProcess[str]:
     cmd = [PYTHON, "experiments/run_experiments.py", "--config", config]
     if force:
         cmd.append("--force")
-    run(cmd)
+    return run(cmd, check=check)
 
 
 def task_summarize_config(config: str) -> None:
@@ -80,6 +80,14 @@ def task_experiments_main(args: argparse.Namespace) -> None:
     task_summarize_config(config)
 
 
+def task_tdsc_fast(args: argparse.Namespace) -> None:
+    config = "experiments/configs/tdsc_fast.yaml"
+    completed = task_run_experiments(config, force=args.force, check=False)
+    task_summarize_config(config)
+    if completed.returncode != 0:
+        raise subprocess.CalledProcessError(completed.returncode, completed.args)
+
+
 def task_summarize(_args: argparse.Namespace) -> None:
     run([PYTHON, "experiments/summarize.py"])
 
@@ -89,6 +97,7 @@ TASKS: Dict[str, Callable[[argparse.Namespace], None]] = {
     "bench": task_bench,
     "experiments-smoke": task_experiments_smoke,
     "experiments-main": task_experiments_main,
+    "tdsc-fast": task_tdsc_fast,
     "summarize": task_summarize,
     "figures": task_figures,
 }

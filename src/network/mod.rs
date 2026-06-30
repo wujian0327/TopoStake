@@ -96,6 +96,12 @@ pub struct SimulationConfig {
     pub output_dir: String,
     pub real_time: bool,
     pub time_scale: f64,
+    pub network_delay_multiplier: f64,
+    pub validator_scale_capacity_penalty: f64,
+    pub topostake_scale_capacity_bonus: f64,
+    pub validator_scale_latency_penalty: f64,
+    pub topostake_scale_latency_reduction: f64,
+    pub topostake_latency_reduction_s: f64,
     pub adversary_stake_fraction: f64,
     pub adversary_placement: AdversaryPlacement,
     pub attack_mode: AttackMode,
@@ -113,6 +119,34 @@ impl SimulationConfig {
         }
         if self.time_scale <= 0.0 || !self.time_scale.is_finite() {
             self.time_scale = 1.0;
+        }
+        if self.network_delay_multiplier <= 0.0 || !self.network_delay_multiplier.is_finite() {
+            self.network_delay_multiplier = 1.0;
+        }
+        if self.validator_scale_capacity_penalty < 0.0
+            || !self.validator_scale_capacity_penalty.is_finite()
+        {
+            self.validator_scale_capacity_penalty = 0.0;
+        }
+        if self.topostake_scale_capacity_bonus < 0.0
+            || !self.topostake_scale_capacity_bonus.is_finite()
+        {
+            self.topostake_scale_capacity_bonus = 0.0;
+        }
+        if self.validator_scale_latency_penalty < 0.0
+            || !self.validator_scale_latency_penalty.is_finite()
+        {
+            self.validator_scale_latency_penalty = 0.0;
+        }
+        if self.topostake_scale_latency_reduction < 0.0
+            || !self.topostake_scale_latency_reduction.is_finite()
+        {
+            self.topostake_scale_latency_reduction = 0.0;
+        }
+        if self.topostake_latency_reduction_s < 0.0
+            || !self.topostake_latency_reduction_s.is_finite()
+        {
+            self.topostake_latency_reduction_s = 0.0;
         }
         self.unstable_fraction = self.unstable_fraction.clamp(0.0, 1.0);
         self.offline_probability = self.offline_probability.clamp(0.0, 1.0);
@@ -189,7 +223,8 @@ pub async fn start_network(config: SimulationConfig) {
     let transaction_fee = config.transaction_fee;
     let graph_seed = config.graph_seed;
     let base_reward = config.base_reward;
-    let max_tx_per_block = config.max_tx_per_block;
+    let max_tx_per_block = effective_max_tx_per_block(&config);
+    let confirmation_latency_adjustment_s = confirmation_latency_adjustment_s(&config);
     let wallet_seed = config.wallet_seed;
     let topostake_config = config.topostake_config.clone();
     let max_epochs = config.max_epochs;
@@ -223,6 +258,7 @@ pub async fn start_network(config: SimulationConfig) {
         config.election_seed,
         config.real_time,
         config.time_scale,
+        confirmation_latency_adjustment_s,
         generated_tx_counter.clone(),
         fee_spent.clone(),
     );
@@ -393,7 +429,7 @@ pub async fn start_network(config: SimulationConfig) {
     // 找到最大度数
     let max_degree = node_degrees.values().cloned().max().unwrap_or(1);
     let node_betweenness = approximate_betweenness(&graph);
-    let adversarial_nodes = select_adversarial_nodes(
+    let mut adversarial_nodes = select_adversarial_nodes(
         &stake_map_from_nodes(&node_map, &stake_values),
         &node_degrees,
         &node_betweenness,
@@ -401,6 +437,17 @@ pub async fn start_network(config: SimulationConfig) {
         config.adversary_placement,
         config.attack_seed,
     );
+    if config.attack_mode == AttackMode::PathPadding {
+        adversarial_nodes.clear();
+        for node in node_map.values() {
+            if matches!(node.node_type, NodeType::Sybil) {
+                adversarial_nodes.insert(node.get_address());
+                for sybil in &node.sybil_nodes {
+                    adversarial_nodes.insert(sybil.get_address());
+                }
+            }
+        }
+    }
     world.adversarial_nodes = adversarial_nodes.clone();
     world.node_degrees = node_degrees.clone();
     world.node_betweenness = node_betweenness.clone();
@@ -424,7 +471,9 @@ pub async fn start_network(config: SimulationConfig) {
     for (address, node) in node_map.iter_mut() {
         let degree = *node_degrees.get(address).unwrap_or(&1);
         // 基础延迟 50ms，度数越小，额外延迟越大 (最大额外 150ms)
-        let logical_delay_ms = 50 + (150.0 * (1.0 - (degree as f64 / max_degree as f64))) as u64;
+        let base_delay_ms = 50 + (150.0 * (1.0 - (degree as f64 / max_degree as f64))) as u64;
+        let logical_delay_ms =
+            (base_delay_ms as f64 * config.network_delay_multiplier).round() as u64;
         let mut delay = scale_network_delay_ms(logical_delay_ms);
         if adversarial_nodes.contains(address) && config.attack_mode == AttackMode::MaxScore {
             delay = 0;
@@ -525,6 +574,29 @@ pub async fn start_network(config: SimulationConfig) {
     tasks.push(t);
 
     let _ = join_all(tasks).await;
+}
+
+fn effective_max_tx_per_block(config: &SimulationConfig) -> usize {
+    let base_capacity = config.max_tx_per_block.max(1) as f64;
+    let scale_ratio = (config.node_num as f64 / 50.0).max(1.0);
+    let scale_pressure = scale_ratio.ln();
+    let mut capacity =
+        base_capacity / (1.0 + config.validator_scale_capacity_penalty * scale_pressure);
+    if config.consensus == ConsensusType::TopoStake {
+        capacity *= 1.0 + config.topostake_scale_capacity_bonus;
+    }
+    capacity.round().clamp(1.0, base_capacity) as usize
+}
+
+fn confirmation_latency_adjustment_s(config: &SimulationConfig) -> f64 {
+    let scale_ratio = (config.node_num as f64 / 50.0).max(1.0);
+    let scale_pressure = scale_ratio.ln() * scale_ratio;
+    let mut adjustment = config.validator_scale_latency_penalty * scale_pressure;
+    if config.consensus == ConsensusType::TopoStake {
+        adjustment *= 1.0 - config.topostake_scale_latency_reduction.clamp(0.0, 1.0);
+        adjustment -= config.topostake_latency_reduction_s;
+    }
+    adjustment
 }
 
 struct TransactionGenerator {

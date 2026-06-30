@@ -60,6 +60,12 @@ CLI_KEYS = {
     "proposer_fee_ratio": "--proposer-fee-ratio",
     "reward_settlement_depth": "--reward-settlement-depth",
     "time_scale": "--time-scale",
+    "network_delay_multiplier": "--network-delay-multiplier",
+    "validator_scale_capacity_penalty": "--validator-scale-capacity-penalty",
+    "topostake_scale_capacity_bonus": "--topostake-scale-capacity-bonus",
+    "validator_scale_latency_penalty": "--validator-scale-latency-penalty",
+    "topostake_scale_latency_reduction": "--topostake-scale-latency-reduction",
+    "topostake_latency_reduction_s": "--topostake-latency-reduction-s",
     "unstable_fraction": "--unstable-fraction",
     "offline_probability": "--offline-probability",
     "adversary_stake_fraction": "--adversary-stake-fraction",
@@ -67,6 +73,17 @@ CLI_KEYS = {
     "attack_mode": "--attack-mode",
     "padding_identities": "--padding-identities",
     "attack_tx_rate_multiplier": "--attack-tx-rate-multiplier",
+}
+
+EXPERIMENT_OVERRIDE_KEYS = set(CLI_KEYS) | {"warmup_epochs", "real_time"}
+
+RUN_ID_KEY_ALIASES = {
+    "network_delay_multiplier": "netdelay",
+    "validator_scale_capacity_penalty": "capovh",
+    "topostake_scale_capacity_bonus": "topocap",
+    "validator_scale_latency_penalty": "latovh",
+    "topostake_scale_latency_reduction": "topolat",
+    "topostake_latency_reduction_s": "topolatsec",
 }
 
 
@@ -124,6 +141,11 @@ def expand_runs(spec: Dict[str, Any], only: Iterable[str] | None = None) -> List
         if only_set and name not in only_set:
             continue
         protocols = experiment.get("protocols", [defaults.get("protocol", "topostake")])
+        experiment_overrides = {
+            key: experiment[key]
+            for key in EXPERIMENT_OVERRIDE_KEYS
+            if key in experiment and key not in DIMENSION_KEYS
+        }
         dimensions = {
             key: as_list(experiment[key])
             for key in DIMENSION_KEYS
@@ -139,6 +161,7 @@ def expand_runs(spec: Dict[str, Any], only: Iterable[str] | None = None) -> List
                 proto = protocol_cli(protocol_variant)
                 for seed_index, seed_value in enumerate(seeds):
                     run = dict(defaults)
+                    run.update(experiment_overrides)
                     run.update(combo)
                     run.update(proto)
                     if "eta_bonus_product" in run:
@@ -160,6 +183,9 @@ def expand_runs(spec: Dict[str, Any], only: Iterable[str] | None = None) -> List
                     varied = [name, run["protocol_label"], f"seed{seed_index}"]
                     for key in keys:
                         varied.append(f"{key}-{slug(run[key])}")
+                    for key in sorted(experiment_overrides):
+                        if defaults.get(key) != run.get(key):
+                            varied.append(f"{RUN_ID_KEY_ALIASES.get(key, key)}-{slug(run[key])}")
                     run_id = "_".join(slug(part) for part in varied)
                     run["run_id"] = run_id
                     run["output_dir"] = str(RAW_ROOT / suite / name / run_id)
@@ -172,10 +198,12 @@ def filter_runs(
     protocols: Iterable[str] | None = None,
     seed_indices: Iterable[int] | None = None,
     tx_rates: Iterable[float] | None = None,
+    attack_tx_rate_multipliers: Iterable[float] | None = None,
 ) -> List[Dict[str, Any]]:
     protocol_set = set(protocols or [])
     seed_set = set(seed_indices or [])
     tx_rate_set = set(tx_rates or [])
+    attack_tx_rate_multiplier_set = set(attack_tx_rate_multipliers or [])
 
     filtered = []
     for run in runs:
@@ -184,6 +212,8 @@ def filter_runs(
         if seed_set and int(run.get("seed_index", -1)) not in seed_set:
             continue
         if tx_rate_set and float(run.get("tx_rate", -1)) not in tx_rate_set:
+            continue
+        if attack_tx_rate_multiplier_set and float(run.get("attack_tx_rate_multiplier", -1)) not in attack_tx_rate_multiplier_set:
             continue
         filtered.append(run)
     return filtered
@@ -344,6 +374,7 @@ def main() -> int:
     parser.add_argument("--protocol", action="append", help="Run only this protocol/protocol label")
     parser.add_argument("--seed-index", action="append", type=int, help="Run only this zero-based seed index")
     parser.add_argument("--tx-rate", action="append", type=float, help="Run only this input transaction rate")
+    parser.add_argument("--attack-tx-rate-multiplier", action="append", type=float, help="Run only this attack transaction multiplier")
     parser.add_argument("--max-parallel", type=int)
     parser.add_argument("--timeout-seconds", type=int)
     parser.add_argument("--force", action="store_true", help="Rerun even if summaries exist")
@@ -354,7 +385,13 @@ def main() -> int:
     spec_path = (ROOT / args.config).resolve()
     spec = load_yaml(spec_path)
     runs = expand_runs(spec, args.only)
-    runs = filter_runs(runs, args.protocol, args.seed_index, args.tx_rate)
+    runs = filter_runs(
+        runs,
+        args.protocol,
+        args.seed_index,
+        args.tx_rate,
+        args.attack_tx_rate_multiplier,
+    )
     max_parallel = args.max_parallel or int(spec.get("max_parallel", 1))
     timeout = args.timeout_seconds or int(spec.get("timeout_seconds", 600))
     binary = spec.get("binary", "target/release/topostake")

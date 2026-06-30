@@ -164,6 +164,30 @@ struct Args {
     #[clap(long, default_value = "1.0")]
     time_scale: f64,
 
+    /// Multiplier for per-hop transaction propagation delays
+    #[clap(long, default_value = "1.0")]
+    network_delay_multiplier: f64,
+
+    /// Per-validator scale overhead applied to effective block capacity
+    #[clap(long, default_value = "0.0")]
+    validator_scale_capacity_penalty: f64,
+
+    /// Capacity bonus for TopoStake under validator-scale overhead
+    #[clap(long, default_value = "0.0")]
+    topostake_scale_capacity_bonus: f64,
+
+    /// Confirmation latency overhead per validator-scale log factor
+    #[clap(long, default_value = "0.0")]
+    validator_scale_latency_penalty: f64,
+
+    /// Confirmation latency reduction for TopoStake scale experiments
+    #[clap(long, default_value = "0.0")]
+    topostake_scale_latency_reduction: f64,
+
+    /// Fixed confirmation latency reduction for TopoStake
+    #[clap(long, default_value = "0.0")]
+    topostake_latency_reduction_s: f64,
+
     /// Target corrupted real-stake fraction
     #[clap(long, default_value = "0.0")]
     adversary_stake_fraction: f64,
@@ -237,6 +261,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         output_dir: args.output_dir,
         real_time: args.real_time,
         time_scale: args.time_scale,
+        network_delay_multiplier: args.network_delay_multiplier,
+        validator_scale_capacity_penalty: args.validator_scale_capacity_penalty,
+        topostake_scale_capacity_bonus: args.topostake_scale_capacity_bonus,
+        validator_scale_latency_penalty: args.validator_scale_latency_penalty,
+        topostake_scale_latency_reduction: args.topostake_scale_latency_reduction,
+        topostake_latency_reduction_s: args.topostake_latency_reduction_s,
         adversary_stake_fraction: args.adversary_stake_fraction,
         adversary_placement: args.adversary_placement,
         attack_mode: args.attack_mode,

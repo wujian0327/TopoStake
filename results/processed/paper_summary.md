@@ -2,120 +2,120 @@
 
 This file is generated from raw simulator outputs. It reports available runs only and does not infer conclusions when data is missing.
 
-Suites: quick_main
+Suites: tdsc_fast
 
-## performance_load
+## path_padding
 
-- successful runs: 10 / 10
-- suite: quick_main
-- experiment: performance_load
-- protocol_label: pos, topostake
+- successful runs: 18 / 18
+- suite: tdsc_fast
+- experiment: path_padding
+- protocol_label: topostake
 - node_num: 100
-- sybil_node_num: 0
+- sybil_node_num: 1
 - fake_node_num: 0
 - unstable_node_num: 0
 - topology: ba
-- tx_rate: 100, 150, 200, 25, 50
+- tx_rate: 100
 - stake_gini: 0.6
-- adversary_stake_fraction: 0.0
+- adversary_stake_fraction: 0.1
 - adversary_placement: random
-- padding_identities: 0
-- topostake_initial_depth: 4
+- padding_identities: 0, 1, 16, 2, 4, 8
+- topostake_initial_depth: 2
 - attack_tx_rate_multiplier: 0.0
 - unstable_fraction: 0.0
 - offline_probability: 0.5
-- attack_mode: none
+- attack_mode: path-padding
+- max_tx_per_block: 80
 - source epoch CSV files:
-  - `results\raw\quick_main\performance_load\performance-load_pos_seed0_node-num-100_topology-ba_tx-rate-100\epoch_metrics.csv`
-  - `results\raw\quick_main\performance_load\performance-load_pos_seed0_node-num-100_topology-ba_tx-rate-150\epoch_metrics.csv`
-  - `results\raw\quick_main\performance_load\performance-load_pos_seed0_node-num-100_topology-ba_tx-rate-200\epoch_metrics.csv`
-  - `results\raw\quick_main\performance_load\performance-load_pos_seed0_node-num-100_topology-ba_tx-rate-25\epoch_metrics.csv`
-  - `results\raw\quick_main\performance_load\performance-load_pos_seed0_node-num-100_topology-ba_tx-rate-50\epoch_metrics.csv`
-  - `results\raw\quick_main\performance_load\performance-load_topostake_seed0_node-num-100_topology-ba_tx-rate-100\epoch_metrics.csv`
-  - `results\raw\quick_main\performance_load\performance-load_topostake_seed0_node-num-100_topology-ba_tx-rate-150\epoch_metrics.csv`
-  - `results\raw\quick_main\performance_load\performance-load_topostake_seed0_node-num-100_topology-ba_tx-rate-200\epoch_metrics.csv`
-  - `results\raw\quick_main\performance_load\performance-load_topostake_seed0_node-num-100_topology-ba_tx-rate-25\epoch_metrics.csv`
-  - `results\raw\quick_main\performance_load\performance-load_topostake_seed0_node-num-100_topology-ba_tx-rate-50\epoch_metrics.csv`
+  - `results\raw\tdsc_fast\path_padding\path-padding_topostake_seed0_sybil-node-num-1_adversary-stake-fraction-0p1_padding-identities-0_topostake-initial-depth-2_attack-mode-path-padding\epoch_metrics.csv`
+  - `results\raw\tdsc_fast\path_padding\path-padding_topostake_seed0_sybil-node-num-1_adversary-stake-fraction-0p1_padding-identities-16_topostake-initial-depth-2_attack-mode-path-padding\epoch_metrics.csv`
+  - `results\raw\tdsc_fast\path_padding\path-padding_topostake_seed0_sybil-node-num-1_adversary-stake-fraction-0p1_padding-identities-1_topostake-initial-depth-2_attack-mode-path-padding\epoch_metrics.csv`
+  - `results\raw\tdsc_fast\path_padding\path-padding_topostake_seed0_sybil-node-num-1_adversary-stake-fraction-0p1_padding-identities-2_topostake-initial-depth-2_attack-mode-path-padding\epoch_metrics.csv`
+  - `results\raw\tdsc_fast\path_padding\path-padding_topostake_seed0_sybil-node-num-1_adversary-stake-fraction-0p1_padding-identities-4_topostake-initial-depth-2_attack-mode-path-padding\epoch_metrics.csv`
+  - `results\raw\tdsc_fast\path_padding\path-padding_topostake_seed0_sybil-node-num-1_adversary-stake-fraction-0p1_padding-identities-8_topostake-initial-depth-2_attack-mode-path-padding\epoch_metrics.csv`
+  - `results\raw\tdsc_fast\path_padding\path-padding_topostake_seed1_sybil-node-num-1_adversary-stake-fraction-0p1_padding-identities-0_topostake-initial-depth-2_attack-mode-path-padding\epoch_metrics.csv`
+  - `results\raw\tdsc_fast\path_padding\path-padding_topostake_seed1_sybil-node-num-1_adversary-stake-fraction-0p1_padding-identities-16_topostake-initial-depth-2_attack-mode-path-padding\epoch_metrics.csv`
+  - `results\raw\tdsc_fast\path_padding\path-padding_topostake_seed1_sybil-node-num-1_adversary-stake-fraction-0p1_padding-identities-1_topostake-initial-depth-2_attack-mode-path-padding\epoch_metrics.csv`
+  - `results\raw\tdsc_fast\path_padding\path-padding_topostake_seed1_sybil-node-num-1_adversary-stake-fraction-0p1_padding-identities-2_topostake-initial-depth-2_attack-mode-path-padding\epoch_metrics.csv`
+  - `results\raw\tdsc_fast\path_padding\path-padding_topostake_seed1_sybil-node-num-1_adversary-stake-fraction-0p1_padding-identities-4_topostake-initial-depth-2_attack-mode-path-padding\epoch_metrics.csv`
+  - `results\raw\tdsc_fast\path_padding\path-padding_topostake_seed1_sybil-node-num-1_adversary-stake-fraction-0p1_padding-identities-8_topostake-initial-depth-2_attack-mode-path-padding\epoch_metrics.csv`
+  - `results\raw\tdsc_fast\path_padding\path-padding_topostake_seed2_sybil-node-num-1_adversary-stake-fraction-0p1_padding-identities-0_topostake-initial-depth-2_attack-mode-path-padding\epoch_metrics.csv`
+  - `results\raw\tdsc_fast\path_padding\path-padding_topostake_seed2_sybil-node-num-1_adversary-stake-fraction-0p1_padding-identities-16_topostake-initial-depth-2_attack-mode-path-padding\epoch_metrics.csv`
+  - `results\raw\tdsc_fast\path_padding\path-padding_topostake_seed2_sybil-node-num-1_adversary-stake-fraction-0p1_padding-identities-1_topostake-initial-depth-2_attack-mode-path-padding\epoch_metrics.csv`
+  - `results\raw\tdsc_fast\path_padding\path-padding_topostake_seed2_sybil-node-num-1_adversary-stake-fraction-0p1_padding-identities-2_topostake-initial-depth-2_attack-mode-path-padding\epoch_metrics.csv`
+  - `results\raw\tdsc_fast\path_padding\path-padding_topostake_seed2_sybil-node-num-1_adversary-stake-fraction-0p1_padding-identities-4_topostake-initial-depth-2_attack-mode-path-padding\epoch_metrics.csv`
+  - `results\raw\tdsc_fast\path_padding\path-padding_topostake_seed2_sybil-node-num-1_adversary-stake-fraction-0p1_padding-identities-8_topostake-initial-depth-2_attack-mode-path-padding\epoch_metrics.csv`
 - source node CSV files:
-  - `results\raw\quick_main\performance_load\performance-load_pos_seed0_node-num-100_topology-ba_tx-rate-100\node_epoch_metrics.csv`
-  - `results\raw\quick_main\performance_load\performance-load_pos_seed0_node-num-100_topology-ba_tx-rate-150\node_epoch_metrics.csv`
-  - `results\raw\quick_main\performance_load\performance-load_pos_seed0_node-num-100_topology-ba_tx-rate-200\node_epoch_metrics.csv`
-  - `results\raw\quick_main\performance_load\performance-load_pos_seed0_node-num-100_topology-ba_tx-rate-25\node_epoch_metrics.csv`
-  - `results\raw\quick_main\performance_load\performance-load_pos_seed0_node-num-100_topology-ba_tx-rate-50\node_epoch_metrics.csv`
-  - `results\raw\quick_main\performance_load\performance-load_topostake_seed0_node-num-100_topology-ba_tx-rate-100\node_epoch_metrics.csv`
-  - `results\raw\quick_main\performance_load\performance-load_topostake_seed0_node-num-100_topology-ba_tx-rate-150\node_epoch_metrics.csv`
-  - `results\raw\quick_main\performance_load\performance-load_topostake_seed0_node-num-100_topology-ba_tx-rate-200\node_epoch_metrics.csv`
-  - `results\raw\quick_main\performance_load\performance-load_topostake_seed0_node-num-100_topology-ba_tx-rate-25\node_epoch_metrics.csv`
-  - `results\raw\quick_main\performance_load\performance-load_topostake_seed0_node-num-100_topology-ba_tx-rate-50\node_epoch_metrics.csv`
+  - `results\raw\tdsc_fast\path_padding\path-padding_topostake_seed0_sybil-node-num-1_adversary-stake-fraction-0p1_padding-identities-0_topostake-initial-depth-2_attack-mode-path-padding\node_epoch_metrics.csv`
+  - `results\raw\tdsc_fast\path_padding\path-padding_topostake_seed0_sybil-node-num-1_adversary-stake-fraction-0p1_padding-identities-16_topostake-initial-depth-2_attack-mode-path-padding\node_epoch_metrics.csv`
+  - `results\raw\tdsc_fast\path_padding\path-padding_topostake_seed0_sybil-node-num-1_adversary-stake-fraction-0p1_padding-identities-1_topostake-initial-depth-2_attack-mode-path-padding\node_epoch_metrics.csv`
+  - `results\raw\tdsc_fast\path_padding\path-padding_topostake_seed0_sybil-node-num-1_adversary-stake-fraction-0p1_padding-identities-2_topostake-initial-depth-2_attack-mode-path-padding\node_epoch_metrics.csv`
+  - `results\raw\tdsc_fast\path_padding\path-padding_topostake_seed0_sybil-node-num-1_adversary-stake-fraction-0p1_padding-identities-4_topostake-initial-depth-2_attack-mode-path-padding\node_epoch_metrics.csv`
+  - `results\raw\tdsc_fast\path_padding\path-padding_topostake_seed0_sybil-node-num-1_adversary-stake-fraction-0p1_padding-identities-8_topostake-initial-depth-2_attack-mode-path-padding\node_epoch_metrics.csv`
+  - `results\raw\tdsc_fast\path_padding\path-padding_topostake_seed1_sybil-node-num-1_adversary-stake-fraction-0p1_padding-identities-0_topostake-initial-depth-2_attack-mode-path-padding\node_epoch_metrics.csv`
+  - `results\raw\tdsc_fast\path_padding\path-padding_topostake_seed1_sybil-node-num-1_adversary-stake-fraction-0p1_padding-identities-16_topostake-initial-depth-2_attack-mode-path-padding\node_epoch_metrics.csv`
+  - `results\raw\tdsc_fast\path_padding\path-padding_topostake_seed1_sybil-node-num-1_adversary-stake-fraction-0p1_padding-identities-1_topostake-initial-depth-2_attack-mode-path-padding\node_epoch_metrics.csv`
+  - `results\raw\tdsc_fast\path_padding\path-padding_topostake_seed1_sybil-node-num-1_adversary-stake-fraction-0p1_padding-identities-2_topostake-initial-depth-2_attack-mode-path-padding\node_epoch_metrics.csv`
+  - `results\raw\tdsc_fast\path_padding\path-padding_topostake_seed1_sybil-node-num-1_adversary-stake-fraction-0p1_padding-identities-4_topostake-initial-depth-2_attack-mode-path-padding\node_epoch_metrics.csv`
+  - `results\raw\tdsc_fast\path_padding\path-padding_topostake_seed1_sybil-node-num-1_adversary-stake-fraction-0p1_padding-identities-8_topostake-initial-depth-2_attack-mode-path-padding\node_epoch_metrics.csv`
+  - `results\raw\tdsc_fast\path_padding\path-padding_topostake_seed2_sybil-node-num-1_adversary-stake-fraction-0p1_padding-identities-0_topostake-initial-depth-2_attack-mode-path-padding\node_epoch_metrics.csv`
+  - `results\raw\tdsc_fast\path_padding\path-padding_topostake_seed2_sybil-node-num-1_adversary-stake-fraction-0p1_padding-identities-16_topostake-initial-depth-2_attack-mode-path-padding\node_epoch_metrics.csv`
+  - `results\raw\tdsc_fast\path_padding\path-padding_topostake_seed2_sybil-node-num-1_adversary-stake-fraction-0p1_padding-identities-1_topostake-initial-depth-2_attack-mode-path-padding\node_epoch_metrics.csv`
+  - `results\raw\tdsc_fast\path_padding\path-padding_topostake_seed2_sybil-node-num-1_adversary-stake-fraction-0p1_padding-identities-2_topostake-initial-depth-2_attack-mode-path-padding\node_epoch_metrics.csv`
+  - `results\raw\tdsc_fast\path_padding\path-padding_topostake_seed2_sybil-node-num-1_adversary-stake-fraction-0p1_padding-identities-4_topostake-initial-depth-2_attack-mode-path-padding\node_epoch_metrics.csv`
+  - `results\raw\tdsc_fast\path_padding\path-padding_topostake_seed2_sybil-node-num-1_adversary-stake-fraction-0p1_padding-identities-8_topostake-initial-depth-2_attack-mode-path-padding\node_epoch_metrics.csv`
 
-## performance_scale
+## transaction_flooding
 
-- successful runs: 6 / 6
-- suite: quick_main
-- experiment: performance_scale
-- protocol_label: pos, topostake
-- node_num: 100, 200, 50
+- successful runs: 15 / 15
+- suite: tdsc_fast
+- experiment: transaction_flooding
+- protocol_label: topostake
+- node_num: 100
 - sybil_node_num: 0
 - fake_node_num: 0
 - unstable_node_num: 0
 - topology: ba
 - tx_rate: 100
 - stake_gini: 0.6
-- adversary_stake_fraction: 0.0
+- adversary_stake_fraction: 0.1
 - adversary_placement: random
 - padding_identities: 0
 - topostake_initial_depth: 4
-- attack_tx_rate_multiplier: 0.0
+- attack_tx_rate_multiplier: 0, 0.5, 1, 2, 5
 - unstable_fraction: 0.0
 - offline_probability: 0.5
-- attack_mode: none
+- attack_mode: flooding
+- max_tx_per_block: 250
 - source epoch CSV files:
-  - `results\raw\quick_main\performance_scale\performance-scale_pos_seed0_node-num-100_topology-ba_tx-rate-100\epoch_metrics.csv`
-  - `results\raw\quick_main\performance_scale\performance-scale_pos_seed0_node-num-200_topology-ba_tx-rate-100\epoch_metrics.csv`
-  - `results\raw\quick_main\performance_scale\performance-scale_pos_seed0_node-num-50_topology-ba_tx-rate-100\epoch_metrics.csv`
-  - `results\raw\quick_main\performance_scale\performance-scale_topostake_seed0_node-num-100_topology-ba_tx-rate-100\epoch_metrics.csv`
-  - `results\raw\quick_main\performance_scale\performance-scale_topostake_seed0_node-num-200_topology-ba_tx-rate-100\epoch_metrics.csv`
-  - `results\raw\quick_main\performance_scale\performance-scale_topostake_seed0_node-num-50_topology-ba_tx-rate-100\epoch_metrics.csv`
+  - `results\raw\tdsc_fast\transaction_flooding\transaction-flooding_topostake_seed0_adversary-stake-fraction-0p1_attack-tx-rate-multiplier-0_attack-mode-flooding\epoch_metrics.csv`
+  - `results\raw\tdsc_fast\transaction_flooding\transaction-flooding_topostake_seed0_adversary-stake-fraction-0p1_attack-tx-rate-multiplier-0p5_attack-mode-flooding\epoch_metrics.csv`
+  - `results\raw\tdsc_fast\transaction_flooding\transaction-flooding_topostake_seed0_adversary-stake-fraction-0p1_attack-tx-rate-multiplier-1_attack-mode-flooding\epoch_metrics.csv`
+  - `results\raw\tdsc_fast\transaction_flooding\transaction-flooding_topostake_seed0_adversary-stake-fraction-0p1_attack-tx-rate-multiplier-2_attack-mode-flooding\epoch_metrics.csv`
+  - `results\raw\tdsc_fast\transaction_flooding\transaction-flooding_topostake_seed0_adversary-stake-fraction-0p1_attack-tx-rate-multiplier-5_attack-mode-flooding\epoch_metrics.csv`
+  - `results\raw\tdsc_fast\transaction_flooding\transaction-flooding_topostake_seed1_adversary-stake-fraction-0p1_attack-tx-rate-multiplier-0_attack-mode-flooding\epoch_metrics.csv`
+  - `results\raw\tdsc_fast\transaction_flooding\transaction-flooding_topostake_seed1_adversary-stake-fraction-0p1_attack-tx-rate-multiplier-0p5_attack-mode-flooding\epoch_metrics.csv`
+  - `results\raw\tdsc_fast\transaction_flooding\transaction-flooding_topostake_seed1_adversary-stake-fraction-0p1_attack-tx-rate-multiplier-1_attack-mode-flooding\epoch_metrics.csv`
+  - `results\raw\tdsc_fast\transaction_flooding\transaction-flooding_topostake_seed1_adversary-stake-fraction-0p1_attack-tx-rate-multiplier-2_attack-mode-flooding\epoch_metrics.csv`
+  - `results\raw\tdsc_fast\transaction_flooding\transaction-flooding_topostake_seed1_adversary-stake-fraction-0p1_attack-tx-rate-multiplier-5_attack-mode-flooding\epoch_metrics.csv`
+  - `results\raw\tdsc_fast\transaction_flooding\transaction-flooding_topostake_seed2_adversary-stake-fraction-0p1_attack-tx-rate-multiplier-0_attack-mode-flooding\epoch_metrics.csv`
+  - `results\raw\tdsc_fast\transaction_flooding\transaction-flooding_topostake_seed2_adversary-stake-fraction-0p1_attack-tx-rate-multiplier-0p5_attack-mode-flooding\epoch_metrics.csv`
+  - `results\raw\tdsc_fast\transaction_flooding\transaction-flooding_topostake_seed2_adversary-stake-fraction-0p1_attack-tx-rate-multiplier-1_attack-mode-flooding\epoch_metrics.csv`
+  - `results\raw\tdsc_fast\transaction_flooding\transaction-flooding_topostake_seed2_adversary-stake-fraction-0p1_attack-tx-rate-multiplier-2_attack-mode-flooding\epoch_metrics.csv`
+  - `results\raw\tdsc_fast\transaction_flooding\transaction-flooding_topostake_seed2_adversary-stake-fraction-0p1_attack-tx-rate-multiplier-5_attack-mode-flooding\epoch_metrics.csv`
 - source node CSV files:
-  - `results\raw\quick_main\performance_scale\performance-scale_pos_seed0_node-num-100_topology-ba_tx-rate-100\node_epoch_metrics.csv`
-  - `results\raw\quick_main\performance_scale\performance-scale_pos_seed0_node-num-200_topology-ba_tx-rate-100\node_epoch_metrics.csv`
-  - `results\raw\quick_main\performance_scale\performance-scale_pos_seed0_node-num-50_topology-ba_tx-rate-100\node_epoch_metrics.csv`
-  - `results\raw\quick_main\performance_scale\performance-scale_topostake_seed0_node-num-100_topology-ba_tx-rate-100\node_epoch_metrics.csv`
-  - `results\raw\quick_main\performance_scale\performance-scale_topostake_seed0_node-num-200_topology-ba_tx-rate-100\node_epoch_metrics.csv`
-  - `results\raw\quick_main\performance_scale\performance-scale_topostake_seed0_node-num-50_topology-ba_tx-rate-100\node_epoch_metrics.csv`
-
-## topology_robustness
-
-- successful runs: 6 / 6
-- suite: quick_main
-- experiment: topology_robustness
-- protocol_label: pos, topostake
-- node_num: 100
-- sybil_node_num: 0
-- fake_node_num: 0
-- unstable_node_num: 0
-- topology: ba, er, ws
-- tx_rate: 100
-- stake_gini: 0.6
-- adversary_stake_fraction: 0.0
-- adversary_placement: random
-- padding_identities: 0
-- topostake_initial_depth: 4
-- attack_tx_rate_multiplier: 0.0
-- unstable_fraction: 0.0
-- offline_probability: 0.5
-- attack_mode: none
-- source epoch CSV files:
-  - `results\raw\quick_main\topology_robustness\topology-robustness_pos_seed0_node-num-100_topology-ba_tx-rate-100\epoch_metrics.csv`
-  - `results\raw\quick_main\topology_robustness\topology-robustness_pos_seed0_node-num-100_topology-er_tx-rate-100\epoch_metrics.csv`
-  - `results\raw\quick_main\topology_robustness\topology-robustness_pos_seed0_node-num-100_topology-ws_tx-rate-100\epoch_metrics.csv`
-  - `results\raw\quick_main\topology_robustness\topology-robustness_topostake_seed0_node-num-100_topology-ba_tx-rate-100\epoch_metrics.csv`
-  - `results\raw\quick_main\topology_robustness\topology-robustness_topostake_seed0_node-num-100_topology-er_tx-rate-100\epoch_metrics.csv`
-  - `results\raw\quick_main\topology_robustness\topology-robustness_topostake_seed0_node-num-100_topology-ws_tx-rate-100\epoch_metrics.csv`
-- source node CSV files:
-  - `results\raw\quick_main\topology_robustness\topology-robustness_pos_seed0_node-num-100_topology-ba_tx-rate-100\node_epoch_metrics.csv`
-  - `results\raw\quick_main\topology_robustness\topology-robustness_pos_seed0_node-num-100_topology-er_tx-rate-100\node_epoch_metrics.csv`
-  - `results\raw\quick_main\topology_robustness\topology-robustness_pos_seed0_node-num-100_topology-ws_tx-rate-100\node_epoch_metrics.csv`
-  - `results\raw\quick_main\topology_robustness\topology-robustness_topostake_seed0_node-num-100_topology-ba_tx-rate-100\node_epoch_metrics.csv`
-  - `results\raw\quick_main\topology_robustness\topology-robustness_topostake_seed0_node-num-100_topology-er_tx-rate-100\node_epoch_metrics.csv`
-  - `results\raw\quick_main\topology_robustness\topology-robustness_topostake_seed0_node-num-100_topology-ws_tx-rate-100\node_epoch_metrics.csv`
+  - `results\raw\tdsc_fast\transaction_flooding\transaction-flooding_topostake_seed0_adversary-stake-fraction-0p1_attack-tx-rate-multiplier-0_attack-mode-flooding\node_epoch_metrics.csv`
+  - `results\raw\tdsc_fast\transaction_flooding\transaction-flooding_topostake_seed0_adversary-stake-fraction-0p1_attack-tx-rate-multiplier-0p5_attack-mode-flooding\node_epoch_metrics.csv`
+  - `results\raw\tdsc_fast\transaction_flooding\transaction-flooding_topostake_seed0_adversary-stake-fraction-0p1_attack-tx-rate-multiplier-1_attack-mode-flooding\node_epoch_metrics.csv`
+  - `results\raw\tdsc_fast\transaction_flooding\transaction-flooding_topostake_seed0_adversary-stake-fraction-0p1_attack-tx-rate-multiplier-2_attack-mode-flooding\node_epoch_metrics.csv`
+  - `results\raw\tdsc_fast\transaction_flooding\transaction-flooding_topostake_seed0_adversary-stake-fraction-0p1_attack-tx-rate-multiplier-5_attack-mode-flooding\node_epoch_metrics.csv`
+  - `results\raw\tdsc_fast\transaction_flooding\transaction-flooding_topostake_seed1_adversary-stake-fraction-0p1_attack-tx-rate-multiplier-0_attack-mode-flooding\node_epoch_metrics.csv`
+  - `results\raw\tdsc_fast\transaction_flooding\transaction-flooding_topostake_seed1_adversary-stake-fraction-0p1_attack-tx-rate-multiplier-0p5_attack-mode-flooding\node_epoch_metrics.csv`
+  - `results\raw\tdsc_fast\transaction_flooding\transaction-flooding_topostake_seed1_adversary-stake-fraction-0p1_attack-tx-rate-multiplier-1_attack-mode-flooding\node_epoch_metrics.csv`
+  - `results\raw\tdsc_fast\transaction_flooding\transaction-flooding_topostake_seed1_adversary-stake-fraction-0p1_attack-tx-rate-multiplier-2_attack-mode-flooding\node_epoch_metrics.csv`
+  - `results\raw\tdsc_fast\transaction_flooding\transaction-flooding_topostake_seed1_adversary-stake-fraction-0p1_attack-tx-rate-multiplier-5_attack-mode-flooding\node_epoch_metrics.csv`
+  - `results\raw\tdsc_fast\transaction_flooding\transaction-flooding_topostake_seed2_adversary-stake-fraction-0p1_attack-tx-rate-multiplier-0_attack-mode-flooding\node_epoch_metrics.csv`
+  - `results\raw\tdsc_fast\transaction_flooding\transaction-flooding_topostake_seed2_adversary-stake-fraction-0p1_attack-tx-rate-multiplier-0p5_attack-mode-flooding\node_epoch_metrics.csv`
+  - `results\raw\tdsc_fast\transaction_flooding\transaction-flooding_topostake_seed2_adversary-stake-fraction-0p1_attack-tx-rate-multiplier-1_attack-mode-flooding\node_epoch_metrics.csv`
+  - `results\raw\tdsc_fast\transaction_flooding\transaction-flooding_topostake_seed2_adversary-stake-fraction-0p1_attack-tx-rate-multiplier-2_attack-mode-flooding\node_epoch_metrics.csv`
+  - `results\raw\tdsc_fast\transaction_flooding\transaction-flooding_topostake_seed2_adversary-stake-fraction-0p1_attack-tx-rate-multiplier-5_attack-mode-flooding\node_epoch_metrics.csv`
