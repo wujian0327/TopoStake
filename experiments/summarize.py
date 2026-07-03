@@ -184,11 +184,22 @@ def load_config_suites(configs: List[str]) -> List[str]:
     return suites
 
 
-def load_config_meta_files(configs: List[str], only: Iterable[str] | None = None) -> List[Path]:
+def load_config_meta_files(
+    configs: List[str],
+    only: Iterable[str] | None = None,
+    seed_indices: Iterable[int] | None = None,
+    unstable_fractions: Iterable[float] | None = None,
+) -> List[Path]:
+    seed_set = set(seed_indices or [])
+    unstable_fraction_set = set(unstable_fractions or [])
     meta_files = []
     for config in configs:
         spec = load_yaml((ROOT / config).resolve())
         for run in expand_runs(spec, only):
+            if seed_set and int(run.get("seed_index", -1)) not in seed_set:
+                continue
+            if unstable_fraction_set and float(run.get("unstable_fraction", -1)) not in unstable_fraction_set:
+                continue
             meta_path = Path(run["output_dir"]) / "experiment_meta.json"
             if meta_path.exists():
                 meta_files.append(meta_path)
@@ -252,7 +263,7 @@ def aggregate_metrics(run_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         grouped[key].append(row)
 
     rows = []
-    for key, group in sorted(grouped.items()):
+    for key, group in sorted(grouped.items(), key=lambda item: tuple(str(part) for part in item[0])):
         base = dict(zip(GROUP_FIELDS, key))
         for metric in [f"{name}_mean" for name in RUN_METRICS] + SUMMARY_FIELDS:
             values = [to_float(row.get(metric), math.nan) for row in group]
@@ -311,12 +322,14 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", action="append", default=[])
     parser.add_argument("--only", action="append", help="Summarize only this experiment group from the config")
+    parser.add_argument("--seed-index", action="append", type=int, help="Summarize only this zero-based seed index")
+    parser.add_argument("--unstable-fraction", action="append", type=float, help="Summarize only this unstable node fraction")
     parser.add_argument("--suite", action="append", default=[])
     args = parser.parse_args()
 
     suites = args.suite or load_config_suites(args.config)
     if args.config:
-        meta_files = load_config_meta_files(args.config, args.only)
+        meta_files = load_config_meta_files(args.config, args.only, args.seed_index, args.unstable_fraction)
     else:
         meta_files = discover_meta_files(suites if suites else None)
     epoch_all: List[Dict[str, Any]] = []

@@ -18,3 +18,4 @@ back/*
 .codex
 .DS_Store
 *.svg
+/tmp

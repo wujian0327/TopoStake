@@ -79,13 +79,31 @@
     {
       "name": "reward_fairness",
       "protocols": ["pos", "topostake_eta0", "topostake"],
-      "stake_gini": [0.2, 0.6, 0.8]
+      "stake_gini": [0.2, 0.4, 0.6, 0.8],
+      "max_epochs": 40,
+      "base_reward": 0.1,
+      "transaction_fee": 0.001,
+      "proposer_fee_ratio": 0.5,
+      "eta": 0.25
+    },
+    {
+      "name": "relay_participation",
+      "protocols": ["topostake_eta0", "topostake"],
+      "stake_gini": [0.2, 0.4, 0.6, 0.8],
+      "relay_profile": ["mixed"],
+      "max_epochs": 30,
+      "base_reward": 0.1,
+      "transaction_fee": 0.001,
+      "proposer_fee_ratio": 0.5,
+      "eta": 0.25,
+      "beta": 0.8
     },
     {
       "name": "churn_appendix",
       "protocols": ["pos", "topostake"],
       "unstable_fraction": [0, 0.1, 0.3, 0.5],
-      "offline_probability": [0.5]
+      "offline_probability": [0.5],
+      "beta": 0.8
     }
   ]
 }

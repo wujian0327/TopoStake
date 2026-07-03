@@ -5,6 +5,7 @@ use crate::blockchain::{BlockChainError, Blockchain};
 use crate::consensus::{ConsensusType, RandaoSeed, Validator};
 use crate::network::message::Message;
 use crate::network::world_state::logical_tx_metadata;
+use crate::network::RelayProfile;
 // use crate::network::world_state::SlotManager;
 use crate::wallet::Wallet;
 use log::{debug, error, info, warn};
@@ -44,6 +45,7 @@ pub struct Node {
     pub max_mempool_size: usize,   // 内存池最大容量
     pub hash_power: f64,           // 节点算力
     pub tx_propagation_delay: u64, // 交易传播延迟(ms)
+    pub relay_profile: RelayProfile,
     failure_rng: StdRng,
 }
 
@@ -114,6 +116,7 @@ impl Node {
             max_mempool_size: max_tx_per_block,
             hash_power: 1.0,
             tx_propagation_delay: 50, // 默认50ms
+            relay_profile: RelayProfile::Normal,
             failure_rng: StdRng::seed_from_u64(wallet_seed ^ index as u64),
         }
     }
@@ -153,6 +156,7 @@ impl Node {
             max_mempool_size: max_tx_per_block,
             hash_power: 1.0,
             tx_propagation_delay: 50, // 默认50ms
+            relay_profile: RelayProfile::Normal,
             failure_rng: StdRng::seed_from_u64(index as u64),
         }
     }
@@ -213,6 +217,7 @@ impl Node {
             max_mempool_size: max_tx_per_block,
             hash_power: 1.0,
             tx_propagation_delay: 50, // 默认50ms
+            relay_profile: RelayProfile::Normal,
             failure_rng: StdRng::seed_from_u64(wallet_seed ^ index as u64),
         }
     }
@@ -233,6 +238,25 @@ impl Node {
         self.tx_propagation_delay = delay;
         for sybil in self.sybil_nodes.iter_mut() {
             sybil.set_tx_propagation_delay(delay);
+        }
+    }
+
+    pub fn set_relay_profile(&mut self, relay_profile: RelayProfile) {
+        self.relay_profile = relay_profile;
+        self.tx_propagation_delay = match relay_profile {
+            RelayProfile::Active => 5,
+            RelayProfile::Normal | RelayProfile::Mixed => 80,
+            RelayProfile::Lazy => 200,
+        };
+        for sybil in self.sybil_nodes.iter_mut() {
+            sybil.set_relay_profile(relay_profile);
+        }
+    }
+
+    fn should_forward_relay_path(&mut self) -> bool {
+        match self.relay_profile {
+            RelayProfile::Active | RelayProfile::Normal | RelayProfile::Mixed => true,
+            RelayProfile::Lazy => self.failure_rng.gen_bool(0.2),
         }
     }
 
@@ -483,7 +507,8 @@ impl Node {
                         }
                     }
                     //广播到其他邻居
-                    for neighbor_sender in &self.neighbors {
+                    let neighbors = self.neighbors.clone();
+                    for neighbor_sender in &neighbors {
                         if from == neighbor_sender.address {
                             continue;
                         }
@@ -521,20 +546,8 @@ impl Node {
                     {
                         let transactions_cache = self.transaction_paths_cache.read().await;
 
-                        if let Some(cached_tx) = transactions_cache.get(&tx_hash) {
-                            if self.consensus == ConsensusType::TopoStake {
-                                let cached_len = cached_tx.paths.len();
-                                let incoming_len = transaction_paths.paths.len();
-                                let cached_key = cached_tx.to_paths_string();
-                                let incoming_key = transaction_paths.to_paths_string();
-                                if cached_len < incoming_len
-                                    || (cached_len == incoming_len && cached_key <= incoming_key)
-                                {
-                                    continue;
-                                }
-                            } else {
-                                continue;
-                            }
+                        if transactions_cache.contains_key(&tx_hash) {
+                            continue;
                         }
                     }
 
@@ -623,8 +636,12 @@ impl Node {
                     }
 
                     //并广播到邻居
-                    for neighbor_sender in &self.neighbors {
+                    let neighbors = self.neighbors.clone();
+                    for neighbor_sender in &neighbors {
                         if from == neighbor_sender.address {
+                            continue;
+                        }
+                        if !self.should_forward_relay_path() {
                             continue;
                         }
                         let mut new_trans_paths = (*transaction_paths).clone();

@@ -85,8 +85,7 @@ def no_data_svg(path: Path, title: str) -> None:
     path.write_text(
         f"""<svg xmlns="http://www.w3.org/2000/svg" width="760" height="420" viewBox="0 0 760 420">
   <rect width="760" height="420" fill="white"/>
-  <text x="380" y="190" text-anchor="middle" font-family="Arial" font-size="22">{html.escape(title)}</text>
-  <text x="380" y="225" text-anchor="middle" font-family="Arial" font-size="15" fill="#666">No raw data available</text>
+  <text x="380" y="210" text-anchor="middle" font-family="Arial" font-size="15" fill="#666">No raw data available</text>
 </svg>
 """
     )
@@ -159,7 +158,6 @@ def write_line_svg(
     lines = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">',
         '<rect width="100%" height="100%" fill="white"/>',
-        f'<text x="{width/2}" y="30" text-anchor="middle" font-family="Arial" font-size="20">{html.escape(title)}</text>',
         f'<line x1="{left}" y1="{top}" x2="{left}" y2="{top+plot_h}" stroke="#222"/>',
         f'<line x1="{left}" y1="{top+plot_h}" x2="{left+plot_w}" y2="{top+plot_h}" stroke="#222"/>',
     ]

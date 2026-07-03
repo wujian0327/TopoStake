@@ -43,6 +43,14 @@ pub enum AttackMode {
     Flooding,
 }
 
+#[derive(ValueEnum, Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum RelayProfile {
+    Active,
+    Normal,
+    Lazy,
+    Mixed,
+}
+
 impl Display for AdversaryPlacement {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -61,6 +69,28 @@ impl Display for AttackMode {
             AttackMode::PathPadding => write!(f, "path-padding"),
             AttackMode::Flooding => write!(f, "flooding"),
         }
+    }
+}
+
+impl Display for RelayProfile {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            RelayProfile::Active => write!(f, "active"),
+            RelayProfile::Normal => write!(f, "normal"),
+            RelayProfile::Lazy => write!(f, "lazy"),
+            RelayProfile::Mixed => write!(f, "mixed"),
+        }
+    }
+}
+
+fn node_relay_profile(config_profile: RelayProfile, node_index: u32) -> RelayProfile {
+    match config_profile {
+        RelayProfile::Mixed => match node_index % 3 {
+            0 => RelayProfile::Active,
+            1 => RelayProfile::Normal,
+            _ => RelayProfile::Lazy,
+        },
+        other => other,
     }
 }
 
@@ -102,6 +132,7 @@ pub struct SimulationConfig {
     pub validator_scale_latency_penalty: f64,
     pub topostake_scale_latency_reduction: f64,
     pub topostake_latency_reduction_s: f64,
+    pub relay_profile: RelayProfile,
     pub adversary_stake_fraction: f64,
     pub adversary_placement: AdversaryPlacement,
     pub attack_mode: AttackMode,
@@ -228,6 +259,7 @@ pub async fn start_network(config: SimulationConfig) {
     let wallet_seed = config.wallet_seed;
     let topostake_config = config.topostake_config.clone();
     let max_epochs = config.max_epochs;
+    let relay_profile = config.relay_profile;
     let generated_tx_counter = Arc::new(AtomicU64::new(0));
     let fee_spent = Arc::new(Mutex::new(HashMap::new()));
     info!("Consensus Type is {}", consensus);
@@ -294,6 +326,7 @@ pub async fn start_network(config: SimulationConfig) {
                 node.set_failure_seed(config.failure_seed);
                 node.set_transaction_fee(transaction_fee);
                 node.set_hash_power(hash_power);
+                node.set_relay_profile(node_relay_profile(relay_profile, i));
                 node.simple_print();
                 (node.get_address(), node)
             } else if i < node_num + sybil_node_num {
@@ -312,6 +345,7 @@ pub async fn start_network(config: SimulationConfig) {
                 node.set_failure_seed(config.failure_seed);
                 node.set_transaction_fee(transaction_fee);
                 node.set_hash_power(hash_power);
+                node.set_relay_profile(node_relay_profile(relay_profile, i));
                 node.simple_print();
                 (node.get_address(), node)
             } else {
@@ -331,6 +365,7 @@ pub async fn start_network(config: SimulationConfig) {
                 node.set_offline_probability(offline_probability);
                 node.set_transaction_fee(transaction_fee);
                 node.set_hash_power(hash_power);
+                node.set_relay_profile(node_relay_profile(relay_profile, i));
                 node.simple_print();
                 (node.get_address(), node)
             }
@@ -355,6 +390,10 @@ pub async fn start_network(config: SimulationConfig) {
         .iter()
         .map(|(address, node)| (address.clone(), node.transaction_paths_cache.clone()))
         .collect();
+    world.node_relay_profiles = node_map
+        .iter()
+        .map(|(address, node)| (address.clone(), node.relay_profile.to_string()))
+        .collect();
     for node in node_map.values() {
         for sybil in &node.sybil_nodes {
             world
@@ -363,6 +402,9 @@ pub async fn start_network(config: SimulationConfig) {
             world
                 .node_mempools
                 .insert(sybil.get_address(), node.transaction_paths_cache.clone());
+            world
+                .node_relay_profiles
+                .insert(sybil.get_address(), sybil.relay_profile.to_string());
         }
     }
 
@@ -428,6 +470,37 @@ pub async fn start_network(config: SimulationConfig) {
 
     // 找到最大度数
     let max_degree = node_degrees.values().cloned().max().unwrap_or(1);
+    if relay_profile == RelayProfile::Mixed {
+        let mut addresses_by_degree: Vec<String> = node_degrees.keys().cloned().collect();
+        addresses_by_degree.sort_by(|a, b| {
+            node_degrees
+                .get(b)
+                .unwrap_or(&0)
+                .cmp(node_degrees.get(a).unwrap_or(&0))
+                .then_with(|| a.cmp(b))
+        });
+        for (rank, address) in addresses_by_degree.iter().enumerate() {
+            let profile = match rank % 3 {
+                0 => RelayProfile::Active,
+                1 => RelayProfile::Normal,
+                _ => RelayProfile::Lazy,
+            };
+            if let Some(node) = node_map.get_mut(address) {
+                node.set_relay_profile(profile);
+            }
+        }
+        world.node_relay_profiles = node_map
+            .iter()
+            .map(|(address, node)| (address.clone(), node.relay_profile.to_string()))
+            .collect();
+        for node in node_map.values() {
+            for sybil in &node.sybil_nodes {
+                world
+                    .node_relay_profiles
+                    .insert(sybil.get_address(), sybil.relay_profile.to_string());
+            }
+        }
+    }
     let node_betweenness = approximate_betweenness(&graph);
     let mut adversarial_nodes = select_adversarial_nodes(
         &stake_map_from_nodes(&node_map, &stake_values),
@@ -471,9 +544,16 @@ pub async fn start_network(config: SimulationConfig) {
     for (address, node) in node_map.iter_mut() {
         let degree = *node_degrees.get(address).unwrap_or(&1);
         // 基础延迟 50ms，度数越小，额外延迟越大 (最大额外 150ms)
-        let base_delay_ms = 50 + (150.0 * (1.0 - (degree as f64 / max_degree as f64))) as u64;
-        let logical_delay_ms =
-            (base_delay_ms as f64 * config.network_delay_multiplier).round() as u64;
+        let topology_delay_ms = 50 + (150.0 * (1.0 - (degree as f64 / max_degree as f64))) as u64;
+        let mut logical_delay_ms =
+            (topology_delay_ms as f64 * config.network_delay_multiplier).round() as u64;
+        if relay_profile != RelayProfile::Normal {
+            logical_delay_ms = match node.relay_profile {
+                RelayProfile::Active => 5,
+                RelayProfile::Normal | RelayProfile::Mixed => 80,
+                RelayProfile::Lazy => 200,
+            };
+        }
         let mut delay = scale_network_delay_ms(logical_delay_ms);
         if adversarial_nodes.contains(address) && config.attack_mode == AttackMode::MaxScore {
             delay = 0;

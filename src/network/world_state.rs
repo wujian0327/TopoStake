@@ -44,6 +44,7 @@ pub struct WorldState {
     pub nodes_sender: HashMap<String, Sender<Message>>,
     pub node_wallets: HashMap<String, Wallet>,
     pub node_mempools: HashMap<String, Arc<RwLock<HashMap<String, Arc<TransactionPaths>>>>>,
+    pub node_relay_profiles: HashMap<String, String>,
     pub blockchain: Arc<RwLock<Blockchain>>,
     pub consensus: Box<dyn Consensus>,
     consensus_name: String,
@@ -250,6 +251,7 @@ impl WorldState {
                 nodes_sender,
                 node_wallets: HashMap::new(),
                 node_mempools: HashMap::new(),
+                node_relay_profiles: HashMap::new(),
                 blockchain: Arc::new(RwLock::new(blockchain)),
                 consensus,
                 consensus_name,
@@ -842,6 +844,11 @@ impl WorldState {
                     .get(&validator.address)
                     .map(|idx| idx.to_string())
                     .unwrap_or_else(|| validator.address.clone()),
+                relay_profile: self
+                    .node_relay_profiles
+                    .get(&validator.address)
+                    .cloned()
+                    .unwrap_or_else(|| "normal".to_string()),
                 adversarial: self.adversarial_nodes.contains(&validator.address),
                 economic_stake: validator.stake,
                 balance: balances.get(&validator.address).copied().unwrap_or(0.0),
@@ -1500,6 +1507,7 @@ mod tests {
             1,
             true,
             1.0,
+            0.0,
             Arc::new(AtomicU64::new(0)),
             Arc::new(std::sync::Mutex::new(HashMap::new())),
         );
@@ -1537,6 +1545,7 @@ mod tests {
             1,
             true,
             1.0,
+            0.0,
             Arc::new(AtomicU64::new(0)),
             Arc::new(std::sync::Mutex::new(HashMap::new())),
         );

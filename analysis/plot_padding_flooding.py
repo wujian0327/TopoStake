@@ -4,7 +4,20 @@ from collections import defaultdict
 from plot_common import FIGURES, PROCESSED, mean_ci, read_csv, to_float
 
 
-def write_line_pdf(path, title, xlabel, ylabel, series, include_zero=True, y_min=None):
+def write_line_pdf(
+    path,
+    title,
+    xlabel,
+    ylabel,
+    series,
+    include_zero=True,
+    y_min=None,
+    label_fontsize=10,
+    tick_fontsize=10,
+    legend_fontsize=10,
+    y_decimal_places=None,
+    xticks=None,
+):
     try:
         import matplotlib
 
@@ -28,10 +41,14 @@ def write_line_pdf(path, title, xlabel, ylabel, series, include_zero=True, y_min
         ys = [point[1] for point in points]
         yerr = [point[2] for point in points]
         ax.errorbar(xs, ys, yerr=yerr, marker="o", linewidth=1.5, capsize=2.5, label=name)
-    ax.set_title(title)
-    ax.set_xlabel(xlabel)
-    ax.set_ylabel(ylabel)
-    ax.set_xticks(sorted({point[0] for points in series.values() for point in points}))
+    ax.set_xlabel(xlabel, fontsize=label_fontsize)
+    ax.set_ylabel(ylabel, fontsize=label_fontsize)
+    ax.tick_params(axis="both", labelsize=tick_fontsize)
+    if y_decimal_places is not None:
+        from matplotlib.ticker import FormatStrFormatter
+
+        ax.yaxis.set_major_formatter(FormatStrFormatter(f"%.{y_decimal_places}f"))
+    ax.set_xticks(xticks or sorted({point[0] for points in series.values() for point in points}))
     if include_zero:
         bottom, top = ax.get_ylim()
         ax.set_ylim(min(0.0, bottom), top)
@@ -39,7 +56,7 @@ def write_line_pdf(path, title, xlabel, ylabel, series, include_zero=True, y_min
         bottom, top = ax.get_ylim()
         ax.set_ylim(y_min, max(top, y_min + 1e-9))
     ax.grid(True, alpha=0.25)
-    ax.legend(frameon=False)
+    ax.legend(frameon=False, fontsize=legend_fontsize)
     fig.tight_layout()
     fig.savefig(path)
     plt.close(fig)
@@ -106,6 +123,7 @@ def main() -> int:
         FIGURES / "transaction_flooding_profit.svg",
         FIGURES / "transaction_flooding_latency.svg",
         FIGURES / "path_padding_ratios.pdf",
+        FIGURES / "transaction_flooding_weight.pdf",
     ]:
         if stale.exists():
             stale.unlink()
@@ -134,7 +152,6 @@ def main() -> int:
         "Share / real stake share",
         reward_credit_series,
     )
-
     flooding = defaultdict(list)
     for row in rows:
         if row.get("experiment") != "transaction_flooding" or row.get("status") != "ok":
@@ -167,14 +184,14 @@ def main() -> int:
         if row.get("experiment") != "transaction_flooding" or row.get("status") != "ok":
             continue
         x = row.get("attack_tx_rate_multiplier", "")
-        weight[("proposer weight", x)].append(
+        weight[("proposer-weight share", x)].append(
             to_float(row.get("adversary_proposer_weight_share_mean"), 0.0)
         )
-        weight[("score share", x)].append(
-            to_float(row.get("adversary_score_share_mean"), 0.0)
-        )
-        weight[("bound", x)].append(
+        weight[("theoretical bound", x)].append(
             to_float(row.get("theoretical_proposer_weight_bound_mean"), 0.0)
+        )
+        weight[("real stake share", x)].append(
+            to_float(row.get("adversary_real_stake_share_mean"), 0.0)
         )
 
     weight_series = defaultdict(list)
@@ -183,13 +200,18 @@ def main() -> int:
         if n:
             weight_series[series].append((float(x), avg, ci))
     write_line_pdf(
-        FIGURES / "transaction_flooding_weight.pdf",
-        "Transaction flooding adversary weight",
+        FIGURES / "transaction_flooding_proposer_weight.pdf",
+        "Transaction flooding proposer weight",
         "Attack transaction multiplier",
-        "Share",
+        "Proposer-weight share",
         {key: sorted(value) for key, value in weight_series.items()},
         include_zero=True,
         y_min=0.0,
+        label_fontsize=15,
+        tick_fontsize=13,
+        legend_fontsize=11,
+        y_decimal_places=2,
+        xticks=[0, 1, 2, 5],
     )
 
     latency = defaultdict(list)

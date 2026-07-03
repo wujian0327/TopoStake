@@ -3,7 +3,7 @@
 \usepackage{algorithmic}
 \usepackage{algorithm}
 \usepackage{array}
-\usepackage[caption=false,font=normalsize,labelfont=sf,textfont=sf]{subfig}
+\usepackage[caption=false,font=footnotesize]{subfig}
 \usepackage{textcomp}
 \usepackage{stfloats}
 \usepackage{url}
@@ -22,7 +22,7 @@
 
 \begin{document}
 
-\title{A Sample Article Using IEEEtran.cls\\ for IEEE Journals and Transactions}
+\title{TopoStake: Accountable Propagation Incentives with Real-Stake-Bounded Security for PoS Blockchains}
 
 \author{IEEE Publication Technology,~\IEEEmembership{Staff,~IEEE,}
         % <-this % stops a space
@@ -48,10 +48,38 @@ Article submission, IEEE, IEEEtran, journal, \LaTeX, paper, template, typesettin
 \end{IEEEkeywords}
 
 \section{Introduction}
-\IEEEPARstart{T}{his} file is intended to serve as a ``sample article file''
-for IEEE journal papers produced under \LaTeX\ using
-IEEEtran.cls version 1.8b and later. The most common elements are covered in the simplified and updated instructions in ``New\_IEEEtran\_how-to.pdf''. For less common elements you can refer back to the original ``IEEEtran\_HOWTO.pdf''. It is assumed that the reader has a basic working knowledge of \LaTeX. Those who are new to \LaTeX \ are encouraged to read Tobias Oetiker's ``The Not So Short Introduction to \LaTeX ,'' available at: \url{http://tug.ctan.org/info/lshort/english/lshort.pdf} which provides an overview of working with \LaTeX.
+\label{sec:intro}
 
+\IEEEPARstart{P}{roof-of-Stake} (PoS) blockchains secure ledger agreement by anchoring block production and finality voting in validators' economic stake~\cite{kiayias2017ouroboros,gilad2017algorand,buterin2017casper}.
+However, this stake-based security still relies on a network service that is usually outside the consensus accounting: transactions, blocks, and votes must be propagated among validators in a timely manner before the protocol can make progress.
+Propagation consumes bandwidth, computation, and verification effort, but relay behavior is often neither accountable nor directly incentivized at the protocol level.
+As a result, fast dissemination benefits the whole validator set, yet the validators that provide relay service receive limited protocol-level recognition.
+A propagation-aware PoS design must therefore reward relay contribution in an accountable way, while ensuring that relay-derived scores cannot weaken the real-stake basis of consensus security.
+
+The absence of accountable relay incentives therefore creates a mismatch between stake-based rewards and relay behavior.
+When relay effort remains unrewarded, rational validators may free-ride by reducing forwarding activity and relying on others to disseminate transactions and blocks~\cite{babaioff2012bitcoin,ersoy2017transaction}.
+This behavior is individually reasonable because propagation consumes bandwidth and verification resources, while protocol rewards are usually tied to block proposal or voting rather than relay service~\cite{naumenko2019erlay,kang2019incentivizing}.
+As free-riding spreads, the propagation burden shifts to fewer active nodes, reducing redundant dissemination paths and making the system more sensitive to delay, churn, and partial connectivity failures.
+Prior studies have shown that propagation delay affects forks, confirmation latency, and the security-performance tradeoff of blockchain protocols~\cite{decker2013information,croman2016scaling,gervais2016security,pass2017analysis}.
+
+Securely rewarding propagation requires more than attaching relay evidence to transactions and distributing fees~\cite{dai2026txtail}.
+In a PoS system, such contribution becomes security-sensitive once it affects future proposer opportunities or other consensus-level incentives.
+Relay paths may be selectively reported by proposers, padded by colluding relayers, or amplified through Sybil identities and transaction flooding.
+A low-stake validator with a favorable network position may also obtain disproportionate propagation credit.
+If such credit is allowed to directly increase finality voting power or unbounded proposer influence, the protocol would weaken the real-stake basis on which PoS security relies.
+
+Existing work addresses related aspects of this problem, but still leaves open the combination of accountability, incentive compatibility, and PoS security preservation.
+PoS and hybrid consensus protocols improve leader election, finality, or multi-resource robustness, but they usually treat network propagation as an underlying service rather than an accountable input to protocol incentives~\cite{liu2024bulwark,fitzi2022minotaur}.
+Dissemination and mempool-accountability protocols reduce propagation delay, improve fairness, or make transaction handling auditable, but they do not connect relay behavior to consensus-level incentives~\cite{nasrulin2023lo,yahyaoui2025hermes,dai2025lowlatency}.
+Transaction relay incentive schemes reward relayers using fee allocation and verifiable relay evidence, yet they mainly operate at the level of per-transaction dissemination and do not study how relay-derived contribution should affect PoS proposer selection under a real-stake security boundary~\cite{wang2023dualauction}.
+
+
+In this paper, we propose \emph{TopoStake}, a propagation-accountability and incentive layer for PoS blockchains.
+TopoStake is built around a separation between three quantities: real stake, propagation score, and bounded proposer-selection weight.
+Real stake remains the basis of finality voting and is not increased by relay behavior.
+Propagation score is computed from verifiable relay evidence and is used to allocate relay rewards.
+To provide a long-term incentive for active dissemination, TopoStake further allows propagation score to affect proposer selection only through a capped bonus, so that relay-derived influence remains bounded by protocol parameters.
+Through this design, TopoStake makes propagation contribution accountable and rewardable, while keeping consensus safety anchored in real stake.
 
 
 \section{Preliminaries, Threat Model, and Design Goals}
@@ -62,7 +90,7 @@ IEEEtran.cls version 1.8b and later. The most common elements are covered in the
 
 \subsubsection{Network and Epochs}
 
-We consider a permissionless P2P blockchain network.
+We consider a permissionless PoS blockchain network.
 During epoch $e$, the active validator set is
 $\mathcal{V}_e=\{v_1,\dots,v_{N_e}\}$.
 The communication network at slot $t$ is represented by a directed graph
@@ -83,7 +111,7 @@ Stake changes take effect only at epoch boundaries according to the rules of the
 The network is partially synchronous.
 Before the unknown Global Stabilization Time (GST), message delay may be unbounded.
 After GST, messages exchanged over honest communication paths are delivered within a known bound $\Delta$.
-We further assume that the honest-validator subgraph remains connected after GST, as required by the underlying PoS protocol.
+We further assume that the subgraph induced by honest validators remains connected after GST, so that honest validators are not permanently partitioned.
 
 Validators use traceable gossip for transaction propagation.
 Each relay verifies the existing path evidence and signs its incoming and outgoing propagation edges.
@@ -109,12 +137,6 @@ This score is bound to the registered validator identity and is not transferable
 A newly registered validator starts with zero propagation score.
 
 The score from epoch $e-1$ is used together with the economic-stake snapshot of epoch $e$ to derive the proposer-selection weight $W_i(e)$.
-Therefore,
-\begin{equation}
-\text{propagation in epoch } e-1
-\longrightarrow
-\text{proposer weight in epoch } e.
-\end{equation}
 In contrast, relay fees are calculated from the verified path contribution in the containing block and are settled after that block is finalized.
 
 TopoStake therefore separates three quantities:
@@ -739,15 +761,15 @@ R_i^{\mathrm{relay}}(tx)
 (1-\theta)f(tx)\gamma(v_i,p).
 \end{equation}
 Because the total path credit is at most one,
-\begin{equation}
+\begin{align}
 \label{eq:relay_reward_bound}
 \sum_{v_i\in\mathcal{R}(p)}
 R_i^{\mathrm{relay}}(tx)
-=
-(1-\theta)f(tx)B_e(m)
-\leq
+&=
+(1-\theta)f(tx)B_e(m) \notag\\
+&\leq
 (1-\theta)f(tx).
-\end{equation}
+\end{align}
 Thus, relay payments never exceed the relay-fee budget.
 Long or padded paths receive a smaller total payment because $B_e(m)$ decreases with $m$.
 Any undistributed part of the relay budget is burned and cannot be claimed by the proposer or the relayers on that path.
@@ -975,13 +997,13 @@ s\sum_{j=1}^{n}
 w_j
 \log\left(
 1+\frac{a_j}{Ks_j}
-\right)\\
+\right) \notag\\
 &\leq
 s\log\left(
 1+
 \sum_{j=1}^{n}
 w_j\frac{a_j}{Ks_j}
-\right)\\
+\right) \notag\\
 &=
 s\log\left(
 1+\frac{a}{Ks}
@@ -1156,6 +1178,188 @@ Finally, the security analysis does not claim that local timestamps prove global
 Timing information is used only for epochs and scoring windows.
 
 
+\section{Evaluation}
+\label{sec:evaluation}
+
+We evaluate TopoStake with four goals. First, we measure whether propagation accountability can be added to a PoS blockchain with moderate end-to-end overhead. Second, we quantify the cryptographic cost of two-sided BLS path certificates and aggregate verification. Third, we test whether the real-stake-bounded proposer influence derived in Section~\ref{sec:security} holds under adversaries with advantageous network positions. Fourth, we evaluate the robustness of the reward mechanism against path padding, transaction flooding, and heterogeneous relay behavior.
+
+\subsection{Experimental Setup}
+\label{subsec:eval_setup}
+
+We implement TopoStake in an event-driven Rust simulator. The simulator supports a base PoS protocol and the TopoStake extension, and generates peer-to-peer networks using Barabasi--Albert (BA), Erdős--Rényi (ER), and Watts--Strogatz (WS) graph models. Unless otherwise specified, we use BA as the default topology, repeat each configuration with three deterministic seeds, and report the median together with dispersion across seeds.
+
+We compare three main configurations: \emph{PoS}, which uses economic stake for proposer selection and does not reward transaction relay; \emph{TopoStake-$\eta0$}, which enables relay rewards and propagation scoring but disables the proposer bonus; and \emph{TopoStake}, which enables both relay rewards and bounded proposer bonuses. This separation allows us to distinguish the immediate relay incentive from the bounded future proposer opportunity.
+
+We record throughput, block success rate, transaction confirmation latency, path length, valid and invalid path records, relay rewards, proposer rewards, reward concentration, and adversarial proposer influence. For adversarial experiments, we additionally record the adversarial real-stake share, propagation-score share, proposer-weight share, observed proposer frequency, theoretical proposer-weight bound, and bound violations.
+
+\subsection{Performance and Scalability}
+\label{subsec:eval_performance}
+
+\begin{figure*}[!t]
+    \centering
+    \subfloat[Throughput vs. input rate\label{fig:throughput_rate}]{
+        \includegraphics[width=0.234\textwidth]{figures/performance_load_throughput.pdf}
+    }
+    \hfill
+    \subfloat[p95 latency vs. input rate\label{fig:latency_rate}]{
+        \includegraphics[width=0.234\textwidth]{figures/performance_load_latency.pdf}
+    }
+    \hfill
+    \subfloat[Throughput vs. validators\label{fig:throughput_validators}]{
+        \includegraphics[width=0.234\textwidth]{figures/performance_scale_throughput.pdf}
+    }
+    \hfill
+    \subfloat[p95 latency vs. validators\label{fig:latency_validators}]{
+        \includegraphics[width=0.234\textwidth]{figures/performance_scale_latency.pdf}
+    }
+    \caption{Performance of TopoStake under different transaction loads and network scales.}
+    \label{fig:performance}
+\end{figure*}
+
+TopoStake is not designed to replace the underlying PoS protocol or to increase raw consensus throughput by changing the consensus rule. Its purpose is to add accountable relay incentives while preserving the performance envelope of the base protocol. We therefore compare PoS and TopoStake under increasing transaction loads and network scales.
+
+Fig.~\ref{fig:throughput_rate} and Fig.~\ref{fig:latency_rate} show the results under different input rates. As the input rate increases from 50 to 200 transactions per second, both protocols process more transactions, but TopoStake consistently achieves slightly higher throughput than PoS. At the same time, TopoStake keeps lower p95 confirmation latency across all loads. This indicates that the additional path accounting and reward computation do not introduce prohibitive end-to-end overhead. Instead, the relay incentive helps sustain transaction dissemination under higher load.
+
+Fig.~\ref{fig:throughput_validators} and Fig.~\ref{fig:latency_validators} report scalability with respect to the validator population. Throughput decreases for both protocols as the number of validators grows, reflecting the larger communication and verification workload. However, TopoStake maintains higher throughput than PoS across all tested network sizes. The latency gap is more pronounced: when the validator population increases, the p95 latency of PoS grows rapidly, whereas TopoStake increases more slowly. This suggests that accountable relay incentives can improve propagation efficiency and reduce confirmation delay in larger networks.
+
+Overall, these results show that TopoStake preserves the performance envelope of the base PoS protocol while improving transaction propagation under load and scale. The benefit should be interpreted as an empirical propagation effect rather than a change to the formal liveness threshold of the underlying PoS protocol.
+
+\subsection{Cryptographic Overhead}
+\label{subsec:eval_crypto}
+
+\begin{table}[t]
+\centering
+\caption{BLS microbenchmark under different path lengths. Values are mean runtime in milliseconds.}
+\label{tab:crypto_overhead}
+\begin{tabular}{c|c|c|c|c}
+\hline
+Path length & Sign & Verify & Aggregate & Aggregate verify \\
+\hline
+1  & 0.100 & 0.567  & 1.249  & 0.686 \\
+2  & 0.190 & 1.076  & 2.435  & 0.770 \\
+4  & 0.385 & 2.195  & 4.820  & 0.874 \\
+8  & 0.727 & 4.450  & 9.561  & 0.995 \\
+16 & 1.617 & 10.287 & 21.786 & 1.473 \\
+\hline
+\end{tabular}
+\end{table}
+
+TopoStake uses two-sided BLS certificates to make recorded propagation edges publicly verifiable. 
+Table~\ref{tab:crypto_overhead} reports the mean cryptographic runtime for paths of 1 to 16 hops. 
+The Sign, Verify, and Aggregate columns measure the total per-path cost of generating, checking, and aggregating all sender and receiver edge proofs, while Aggregate verify measures the cost of checking the final aggregate proof included in a block.
+
+The results show that signing, individual verification, and aggregation increase with path length. 
+This is expected because each additional hop introduces additional sender and receiver proofs. 
+For example, when the path length increases from 1 to 16 hops, individual verification increases from 0.567 ms to 10.287 ms, and aggregation increases from 1.249 ms to 21.786 ms. 
+These costs are mainly incurred when constructing and validating path evidence before block inclusion.
+
+In contrast, aggregate verification remains relatively small. 
+Even for a 16-hop path, verifying the aggregate proof takes 1.473 ms, which is much lower than individually verifying all edge proofs. 
+Therefore, BLS aggregation keeps block-level proof verification lightweight, although the validator sequence and edge-statement reconstruction still grow linearly with the path length.
+
+\subsection{Real-Stake-Bounded Proposer Influence}
+\label{subsec:eval_real_stake_bound}
+
+\begin{figure*}[!t]
+    \centering
+    \subfloat[Score share, $\eta b_{\max}=0.25$\label{fig:score_share_eta025}]{
+        \includegraphics[width=0.31\textwidth]{figures/real_stake_bound_score_share_eta0p25.pdf}
+    }
+    \hfill
+    \subfloat[Weight bound, $\eta b_{\max}=0.25$\label{fig:weight_bound_eta025}]{
+        \includegraphics[width=0.31\textwidth]{figures/real_stake_bound_weight_bound_eta0p25.pdf}
+    }
+    \hfill
+    \subfloat[Amplification, $\eta b_{\max}=0.25$\label{fig:amp_eta025}]{
+        \includegraphics[width=0.31\textwidth]{figures/real_stake_bound_amplification_ratio_eta0p25.pdf}
+    }
+
+    \vspace{0.8em}
+
+    \subfloat[Score share, $\eta b_{\max}=0.5$\label{fig:score_share_eta05}]{
+        \includegraphics[width=0.31\textwidth]{figures/real_stake_bound_score_share_eta0p5.pdf}
+    }
+    \hfill
+    \subfloat[Weight bound, $\eta b_{\max}=0.5$\label{fig:weight_bound_eta05}]{
+        \includegraphics[width=0.31\textwidth]{figures/real_stake_bound_weight_bound_eta0p5.pdf}
+    }
+    \hfill
+    \subfloat[Amplification, $\eta b_{\max}=0.5$\label{fig:amp_eta05}]{
+        \includegraphics[width=0.31\textwidth]{figures/real_stake_bound_amplification_ratio_eta0p5.pdf}
+    }
+
+    \caption{Real-stake-bounded proposer influence under different adversarial placements and incentive strengths.}
+    \label{fig:real_stake_bound}
+\end{figure*}
+
+The main security question is whether a low-stake adversary with an advantageous network position can convert propagation centrality into excessive proposer influence.
+We evaluate this question by fixing the adversary's real-stake share to 5\%, 10\%, 20\%, and 30\%, and placing adversarial validators either uniformly at random, at high-degree positions, or at high-betweenness positions in the propagation graph.
+For each configuration, we measure the adversarial propagation-score share, proposer-weight share, and the theoretical upper bound derived from Theorem~\ref{thm:bounded_influence}.
+We run the experiment under two incentive strengths, corresponding to $\eta b_{\max}=0.25$ and $\eta b_{\max}=0.5$; the latter is the largest value allowed by Corollary~\ref{cor:honest_proposer_majority}.
+
+Fig.~\ref{fig:real_stake_bound} shows the results.
+The score-share results show that network position does matter: adversaries placed at high-degree or high-betweenness validators obtain substantially larger propagation-score shares than randomly placed adversaries.
+This confirms the threat model assumption that propagation contribution is not necessarily proportional to real stake.
+However, the proposer-weight results show that this propagation advantage does not translate into unbounded proposer influence.
+Across all tested stake fractions, placements, and incentive strengths, the adversarial proposer-weight share remains below the theoretical real-stake-derived bound.
+
+The amplification-ratio results further illustrate the effect of the cap.
+For random placement, the ratio $f_{\mathcal{A}}^{W}/f_{\mathcal{A}}^{S}$ stays close to one, while high-degree and high-betweenness placements obtain a moderate amplification due to their larger propagation scores.
+Nevertheless, the ratio remains below the protocol cap $1+\eta b_{\max}$ in both parameter settings.
+No bound violation is observed in any run.
+These results support the main safety claim of TopoStake: propagation scores can reward useful relay positions, but their effect on proposer selection remains bounded by real stake and protocol parameters.
+
+\subsection{Path Padding and Transaction Flooding}
+\label{subsec:eval_attacks}
+
+\begin{figure*}[!t]
+    \centering
+    \subfloat[Padding reward\label{fig:path_padding_reward}]{
+        \includegraphics[width=0.234\textwidth]{figures/path_padding_coalition_relay_reward.pdf}
+    }
+    \hfill
+    \subfloat[Padding proposer weight\label{fig:path_padding_proposer_weight}]{
+        \includegraphics[width=0.234\textwidth]{figures/path_padding_proposal_probability.pdf}
+    }
+    \hfill
+    \subfloat[Flooding net income\label{fig:flooding_net_income}]{
+        \includegraphics[width=0.234\textwidth]{figures/transaction_flooding_net_income.pdf}
+    }
+    \hfill
+    \subfloat[Flooding proposer weight\label{fig:flooding_proposer_weight}]{
+        \includegraphics[width=0.234\textwidth]{figures/transaction_flooding_proposer_weight.pdf}
+    }
+
+    \caption{Robustness of TopoStake under path-padding and transaction-flooding attacks.}
+    \label{fig:attack_robustness}
+\end{figure*}
+
+We next stress-test TopoStake under path-padding and transaction-flooding attacks.
+In the path-padding attack, a malicious proposer and colluding relayers insert additional controlled identities into the recorded propagation path.
+We vary the number of padded identities from 0 to 16 and evaluate the coalition's relay reward and proposer-weight share under different target depths.
+In the transaction-flooding attack, the adversary generates additional transactions to buy relay credit.
+We vary the attack transaction multiplier and measure fee expenditure, recovered relay income, net income, and proposer-weight share.
+
+Fig.~\ref{fig:attack_robustness} reports the results.
+Fig.~\ref{fig:path_padding_reward} shows that padding does not increase the coalition's relay reward.
+Instead, the reward share decreases rapidly as more controlled identities are inserted, and it approaches zero when the path becomes heavily padded.
+This is consistent with the path-budget design: longer paths receive a smaller total budget, so additional identities do not create additional reward capacity.
+
+Fig.~\ref{fig:path_padding_proposer_weight} further shows that padding does not create future proposer advantage.
+As the number of padded identities increases, the coalition's proposer-weight share decreases toward its real-stake share.
+Thus, path padding is ineffective both for immediate relay reward and for future proposer influence.
+
+Fig.~\ref{fig:flooding_net_income} evaluates transaction flooding.
+Although the adversary recovers a small amount of relay income, its fee expenditure grows much faster, and the resulting net income remains negative for all nonzero flooding multipliers.
+Fig.~\ref{fig:flooding_proposer_weight} shows that flooding also fails to create unbounded proposer influence: the adversarial proposer-weight share stays close to the real-stake share and remains well below the theoretical bound.
+Together, these results support the intended security boundary of TopoStake: syntactically valid colluding paths and self-generated transactions may obtain limited relay credit, but they cannot create positive fee profit or bypass the real-stake-bounded proposer influence.
+
+\subsection{Reward Fairness and Relay Participation}
+\label{subsec:eval_fairness}
+
+Finally, we evaluate whether TopoStake rewards active relayers without replacing economic stake as the root security resource. We vary the stake-distribution Gini coefficient and compare PoS, TopoStake-$\eta0$, and TopoStake. We measure reward Gini, HHI, relay income, proposer income, propagation-score distribution, and proposer-weight concentration.
+
+This experiment distinguishes two effects. The relay-fee mechanism should compensate validators that actively forward transactions, including low-stake validators that contribute to dissemination. The proposer-bonus mechanism should provide an additional long-term incentive, but its effect on proposer selection must remain bounded by the protocol parameters. Together, these measurements show whether TopoStake improves relay participation while preserving the real-stake safety boundary.
 
 \section{Conclusion}
 The conclusion goes here.
@@ -1167,8 +1371,8 @@ This should be a simple paragraph before the References to thank those individua
 
 
 
-
-
+\bibliographystyle{IEEEtran}
+\bibliography{reference}
 
 
 

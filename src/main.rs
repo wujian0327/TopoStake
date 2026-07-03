@@ -8,7 +8,7 @@ use topostake::consensus::topostake::TopoStakeConfig;
 use topostake::consensus::ConsensusType;
 use topostake::network;
 use topostake::network::graph::TopologyType;
-use topostake::network::{AdversaryPlacement, AttackMode, SimulationConfig};
+use topostake::network::{AdversaryPlacement, AttackMode, RelayProfile, SimulationConfig};
 
 #[derive(Parser, Debug)]
 #[clap(version = "1.0", author = "wujian", about = "TopoStake协议模拟")]
@@ -188,6 +188,10 @@ struct Args {
     #[clap(long, default_value = "0.0")]
     topostake_latency_reduction_s: f64,
 
+    /// Relay participation behavior
+    #[arg(long, default_value_t = RelayProfile::Normal)]
+    relay_profile: RelayProfile,
+
     /// Target corrupted real-stake fraction
     #[clap(long, default_value = "0.0")]
     adversary_stake_fraction: f64,
@@ -267,6 +271,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         validator_scale_latency_penalty: args.validator_scale_latency_penalty,
         topostake_scale_latency_reduction: args.topostake_scale_latency_reduction,
         topostake_latency_reduction_s: args.topostake_latency_reduction_s,
+        relay_profile: args.relay_profile,
         adversary_stake_fraction: args.adversary_stake_fraction,
         adversary_placement: args.adversary_placement,
         attack_mode: args.attack_mode,

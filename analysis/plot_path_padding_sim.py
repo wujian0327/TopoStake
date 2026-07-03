@@ -102,16 +102,18 @@ def write_pdfs(rows):
 
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
-    from matplotlib.ticker import PercentFormatter
+    from matplotlib.ticker import FormatStrFormatter
 
     FIGURES.mkdir(parents=True, exist_ok=True)
     proposal_path = FIGURES / "path_padding_proposal_probability.pdf"
+    reward_path = FIGURES / "path_padding_coalition_relay_reward.pdf"
     for stale in [
         FIGURES / "path_padding_formula_incentive.pdf",
         FIGURES / "path_padding_formula_power.pdf",
         FIGURES / "path_padding_formula_sim.pdf",
         FIGURES / "path_padding_proposal_probability.pdf",
         FIGURES / "path_padding_relay_contribution.pdf",
+        FIGURES / "path_padding_coalition_relay_reward.pdf",
     ]:
         if stale.exists():
             stale.unlink()
@@ -135,17 +137,39 @@ def write_pdfs(rows):
         linewidth=1.0,
         label="stake share",
     )
-    ax.set_title("Padding does not increase proposer weight")
-    ax.set_xlabel("Padding identities")
-    ax.set_ylabel("Weight share")
-    ax.yaxis.set_major_formatter(PercentFormatter(xmax=1.0, decimals=1))
+    ax.set_xlabel("Padding identities", fontsize=15)
+    ax.set_ylabel("Proposer-weight share", fontsize=15)
+    ax.yaxis.set_major_formatter(FormatStrFormatter("%.3f"))
     ax.set_xticks(xs)
+    ax.tick_params(axis="both", labelsize=13)
     ax.grid(True, alpha=0.25)
-    ax.legend(frameon=False)
+    ax.legend(frameon=False, fontsize=12)
     fig.tight_layout()
     fig.savefig(proposal_path)
     plt.close(fig)
-    return (proposal_path,)
+
+    fig, ax = plt.subplots(figsize=(4.8, 3.2))
+    for depth in DEPTHS:
+        depth_rows = [row for row in rows if row["depth"] == depth]
+        ax.plot(
+            xs,
+            [row["adversary_relay_credit"] for row in depth_rows],
+            marker="o",
+            linewidth=1.8,
+            label=f"D={depth}",
+        )
+    ax.set_xlabel("Padding identities", fontsize=15)
+    ax.set_ylabel("Coalition reward share", fontsize=15)
+    ax.yaxis.set_major_formatter(FormatStrFormatter("%.2f"))
+    ax.set_xticks(xs)
+    ax.set_ylim(bottom=0)
+    ax.tick_params(axis="both", labelsize=13)
+    ax.grid(True, alpha=0.25)
+    ax.legend(frameon=False, fontsize=12)
+    fig.tight_layout()
+    fig.savefig(reward_path)
+    plt.close(fig)
+    return (proposal_path, reward_path)
 
 
 def main() -> int:

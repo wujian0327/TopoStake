@@ -1,4 +1,4 @@
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use std::time::Duration;
 use topostake::blockchain::path::{
     clear_receipt_cache_for_tests, AggregatedSignedPaths, TransactionPaths,
@@ -67,6 +67,40 @@ fn bls_path_benches(c: &mut Criterion) {
         group.sample_size(10);
     }
     for path_len in [1usize, 2, 4, 8, 16] {
+        group.bench_with_input(BenchmarkId::new("sign", path_len), &path_len, |b, len| {
+            let wallets: Vec<Wallet> = (0..*len).map(|_| Wallet::new()).collect();
+            let messages: Vec<Vec<u8>> = (0..*len)
+                .map(|i| format!("bench-message-{i}").into_bytes())
+                .collect();
+            b.iter(|| {
+                for i in 0..*len {
+                    let signature = wallets[i].sign_by_bls(messages[i].clone());
+                    assert!(!black_box(signature).is_empty());
+                }
+            });
+        });
+
+        group.bench_with_input(BenchmarkId::new("verify", path_len), &path_len, |b, len| {
+            let wallets: Vec<Wallet> = (0..*len).map(|_| Wallet::new()).collect();
+            let messages: Vec<Vec<u8>> = (0..*len)
+                .map(|i| format!("bench-message-{i}").into_bytes())
+                .collect();
+            let signatures: Vec<String> = wallets
+                .iter()
+                .zip(messages.iter())
+                .map(|(wallet, message)| wallet.sign_by_bls(message.clone()))
+                .collect();
+            b.iter(|| {
+                for i in 0..*len {
+                    assert!(Wallet::verify_bls_with_pk(
+                        messages[i].clone(),
+                        signatures[i].clone(),
+                        wallets[i].bls_public_key
+                    ));
+                }
+            });
+        });
+
         group.bench_with_input(
             BenchmarkId::new("aggregation", path_len),
             &path_len,
@@ -88,6 +122,7 @@ fn bls_path_benches(c: &mut Criterion) {
                 let proposer = wallets.last().unwrap().address.clone();
                 let aggregated = AggregatedSignedPaths::from_transaction_paths(tx_paths);
                 b.iter(|| {
+                    clear_receipt_cache_for_tests();
                     assert!(aggregated.verify_at_epoch(tx.clone(), proposer.clone(), 4));
                 });
             },
