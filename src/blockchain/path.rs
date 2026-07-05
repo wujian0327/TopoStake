@@ -15,6 +15,9 @@ lazy_static! {
     static ref PATH_VERIFY_CACHE: DashMap<String, bool> = DashMap::new();
 }
 
+pub const DEFAULT_TOPOSTAKE_CHAIN_ID: u64 = 7_032_030;
+pub const TOPOSTAKE_TX_PATH_DOMAIN: &[u8] = b"TOPOSTAKE_TX_PATH_V1";
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct Path {
     pub from: String,
@@ -28,6 +31,8 @@ pub struct Path {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct TransactionPaths {
     pub transaction: Transaction,
+    #[serde(default = "default_topostake_chain_id")]
+    pub chain_id: u64,
     pub epoch: u64,
     pub paths: Vec<Path>,
 }
@@ -38,6 +43,8 @@ pub struct TransactionPaths {
 /// from the block header during verification.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct AggregatedSignedPaths {
+    #[serde(default = "default_topostake_chain_id")]
+    pub chain_id: u64,
     #[serde(default)]
     pub epoch: u64,
     pub signature: String,
@@ -50,8 +57,17 @@ impl TransactionPaths {
     }
 
     pub fn new_with_epoch(transaction: Transaction, epoch: u64) -> TransactionPaths {
+        Self::new_with_epoch_and_chain_id(transaction, epoch, DEFAULT_TOPOSTAKE_CHAIN_ID)
+    }
+
+    pub fn new_with_epoch_and_chain_id(
+        transaction: Transaction,
+        epoch: u64,
+        chain_id: u64,
+    ) -> TransactionPaths {
         TransactionPaths {
             transaction,
+            chain_id,
             epoch,
             paths: Vec::new(),
         }
@@ -60,6 +76,7 @@ impl TransactionPaths {
     pub fn new_with_paths(transaction: Transaction, paths: Vec<Path>) -> TransactionPaths {
         TransactionPaths {
             transaction,
+            chain_id: DEFAULT_TOPOSTAKE_CHAIN_ID,
             epoch: 0,
             paths,
         }
@@ -112,7 +129,8 @@ impl TransactionPaths {
             Err(_) => return false,
         };
         let message = edge_statement(&prefix, &hop.from, &hop.to);
-        let receipt_key = receipt_cache_key(&self.transaction.hash, self.epoch, &hop.to);
+        let receipt_key =
+            receipt_cache_key(&self.transaction.hash, self.chain_id, self.epoch, &hop.to);
         let receipt_commitment = encode(tools::Hasher::hash(message.clone()));
         if let Some(existing) = RECEIPT_COMMITMENT_CACHE.get(&receipt_key) {
             if existing.value() != &receipt_commitment {
@@ -280,7 +298,13 @@ impl TransactionPaths {
 
     fn chain_value_for_node_index(&self, node_idx: usize) -> Vec<u8> {
         let nodes = self.node_sequence();
-        chain_value_for_nodes(&self.transaction.hash, self.epoch, &nodes, node_idx)
+        chain_value_for_nodes(
+            &self.transaction.hash,
+            self.chain_id,
+            self.epoch,
+            &nodes,
+            node_idx,
+        )
     }
 }
 
@@ -292,7 +316,12 @@ pub fn clear_receipt_cache_for_tests() {
 
 pub fn conflicting_receipt_count(tx_hash: &str, epoch: u64, receiver: &str) -> usize {
     RECEIPT_CONFLICT_CACHE
-        .get(&receipt_cache_key(tx_hash, epoch, receiver))
+        .get(&receipt_cache_key(
+            tx_hash,
+            DEFAULT_TOPOSTAKE_CHAIN_ID,
+            epoch,
+            receiver,
+        ))
         .map(|entry| *entry.value())
         .unwrap_or(0)
 }
@@ -302,6 +331,7 @@ impl AggregatedSignedPaths {
         let full_nodes = paths.node_sequence();
         if full_nodes.is_empty() {
             return AggregatedSignedPaths {
+                chain_id: paths.chain_id,
                 epoch: paths.epoch,
                 signature: String::new(),
                 paths: Vec::new(),
@@ -311,6 +341,7 @@ impl AggregatedSignedPaths {
         let non_proposer_nodes = full_nodes[..full_nodes.len().saturating_sub(1)].to_vec();
         if full_nodes.len() == 1 {
             return AggregatedSignedPaths {
+                chain_id: paths.chain_id,
                 epoch: paths.epoch,
                 signature: String::new(),
                 paths: Vec::new(),
@@ -318,6 +349,7 @@ impl AggregatedSignedPaths {
         }
         if !paths.verify_completed_hops() {
             return AggregatedSignedPaths {
+                chain_id: paths.chain_id,
                 epoch: paths.epoch,
                 signature: String::new(),
                 paths: non_proposer_nodes,
@@ -329,6 +361,7 @@ impl AggregatedSignedPaths {
             let Ok(sender_sig) = Wallet::bls_signature_from_string(hop.sender_signature.clone())
             else {
                 return AggregatedSignedPaths {
+                    chain_id: paths.chain_id,
                     epoch: paths.epoch,
                     signature: String::new(),
                     paths: non_proposer_nodes,
@@ -337,6 +370,7 @@ impl AggregatedSignedPaths {
             signatures.push(sender_sig);
             let Some(receiver_signature) = &hop.receiver_signature else {
                 return AggregatedSignedPaths {
+                    chain_id: paths.chain_id,
                     epoch: paths.epoch,
                     signature: String::new(),
                     paths: non_proposer_nodes,
@@ -345,6 +379,7 @@ impl AggregatedSignedPaths {
             let Ok(receiver_sig) = Wallet::bls_signature_from_string(receiver_signature.clone())
             else {
                 return AggregatedSignedPaths {
+                    chain_id: paths.chain_id,
                     epoch: paths.epoch,
                     signature: String::new(),
                     paths: non_proposer_nodes,
@@ -354,6 +389,7 @@ impl AggregatedSignedPaths {
         }
 
         AggregatedSignedPaths {
+            chain_id: paths.chain_id,
             epoch: paths.epoch,
             signature: Wallet::bls_aggregated_sign(signatures),
             paths: non_proposer_nodes,
@@ -364,7 +400,10 @@ impl AggregatedSignedPaths {
         self.verify_at_epoch(transaction, miner, 0)
     }
 
-    pub fn verify_at_epoch(&self, transaction: Transaction, miner: String, _epoch: u64) -> bool {
+    pub fn verify_at_epoch(&self, transaction: Transaction, miner: String, epoch: u64) -> bool {
+        if self.epoch != epoch {
+            return false;
+        }
         if !transaction.verify() {
             return false;
         }
@@ -397,7 +436,13 @@ impl AggregatedSignedPaths {
         let mut messages: Vec<Vec<u8>> = Vec::with_capacity(hop_count * 2);
         let mut pks: Vec<PublicKey> = Vec::with_capacity(hop_count * 2);
         for idx in 0..hop_count {
-            let prefix = chain_value_for_nodes(&transaction.hash, self.epoch, &full_nodes, idx);
+            let prefix = chain_value_for_nodes(
+                &transaction.hash,
+                self.chain_id,
+                self.epoch,
+                &full_nodes,
+                idx,
+            );
             let message = edge_statement(&prefix, &full_nodes[idx], &full_nodes[idx + 1]);
             let Some(sender_pk) = wallet::get_bls_pub_key(full_nodes[idx].clone()) else {
                 return false;
@@ -418,8 +463,9 @@ impl AggregatedSignedPaths {
 
     fn verification_cache_key(&self, tx_hash: &str, miner: &str) -> String {
         format!(
-            "{}|{}|{}|{}|{}",
+            "{}|{}|{}|{}|{}|{}",
             tx_hash,
+            self.chain_id,
             self.epoch,
             miner,
             self.signature,
@@ -466,14 +512,26 @@ impl AggregatedSignedPaths {
     }
 }
 
-fn chain_value_for_nodes(tx_hash: &str, epoch: u64, nodes: &[String], node_idx: usize) -> Vec<u8> {
+fn chain_value_for_nodes(
+    tx_hash: &str,
+    chain_id: u64,
+    epoch: u64,
+    nodes: &[String],
+    node_idx: usize,
+) -> Vec<u8> {
     let tx_hash_bytes = decode(tx_hash)
         .unwrap_or_else(|_| tools::Hasher::hash(tx_hash.as_bytes().to_vec()).to_vec());
     if nodes.is_empty() {
-        return tools::Hasher::hash(tx_hash_bytes).to_vec();
+        let mut data = TOPOSTAKE_TX_PATH_DOMAIN.to_vec();
+        data.extend_from_slice(&chain_id.to_be_bytes());
+        data.extend_from_slice(&epoch.to_be_bytes());
+        data.extend_from_slice(&tx_hash_bytes);
+        return tools::Hasher::hash(data).to_vec();
     }
     let capped_idx = node_idx.min(nodes.len() - 1);
-    let mut initial = tx_hash_bytes;
+    let mut initial = TOPOSTAKE_TX_PATH_DOMAIN.to_vec();
+    initial.extend_from_slice(&chain_id.to_be_bytes());
+    initial.extend_from_slice(&tx_hash_bytes);
     initial.extend_from_slice(&epoch.to_be_bytes());
     initial.extend_from_slice(&hash_identity(&nodes[0]));
     let mut chain = tools::Hasher::hash(initial).to_vec();
@@ -486,7 +544,8 @@ fn chain_value_for_nodes(tx_hash: &str, epoch: u64, nodes: &[String], node_idx: 
 }
 
 fn edge_statement(prefix: &[u8], from: &str, to: &str) -> Vec<u8> {
-    let mut message = prefix.to_vec();
+    let mut message = TOPOSTAKE_TX_PATH_DOMAIN.to_vec();
+    message.extend_from_slice(prefix);
     message.extend_from_slice(&hash_identity(from));
     message.extend_from_slice(&hash_identity(to));
     message
@@ -496,13 +555,17 @@ fn hash_identity(identity: &str) -> Vec<u8> {
     tools::Hasher::hash(identity.as_bytes().to_vec()).to_vec()
 }
 
-fn receipt_cache_key(tx_hash: &str, epoch: u64, receiver: &str) -> String {
-    format!("{}:{}:{}", tx_hash, epoch, receiver)
+fn receipt_cache_key(tx_hash: &str, chain_id: u64, epoch: u64, receiver: &str) -> String {
+    format!("{}:{}:{}:{}", tx_hash, chain_id, epoch, receiver)
 }
 
 fn has_repeated_nodes(nodes: &[String]) -> bool {
     let mut seen = HashSet::new();
     nodes.iter().any(|node| !seen.insert(node))
+}
+
+fn default_topostake_chain_id() -> u64 {
+    DEFAULT_TOPOSTAKE_CHAIN_ID
 }
 
 #[derive(Debug)]
@@ -605,11 +668,20 @@ mod tests {
     }
 
     #[test]
-    fn block_epoch_does_not_invalidate_path_epoch() {
+    fn replayed_path_in_different_epoch_fails() {
         let (transaction, transaction_paths, _origin, _relay1, _relay2, miner) =
             build_valid_path(1);
         let aggregated = AggregatedSignedPaths::from_transaction_paths(transaction_paths);
-        assert!(aggregated.verify_at_epoch(transaction, miner.address, 2));
+        assert!(!aggregated.verify_at_epoch(transaction, miner.address, 2));
+    }
+
+    #[test]
+    fn modified_chain_id_fails() {
+        let (transaction, transaction_paths, _origin, _relay1, _relay2, miner) =
+            build_valid_path(1);
+        let mut aggregated = AggregatedSignedPaths::from_transaction_paths(transaction_paths);
+        aggregated.chain_id += 1;
+        assert!(!aggregated.verify_at_epoch(transaction, miner.address, 1));
     }
 
     #[test]

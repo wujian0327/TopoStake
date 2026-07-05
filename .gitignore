@@ -19,3 +19,7 @@ back/*
 .DS_Store
 *.svg
 /tmp
+/clients/
+*.patch
+results
+result
