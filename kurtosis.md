@@ -581,6 +581,53 @@ post-finality collect：
 - 后续主实验建议默认使用 `1 validator / node`；
 - 吞吐实验如需多入口，应使用 multiple funded senders。
 
+### Prompt 31 8-node BA / 64 TPS smoke
+
+配置：
+- enclave：`topostake-devnet-prompt31-topostake-8node-ba64`
+- args：`results/raw/topostake-devnet-8node-1validator-minimal.yaml`
+- nodes：`8`
+- validators：`1 / node`
+- topology：`BA(m=2), seed=0`
+- workload：`3840 tx`, `single` origin，目标约 `64 tx/s * 60s`
+
+第一轮按理论间隔 `0.015625s` 发送：
+- 实际发送窗口：`85.17s`
+- 实际发送吞吐：`45.09 TPS`
+- 交易全部进链：`3840/3840`
+- inclusion p50/p95：`2 slots / 6s`
+- 原因：runner 是同步 RPC 逐笔发送，单笔发送开销约 `6ms`，叠加 sleep 后无法达到真实 64 TPS。
+
+第二轮将发送间隔校准为 `0.009s`：
+
+| tx sent | tx included | actual send window | send TPS | inclusion throughput | inclusion p50 | inclusion p95 |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `3840` | `3840` | `59.28s` | `64.77 TPS` | `62.13 TPS` | `2 slots / 6s` | `2 slots / 6s` |
+
+链上状态：
+- sender latest nonce = pending nonce = `7680`
+- txpool pending = `0`，queued = `0`
+- inclusion block range：`114..134`
+- inclusion slot range：`141..161`
+- delay histogram：`1 slot = 1887 tx`, `2 slots = 1953 tx`
+- finalized after collect：`finalized_epoch=20`
+
+block-inline path records：
+- collect range：`slot 136..177`
+- records：`2689`
+- nonzero fee records：`2689`
+- priority fee sum：`112938000000000000 wei`
+- path histogram：`len2=1766`, `len3=923`
+- relay counts：`relay1=531`, `relay2=392`
+
+重要观察：
+- 交易吞吐和 inclusion delay 这次是有效数据：`3840/3840` 全部进链，p95 为 `2 slots / 6s`；
+- path record 不是每笔交易都有：未写 path record 的 `1151` 笔全部来自 proposer 为 node/validator `0` 的 slot；
+- 未写 path record 的 slot：`145, 146, 149, 152, 158`，这些 slot proposer 都是 `0`；
+- 这符合当前协议语义：空 path 表示发起交易者就是区块打包者，不产生 relay path；只有一个节点的 path 表示该节点是发起者；
+- 因此这里不是交易/evidence 丢失，而是 local-origin proposer 的零跳路径口径；
+- reward/score 统计时需要把空 path 视为 valid local-origin case，但不应产生 relay reward。
+
 ### 当前实验缺口
 
 还需要补：
@@ -609,4 +656,5 @@ Prompt 27     reward 输入从固定 budget 改为 block-inline committed priori
 Prompt 28     block-inline path aggregate BLS verification
 Prompt 29     reproducible devnet topology experiment runner
 Prompt 30     8-node scaling, inclusion-delay correction, 1-validator/node smoke
+Prompt 31     8-node BA 64 TPS smoke, local-origin empty-path semantics
 ```
