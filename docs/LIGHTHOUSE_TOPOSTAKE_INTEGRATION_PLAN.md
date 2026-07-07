@@ -6,7 +6,7 @@ does not implement TopoStake consensus.
 
 Source snapshot inspected:
 
-- Lighthouse checkout: `clients/lighthouse`
+- Lighthouse checkout: `ethereum-topostake/lighthouse`
 - Upstream repository: `https://github.com/sigp/lighthouse`
 - Commit: `120c3c6`
 
@@ -229,7 +229,7 @@ Validation:
   consensus change.
 
 Prompt 10 implementation on 2026-07-04 added the minimal fixture-driven
-selection fork in `clients/lighthouse`:
+selection fork in `ethereum-topostake/lighthouse`:
 
 - `TopoStakeConfig.score_fixture` supplies deterministic per-validator scores.
 - `BeaconState::get_beacon_proposer_index` and
@@ -245,7 +245,7 @@ selection fork in `clients/lighthouse`:
 Prompt 10 validation passed:
 
 ```bash
-cd clients/lighthouse
+cd ethereum-topostake/lighthouse
 cargo fmt --check
 cargo test -p types topostake -- --nocapture
 cargo check -p types
@@ -302,7 +302,7 @@ Validation:
   already-frozen proposer schedule.
 
 Prompt 11 implementation on 2026-07-04 added the first minimal score-update
-skeleton in `clients/lighthouse`:
+skeleton in `ethereum-topostake/lighthouse`:
 
 - A devnet-only graffiti marker `TPS1:<validator_csv>` is decoded from each
   processed beacon block body.
@@ -332,7 +332,7 @@ Implemented Prompt 11 files:
 Prompt 11 validation passed:
 
 ```bash
-cd clients/lighthouse
+cd ethereum-topostake/lighthouse
 cargo fmt --check
 cargo test -p types topostake -- --nocapture
 cargo check -p state_processing
@@ -564,7 +564,7 @@ Validation:
    - score update timing.
    Status: drafted in `docs/TOPOSTAKE_ETHEREUM_FORK_SPEC.md`.
 5. Implement consensus state skeleton with no proposer-selection change.
-   Status: Prompt 9 skeleton implemented in `clients/lighthouse`; default-disabled
+   Status: Prompt 9 skeleton implemented in `ethereum-topostake/lighthouse`; default-disabled
    config and zero-score behavior tests pass.
 6. Implement TopoStake proposer schedule behind the fork flag.
    Status: Prompt 10 fixture-driven proposer selection implemented and

@@ -4,7 +4,7 @@ set -eu
 SCRIPT_DIR=$(CDPATH= cd "$(dirname "$0")" && pwd)
 REPO_DIR=$(CDPATH= cd "$SCRIPT_DIR/.." && pwd)
 
-LIGHTHOUSE_DIR="${LIGHTHOUSE_DIR:-$REPO_DIR/clients/lighthouse}"
+LIGHTHOUSE_DIR="${LIGHTHOUSE_DIR:-$REPO_DIR/ethereum-topostake/lighthouse}"
 LIGHTHOUSE_IMAGE="${LIGHTHOUSE_IMAGE:-topostake/lighthouse:dev}"
 UPSTREAM_IMAGE="${UPSTREAM_IMAGE:-sigp/lighthouse:latest}"
 LIGHTHOUSE_RUNTIME_IMAGE="${LIGHTHOUSE_RUNTIME_IMAGE:-ubuntu:24.04}"
@@ -24,7 +24,7 @@ Commands:
   verify        Run `lighthouse --version` inside LIGHTHOUSE_IMAGE.
 
 Environment:
-  LIGHTHOUSE_DIR     Lighthouse checkout path, default ./clients/lighthouse.
+  LIGHTHOUSE_DIR     Lighthouse checkout path, default ./ethereum-topostake/lighthouse.
   LIGHTHOUSE_IMAGE   Output image tag, default topostake/lighthouse:dev.
   UPSTREAM_IMAGE     Source image for tag-upstream, default sigp/lighthouse:latest.
   LIGHTHOUSE_RUNTIME_IMAGE

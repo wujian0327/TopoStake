@@ -1,0 +1,8 @@
+[package]
+name = "lighthouse_version"
+version = { workspace = true }
+authors = ["Sigma Prime <contact@sigmaprime.io>"]
+edition = { workspace = true }
+
+[dev-dependencies]
+regex = { workspace = true }

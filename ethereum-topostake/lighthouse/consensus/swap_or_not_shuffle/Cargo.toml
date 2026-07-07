@@ -1,0 +1,20 @@
+[package]
+name = "swap_or_not_shuffle"
+version = "0.2.0"
+authors = ["Paul Hauner <paul@paulhauner.com>"]
+edition = { workspace = true }
+
+[features]
+arbitrary = ["alloy-primitives/arbitrary"]
+
+[dependencies]
+alloy-primitives = { workspace = true }
+ethereum_hashing = { workspace = true }
+fixed_bytes = { workspace = true }
+
+[dev-dependencies]
+criterion = { workspace = true }
+
+[[bench]]
+name = "benches"
+harness = false

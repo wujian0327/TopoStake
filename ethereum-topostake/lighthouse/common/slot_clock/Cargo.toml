@@ -1,0 +1,10 @@
+[package]
+name = "slot_clock"
+version = "0.2.0"
+authors = ["Paul Hauner <paul@paulhauner.com>"]
+edition = { workspace = true }
+
+[dependencies]
+metrics = { workspace = true }
+parking_lot = { workspace = true }
+types = { workspace = true }

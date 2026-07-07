@@ -1,0 +1,301 @@
+use bls::{PublicKeyBytes, Signature};
+use eth2::types::{FullBlockContents, PublishBlockRequest};
+use futures::Stream;
+use slashing_protection::NotSafe;
+use std::fmt::Debug;
+use std::future::Future;
+use std::sync::Arc;
+use types::{
+    Address, Attestation, AttestationError, BlindedBeaconBlock, Epoch, EthSpec,
+    ExecutionPayloadEnvelope, Graffiti, Hash256, PayloadAttestationData, PayloadAttestationMessage,
+    ProposerPreferences, SelectionProof, SignedAggregateAndProof, SignedBlindedBeaconBlock,
+    SignedContributionAndProof, SignedExecutionPayloadEnvelope, SignedProposerPreferences,
+    SignedValidatorRegistrationData, Slot, SyncCommitteeContribution, SyncCommitteeMessage,
+    SyncSelectionProof, SyncSubnetId, ValidatorRegistrationData,
+};
+
+#[derive(Debug, PartialEq, Clone)]
+pub enum Error<T> {
+    DoppelgangerProtected(PublicKeyBytes),
+    UnknownToDoppelgangerService(PublicKeyBytes),
+    UnknownPubkey(PublicKeyBytes),
+    Slashable(NotSafe),
+    SameData,
+    GreaterThanCurrentSlot { slot: Slot, current_slot: Slot },
+    UnableToSignAttestation(AttestationError),
+    SpecificError(T),
+    ExecutorError,
+    Middleware(String),
+}
+
+impl<T> From<T> for Error<T> {
+    fn from(e: T) -> Self {
+        Error::SpecificError(e)
+    }
+}
+
+/// Input for batch attestation signing
+pub struct AttestationToSign<E: EthSpec> {
+    pub validator_index: u64,
+    pub pubkey: PublicKeyBytes,
+    pub validator_committee_index: usize,
+    pub attestation: Attestation<E>,
+}
+
+/// Input for batch aggregate signing
+pub struct AggregateToSign<E: EthSpec> {
+    pub pubkey: PublicKeyBytes,
+    pub aggregator_index: u64,
+    pub aggregate: Attestation<E>,
+    pub selection_proof: SelectionProof,
+}
+
+/// Input for batch sync committee message signing
+pub struct SyncMessageToSign {
+    pub slot: Slot,
+    pub beacon_block_root: Hash256,
+    pub validator_index: u64,
+    pub pubkey: PublicKeyBytes,
+}
+
+/// Input for batch sync committee contribution signing
+pub struct ContributionToSign<E: EthSpec> {
+    pub aggregator_index: u64,
+    pub aggregator_pubkey: PublicKeyBytes,
+    pub contribution: SyncCommitteeContribution<E>,
+    pub selection_proof: SyncSelectionProof,
+}
+
+/// A helper struct, used for passing data from the validator store to services.
+pub struct ProposalData {
+    pub validator_index: Option<u64>,
+    pub fee_recipient: Option<Address>,
+    pub gas_limit: u64,
+    pub builder_proposals: bool,
+}
+
+pub trait ValidatorStore: Send + Sync {
+    type Error: Debug + Send + Sync;
+    type E: EthSpec;
+
+    /// Attempts to resolve the pubkey to a validator index.
+    ///
+    /// It may return `None` if the `pubkey` is:
+    ///
+    /// - Unknown.
+    /// - Known, but with an unknown index.
+    fn validator_index(&self, pubkey: &PublicKeyBytes) -> Option<u64>;
+
+    /// Returns all voting pubkeys for all enabled validators.
+    ///
+    /// The `filter_func` allows for filtering pubkeys based upon their `DoppelgangerStatus`. There
+    /// are two primary functions used here:
+    ///
+    /// - `DoppelgangerStatus::only_safe`: only returns pubkeys which have passed doppelganger
+    ///   protection and are safe-enough to sign messages.
+    /// - `DoppelgangerStatus::ignored`: returns all the pubkeys from `only_safe` *plus* those still
+    ///   undergoing protection. This is useful for collecting duties or other non-signing tasks.
+    fn voting_pubkeys<I, F>(&self, filter_func: F) -> I
+    where
+        I: FromIterator<PublicKeyBytes>,
+        F: Fn(DoppelgangerStatus) -> Option<PublicKeyBytes>;
+
+    /// Check if the `validator_pubkey` is permitted by the doppleganger protection to sign
+    /// messages.
+    fn doppelganger_protection_allows_signing(&self, validator_pubkey: PublicKeyBytes) -> bool;
+
+    fn num_voting_validators(&self) -> usize;
+    fn graffiti(&self, validator_pubkey: &PublicKeyBytes) -> Option<Graffiti>;
+
+    /// Returns the fee recipient for the given public key. The priority order for fetching
+    /// the fee recipient is:
+    /// 1. validator_definitions.yml
+    /// 2. process level fee recipient
+    fn get_fee_recipient(&self, validator_pubkey: &PublicKeyBytes) -> Option<Address>;
+
+    /// Translate the `builder_proposals`, `builder_boost_factor` and
+    /// `prefer_builder_proposals` to a boost factor, if available.
+    /// - If `prefer_builder_proposals` is true, set boost factor to `u64::MAX` to indicate a
+    ///   preference for builder payloads.
+    /// - If `builder_boost_factor` is a value other than None, return its value as the boost factor.
+    /// - If `builder_proposals` is set to false, set boost factor to 0 to indicate a preference for
+    ///   local payloads.
+    /// - Else return `None` to indicate no preference between builder and local payloads.
+    fn determine_builder_boost_factor(&self, validator_pubkey: &PublicKeyBytes) -> Option<u64>;
+
+    fn randao_reveal(
+        &self,
+        validator_pubkey: PublicKeyBytes,
+        signing_epoch: Epoch,
+    ) -> impl Future<Output = Result<Signature, Error<Self::Error>>> + Send;
+
+    fn set_validator_index(&self, validator_pubkey: &PublicKeyBytes, index: u64);
+
+    fn sign_block(
+        &self,
+        validator_pubkey: PublicKeyBytes,
+        block: UnsignedBlock<Self::E>,
+        current_slot: Slot,
+    ) -> impl Future<Output = Result<SignedBlock<Self::E>, Error<Self::Error>>> + Send;
+
+    /// Sign a batch of `attestations` and apply slashing protection to them.
+    ///
+    /// Returns a stream of batches of successfully signed attestations. Each batch contains
+    /// attestations that passed slashing protection, along with the validator index of the signer.
+    /// Eventually this will be replaced by `SingleAttestation` use.
+    ///
+    /// Output:
+    ///
+    /// * Vec of (validator_index, signed_attestation).
+    #[allow(clippy::type_complexity)]
+    fn sign_attestations(
+        self: &Arc<Self>,
+        attestations: Vec<AttestationToSign<Self::E>>,
+    ) -> impl Stream<Item = Result<Vec<(u64, Attestation<Self::E>)>, Error<Self::Error>>> + Send;
+
+    fn sign_validator_registration_data(
+        &self,
+        validator_registration_data: ValidatorRegistrationData,
+    ) -> impl Future<Output = Result<SignedValidatorRegistrationData, Error<Self::Error>>> + Send;
+
+    /// Produces a `SelectionProof` for the `slot`, signed by with corresponding secret key to
+    /// `validator_pubkey`.
+    fn produce_selection_proof(
+        &self,
+        validator_pubkey: PublicKeyBytes,
+        slot: Slot,
+    ) -> impl Future<Output = Result<SelectionProof, Error<Self::Error>>> + Send;
+
+    /// Produce a `SyncSelectionProof` for `slot` signed by the secret key of `validator_pubkey`.
+    fn produce_sync_selection_proof(
+        &self,
+        validator_pubkey: &PublicKeyBytes,
+        slot: Slot,
+        subnet_id: SyncSubnetId,
+    ) -> impl Future<Output = Result<SyncSelectionProof, Error<Self::Error>>> + Send;
+
+    /// Sign a batch of aggregate and proofs and return results as a stream of batches.
+    fn sign_aggregate_and_proofs(
+        self: &Arc<Self>,
+        aggregates: Vec<AggregateToSign<Self::E>>,
+    ) -> impl Stream<Item = Result<Vec<SignedAggregateAndProof<Self::E>>, Error<Self::Error>>> + Send;
+
+    /// Sign a batch of sync committee messages and return results as a stream of batches.
+    fn sign_sync_committee_signatures(
+        self: &Arc<Self>,
+        messages: Vec<SyncMessageToSign>,
+    ) -> impl Stream<Item = Result<Vec<SyncCommitteeMessage>, Error<Self::Error>>> + Send;
+
+    /// Sign a batch of sync committee contributions and return results as a stream of batches.
+    fn sign_sync_committee_contributions(
+        self: &Arc<Self>,
+        contributions: Vec<ContributionToSign<Self::E>>,
+    ) -> impl Stream<Item = Result<Vec<SignedContributionAndProof<Self::E>>, Error<Self::Error>>> + Send;
+
+    /// Prune the slashing protection database so that it remains performant.
+    ///
+    /// This function will only do actual pruning periodically, so it should usually be
+    /// cheap to call. The `first_run` flag can be used to print a more verbose message when pruning
+    /// runs.
+    fn prune_slashing_protection_db(&self, current_epoch: Epoch, first_run: bool);
+
+    /// Sign an `ExecutionPayloadEnvelope` for Gloas.
+    fn sign_execution_payload_envelope(
+        &self,
+        validator_pubkey: PublicKeyBytes,
+        envelope: ExecutionPayloadEnvelope<Self::E>,
+    ) -> impl Future<Output = Result<SignedExecutionPayloadEnvelope<Self::E>, Error<Self::Error>>> + Send;
+
+    /// Sign a `PayloadAttestationData` for the PTC.
+    fn sign_payload_attestation(
+        &self,
+        validator_pubkey: PublicKeyBytes,
+        data: PayloadAttestationData,
+    ) -> impl Future<Output = Result<PayloadAttestationMessage, Error<Self::Error>>> + Send;
+
+    /// Sign a `ProposerPreferences` message.
+    fn sign_proposer_preferences(
+        &self,
+        validator_pubkey: PublicKeyBytes,
+        preferences: ProposerPreferences,
+    ) -> impl Future<Output = Result<SignedProposerPreferences, Error<Self::Error>>> + Send;
+
+    /// Returns `ProposalData` for the provided `pubkey` if it exists in `InitializedValidators`.
+    /// `ProposalData` fields include defaulting logic described in `get_fee_recipient_defaulting`,
+    /// `get_gas_limit_defaulting`, and `get_builder_proposals_defaulting`.
+    fn proposal_data(&self, pubkey: &PublicKeyBytes) -> Option<ProposalData>;
+}
+
+#[derive(Debug)]
+pub enum UnsignedBlock<E: EthSpec> {
+    Full(FullBlockContents<E>),
+    Blinded(BlindedBeaconBlock<E>),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum SignedBlock<E: EthSpec> {
+    Full(PublishBlockRequest<E>),
+    Blinded(Arc<SignedBlindedBeaconBlock<E>>),
+}
+
+/// A wrapper around `PublicKeyBytes` which encodes information about the status of a validator
+/// pubkey with regards to doppelganger protection.
+#[derive(Debug, PartialEq)]
+pub enum DoppelgangerStatus {
+    /// Doppelganger protection has approved this for signing.
+    ///
+    /// This is because the service has waited some period of time to
+    /// detect other instances of this key on the network.
+    SigningEnabled(PublicKeyBytes),
+    /// Doppelganger protection is still waiting to detect other instances.
+    ///
+    /// Do not use this pubkey for signing slashable messages!!
+    ///
+    /// However, it can safely be used for other non-slashable operations (e.g., collecting duties
+    /// or subscribing to subnets).
+    SigningDisabled(PublicKeyBytes),
+    /// This pubkey is unknown to the doppelganger service.
+    ///
+    /// This represents a serious internal error in the program. This validator will be permanently
+    /// disabled!
+    UnknownToDoppelganger(PublicKeyBytes),
+}
+
+impl DoppelgangerStatus {
+    /// Only return a pubkey if it is explicitly safe for doppelganger protection.
+    ///
+    /// If `Some(pubkey)` is returned, doppelganger has declared it safe for signing.
+    ///
+    /// ## Note
+    ///
+    /// "Safe" is only best-effort by doppelganger. There is no guarantee that a doppelganger
+    /// doesn't exist.
+    pub fn only_safe(self) -> Option<PublicKeyBytes> {
+        match self {
+            DoppelgangerStatus::SigningEnabled(pubkey) => Some(pubkey),
+            DoppelgangerStatus::SigningDisabled(_) => None,
+            DoppelgangerStatus::UnknownToDoppelganger(_) => None,
+        }
+    }
+
+    /// Returns a key regardless of whether or not doppelganger has approved it. Such a key might be
+    /// used for signing non-slashable messages, duties collection or other activities.
+    ///
+    /// If the validator is unknown to doppelganger then `None` will be returned.
+    pub fn ignored(self) -> Option<PublicKeyBytes> {
+        match self {
+            DoppelgangerStatus::SigningEnabled(pubkey) => Some(pubkey),
+            DoppelgangerStatus::SigningDisabled(pubkey) => Some(pubkey),
+            DoppelgangerStatus::UnknownToDoppelganger(_) => None,
+        }
+    }
+
+    /// Only return a pubkey if it will not be used for signing due to doppelganger detection.
+    pub fn only_unsafe(self) -> Option<PublicKeyBytes> {
+        match self {
+            DoppelgangerStatus::SigningEnabled(_) => None,
+            DoppelgangerStatus::SigningDisabled(pubkey) => Some(pubkey),
+            DoppelgangerStatus::UnknownToDoppelganger(pubkey) => Some(pubkey),
+        }
+    }
+}

@@ -25,6 +25,8 @@ struct PublicRelay {
     node_index: u64,
     service_name: String,
     validator_index: u64,
+    relay_address: String,
+    payout_address: String,
     relay_pubkey: String,
 }
 
@@ -43,6 +45,8 @@ struct PrivateRelay {
     node_index: u64,
     service_name: String,
     validator_index: u64,
+    relay_address: String,
+    payout_address: String,
     relay_pubkey: String,
     relay_private_key: String,
 }
@@ -61,6 +65,16 @@ fn derive_key(seed: &str, chain_id: u64, validator_index: u64) -> BlsSecretKey {
     hasher.update(validator_index.to_be_bytes());
     let ikm = hasher.finalize();
     BlsSecretKey::key_gen(ikm.as_slice(), &[]).expect("valid BLS IKM")
+}
+
+fn derive_address(seed: &str, chain_id: u64, validator_index: u64, label: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(seed.as_bytes());
+    hasher.update(chain_id.to_be_bytes());
+    hasher.update(validator_index.to_be_bytes());
+    hasher.update(label.as_bytes());
+    let digest = hasher.finalize();
+    format!("0x{}", encode(&digest[12..32]))
 }
 
 fn write_json<T: Serialize>(path: &str, value: &T) {
@@ -99,6 +113,8 @@ fn main() {
         let public = secret.sk_to_pk();
         let relay_pubkey = format!("0x{}", encode(public.to_bytes()));
         let relay_private_key = format!("0x{}", encode(secret.to_bytes()));
+        let relay_address = derive_address(&seed, chain_id, index, "relay-address");
+        let payout_address = derive_address(&seed, chain_id, index, "payout-address");
         let node_id = format!("node-{}", index);
         let service_name = format!("el-{}-geth-lighthouse", index + 1);
 
@@ -107,6 +123,8 @@ fn main() {
             node_index: index,
             service_name: service_name.clone(),
             validator_index: index,
+            relay_address: relay_address.clone(),
+            payout_address: payout_address.clone(),
             relay_pubkey: relay_pubkey.clone(),
         });
         private_relays.push(PrivateRelay {
@@ -114,6 +132,8 @@ fn main() {
             node_index: index,
             service_name,
             validator_index: index,
+            relay_address,
+            payout_address,
             relay_pubkey,
             relay_private_key,
         });

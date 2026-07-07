@@ -4,7 +4,7 @@ set -eu
 SCRIPT_DIR=$(CDPATH= cd "$(dirname "$0")" && pwd)
 REPO_DIR=$(CDPATH= cd "$SCRIPT_DIR/.." && pwd)
 
-GETH_DIR="${GETH_DIR:-$REPO_DIR/clients/go-ethereum-topostake-prompt14}"
+GETH_DIR="${GETH_DIR:-$REPO_DIR/ethereum-topostake/go-ethereum-topostake}"
 GETH_IMAGE="${GETH_IMAGE:-topostake/geth:dev}"
 GETH_RUNTIME_IMAGE="${GETH_RUNTIME_IMAGE:-ubuntu:24.04}"
 GETH_BINARY="${GETH_BINARY:-}"
@@ -19,7 +19,7 @@ Commands:
   verify         Run `geth version` inside GETH_IMAGE.
 
 Environment:
-  GETH_DIR            go-ethereum checkout/worktree path, default ./clients/go-ethereum-topostake-prompt14.
+  GETH_DIR            go-ethereum checkout/worktree path, default ./ethereum-topostake/go-ethereum-topostake.
   GETH_IMAGE          Output image tag, default topostake/geth:dev.
   GETH_RUNTIME_IMAGE  Runtime base image, default ubuntu:24.04.
   GETH_BINARY         Local geth binary path. Defaults to $GETH_DIR/geth.

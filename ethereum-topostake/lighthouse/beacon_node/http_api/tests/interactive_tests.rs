@@ -1,0 +1,1378 @@
+//! Generic tests that make use of the (newer) `InteractiveApiTester`
+use beacon_chain::custody_context::NodeCustodyType;
+use beacon_chain::{
+    ChainConfig,
+    test_utils::{
+        AttestationStrategy, BlockStrategy, LightClientStrategy, SyncCommitteeStrategy,
+        fork_name_from_env, test_spec,
+    },
+};
+use beacon_processor::{Work, WorkEvent, work_reprocessing_queue::ReprocessQueueMessage};
+use eth2::types::ProduceBlockV3Response;
+use eth2::types::{DepositContractData, StateId};
+use execution_layer::{ForkchoiceState, PayloadAttributes};
+use fixed_bytes::FixedBytesExtended;
+use http_api::test_utils::InteractiveTester;
+use parking_lot::Mutex;
+use slot_clock::SlotClock;
+use state_processing::{
+    per_block_processing::get_expected_withdrawals, state_advance::complete_state_advance,
+};
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::Duration;
+use types::{
+    Address, Epoch, EthSpec, ExecPayload, ExecutionBlockHash, ForkName, Hash256, MainnetEthSpec,
+    MinimalEthSpec, ProposerPreparationData, Slot,
+};
+
+type E = MainnetEthSpec;
+
+// Test that the deposit_contract endpoint returns the correct chain_id and address.
+// Regression test for https://github.com/sigp/lighthouse/issues/2657
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn deposit_contract_custom_network() {
+    let validator_count = 24;
+    let mut spec = E::default_spec();
+
+    // Rinkeby, which we don't use elsewhere.
+    spec.deposit_chain_id = 4;
+    spec.deposit_network_id = 4;
+    // Arbitrary contract address.
+    spec.deposit_contract_address = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".parse().unwrap();
+
+    let tester = InteractiveTester::<E>::new(Some(spec.clone()), validator_count).await;
+    let client = &tester.client;
+
+    let result = client.get_config_deposit_contract().await.unwrap().data;
+
+    let expected = DepositContractData {
+        address: spec.deposit_contract_address,
+        chain_id: spec.deposit_chain_id,
+    };
+
+    assert_eq!(result, expected);
+}
+
+// Test that state lookups by root function correctly for states that are finalized but still
+// present in the hot database, and have had their block pruned from fork choice.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn state_by_root_pruned_from_fork_choice() {
+    type E = MinimalEthSpec;
+
+    let validator_count = 24;
+    let spec = ForkName::latest().make_genesis_spec(E::default_spec());
+
+    let tester = InteractiveTester::<E>::new_with_initializer_and_mutator(
+        Some(spec.clone()),
+        validator_count,
+        Some(Box::new(move |builder| {
+            builder
+                .deterministic_keypairs(validator_count)
+                .fresh_ephemeral_store()
+                .chain_config(ChainConfig {
+                    epochs_per_migration: 1024,
+                    ..ChainConfig::default()
+                })
+        })),
+        None,
+        Default::default(),
+        false,
+        NodeCustodyType::Fullnode,
+    )
+    .await;
+
+    let client = &tester.client;
+    let harness = &tester.harness;
+
+    // Create some chain depth and finalize beyond fork choice's pruning depth.
+    let num_epochs = 8_u64;
+    let num_initial = num_epochs * E::slots_per_epoch();
+    harness.advance_slot();
+    harness
+        .extend_chain_with_sync(
+            num_initial as usize,
+            BlockStrategy::OnCanonicalHead,
+            AttestationStrategy::AllValidators,
+            SyncCommitteeStrategy::NoValidators,
+            LightClientStrategy::Disabled,
+        )
+        .await;
+
+    // Should now be finalized.
+    let finalized_epoch = harness.finalized_checkpoint().epoch;
+    assert_eq!(finalized_epoch, num_epochs - 2);
+
+    // The split slot should still be at 0.
+    assert_eq!(harness.chain.store.get_split_slot(), 0);
+
+    // States that are between the split and the finalized slot should be able to be looked up by
+    // state root.
+    for slot in 0..finalized_epoch.start_slot(E::slots_per_epoch()).as_u64() {
+        let state_root = harness
+            .chain
+            .state_root_at_slot(Slot::new(slot))
+            .unwrap()
+            .unwrap();
+        let response = client
+            .get_debug_beacon_states::<E>(StateId::Root(state_root))
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert!(response.metadata().finalized.unwrap());
+        assert!(!response.metadata().execution_optimistic.unwrap());
+
+        let mut state = response.into_data();
+        assert_eq!(state.update_tree_hash_cache().unwrap(), state_root);
+    }
+}
+
+/// Data structure for tracking fork choice updates received by the mock execution layer.
+#[derive(Debug, Default)]
+struct ForkChoiceUpdates {
+    updates: HashMap<ExecutionBlockHash, Vec<ForkChoiceUpdateMetadata>>,
+}
+
+#[derive(Debug, Clone)]
+struct ForkChoiceUpdateMetadata {
+    received_at: Duration,
+    state: ForkchoiceState,
+    payload_attributes: Option<PayloadAttributes>,
+}
+
+impl ForkChoiceUpdates {
+    fn insert(&mut self, update: ForkChoiceUpdateMetadata) {
+        self.updates
+            .entry(update.state.head_block_hash)
+            .or_default()
+            .push(update);
+    }
+
+    fn contains_update_for(&self, block_hash: ExecutionBlockHash) -> bool {
+        self.updates.contains_key(&block_hash)
+    }
+
+    /// Find the first fork choice update for `head_block_hash` with payload attributes for a
+    /// block proposal at `proposal_timestamp`.
+    fn first_update_with_payload_attributes(
+        &self,
+        head_block_hash: ExecutionBlockHash,
+        proposal_timestamp: u64,
+    ) -> Option<ForkChoiceUpdateMetadata> {
+        self.updates
+            .get(&head_block_hash)?
+            .iter()
+            .find(|update| {
+                update
+                    .payload_attributes
+                    .as_ref()
+                    .is_some_and(|payload_attributes| {
+                        payload_attributes.timestamp() == proposal_timestamp
+                    })
+            })
+            .cloned()
+    }
+}
+
+pub struct ReOrgTest {
+    head_slot: Slot,
+    /// Number of slots between parent block and canonical head.
+    parent_distance: u64,
+    /// Number of slots between head block and block proposal slot.
+    head_distance: u64,
+    percent_parent_votes: usize,
+    percent_empty_votes: usize,
+    percent_head_votes: usize,
+    should_re_org: bool,
+    misprediction: bool,
+    /// Whether to expect withdrawals to change on epoch boundaries.
+    expect_withdrawals_change_on_epoch: bool,
+}
+
+impl Default for ReOrgTest {
+    /// Default config represents a regular easy re-org.
+    fn default() -> Self {
+        Self {
+            head_slot: Slot::new(E::slots_per_epoch() - 2),
+            parent_distance: 1,
+            head_distance: 1,
+            percent_parent_votes: 100,
+            percent_empty_votes: 100,
+            percent_head_votes: 0,
+            should_re_org: true,
+            misprediction: false,
+            expect_withdrawals_change_on_epoch: false,
+        }
+    }
+}
+
+// Test that the beacon node will try to perform proposer boost re-orgs on late blocks when
+// configured.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+pub async fn proposer_boost_re_org_zero_weight() {
+    proposer_boost_re_org_test(ReOrgTest::default()).await;
+}
+
+// Since Fulu, proposer shuffling is stable across epoch boundaries, so re-orgs of the last block
+// in an epoch are permitted.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+pub async fn proposer_boost_re_org_epoch_boundary() {
+    proposer_boost_re_org_test(ReOrgTest {
+        head_slot: Slot::new(E::slots_per_epoch() - 1),
+        should_re_org: true,
+        ..Default::default()
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+pub async fn proposer_boost_re_org_epoch_boundary_skip1() {
+    // Proposing a block on a boundary after a skip will change the set of expected withdrawals
+    // sent in the payload attributes.
+    proposer_boost_re_org_test(ReOrgTest {
+        head_slot: Slot::new(2 * E::slots_per_epoch() - 2),
+        head_distance: 2,
+        should_re_org: false,
+        expect_withdrawals_change_on_epoch: true,
+        ..Default::default()
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+pub async fn proposer_boost_re_org_epoch_boundary_skip32() {
+    // Propose a block at 64 after a whole epoch of skipped slots.
+    proposer_boost_re_org_test(ReOrgTest {
+        head_slot: Slot::new(E::slots_per_epoch() - 1),
+        head_distance: E::slots_per_epoch() + 1,
+        should_re_org: false,
+        expect_withdrawals_change_on_epoch: true,
+        ..Default::default()
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+pub async fn proposer_boost_re_org_slot_after_epoch_boundary() {
+    proposer_boost_re_org_test(ReOrgTest {
+        head_slot: Slot::new(33),
+        ..Default::default()
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+pub async fn proposer_boost_re_org_bad_ffg() {
+    proposer_boost_re_org_test(ReOrgTest {
+        head_slot: Slot::new(64 + 22),
+        should_re_org: false,
+        ..Default::default()
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+pub async fn proposer_boost_re_org_no_finality() {
+    proposer_boost_re_org_test(ReOrgTest {
+        head_slot: Slot::new(96),
+        percent_parent_votes: 100,
+        percent_empty_votes: 0,
+        percent_head_votes: 100,
+        should_re_org: false,
+        ..Default::default()
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+pub async fn proposer_boost_re_org_finality() {
+    proposer_boost_re_org_test(ReOrgTest {
+        head_slot: Slot::new(129),
+        ..Default::default()
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+pub async fn proposer_boost_re_org_parent_distance() {
+    proposer_boost_re_org_test(ReOrgTest {
+        head_slot: Slot::new(E::slots_per_epoch() - 2),
+        parent_distance: 2,
+        should_re_org: false,
+        ..Default::default()
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+pub async fn proposer_boost_re_org_head_distance() {
+    proposer_boost_re_org_test(ReOrgTest {
+        head_slot: Slot::new(E::slots_per_epoch() - 3),
+        head_distance: 2,
+        should_re_org: false,
+        ..Default::default()
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+pub async fn proposer_boost_re_org_very_unhealthy() {
+    proposer_boost_re_org_test(ReOrgTest {
+        head_slot: Slot::new(E::slots_per_epoch() - 1),
+        parent_distance: 2,
+        head_distance: 2,
+        percent_parent_votes: 10,
+        percent_empty_votes: 10,
+        percent_head_votes: 10,
+        should_re_org: false,
+        ..Default::default()
+    })
+    .await;
+}
+
+/// The head block is late but still receives 30% of the committee vote, leading to a misprediction.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+pub async fn proposer_boost_re_org_weight_misprediction() {
+    proposer_boost_re_org_test(ReOrgTest {
+        percent_empty_votes: 70,
+        percent_head_votes: 30,
+        should_re_org: false,
+        misprediction: true,
+        ..Default::default()
+    })
+    .await;
+}
+
+/// Run a proposer boost re-org test.
+///
+/// - `head_slot`: the slot of the canonical head to be reorged
+/// - `reorg_threshold`: committee percentage value for reorging
+/// - `num_empty_votes`: percentage of comm of attestations for the parent block
+/// - `num_head_votes`: number of attestations for the head block
+/// - `should_re_org`: whether the proposer should build on the parent rather than the head
+#[allow(clippy::large_stack_frames)]
+pub async fn proposer_boost_re_org_test(
+    ReOrgTest {
+        head_slot,
+        parent_distance,
+        head_distance,
+        percent_parent_votes,
+        percent_empty_votes,
+        percent_head_votes,
+        should_re_org,
+        misprediction,
+        expect_withdrawals_change_on_epoch,
+    }: ReOrgTest,
+) {
+    assert!(head_slot > 0);
+
+    // We don't run these test for post-Gloas forks because of the FcU changes that were
+    // applied in the gloas. Gloas adopted tests can be found in `gloas_re_org_test.rs`
+    if fork_name_from_env().is_some_and(|f| f.gloas_enabled()) {
+        return;
+    }
+
+    let spec = test_spec::<E>();
+
+    // Ensure there are enough validators to have `attesters_per_slot`.
+    let attesters_per_slot = 10;
+    let validator_count = E::slots_per_epoch() as usize * attesters_per_slot;
+    let all_validators = (0..validator_count).collect::<Vec<usize>>();
+    let num_initial = head_slot.as_u64().checked_sub(parent_distance + 1).unwrap();
+
+    // Check that the required vote percentages can be satisfied exactly using `attesters_per_slot`.
+    assert_eq!(100 % attesters_per_slot, 0);
+    let percent_per_attester = 100 / attesters_per_slot;
+    assert_eq!(percent_parent_votes % percent_per_attester, 0);
+    assert_eq!(percent_empty_votes % percent_per_attester, 0);
+    assert_eq!(percent_head_votes % percent_per_attester, 0);
+    let num_parent_votes = Some(attesters_per_slot * percent_parent_votes / 100);
+    let num_empty_votes = Some(attesters_per_slot * percent_empty_votes / 100);
+    let num_head_votes = Some(attesters_per_slot * percent_head_votes / 100);
+
+    let tester = InteractiveTester::<E>::new_with_initializer_and_mutator(
+        Some(spec),
+        validator_count,
+        None,
+        None,
+        Default::default(),
+        false,
+        NodeCustodyType::Fullnode,
+    )
+    .await;
+    let harness = &tester.harness;
+    let mock_el = harness.mock_execution_layer.as_ref().unwrap();
+    let execution_ctx = mock_el.server.ctx.clone();
+    let slot_clock = &harness.chain.slot_clock;
+
+    mock_el.server.all_payloads_valid();
+
+    // Send proposer preparation data for all validators.
+    let proposer_preparation_data = all_validators
+        .iter()
+        .map(|i| {
+            (
+                ProposerPreparationData {
+                    validator_index: *i as u64,
+                    fee_recipient: Address::from_low_u64_be(*i as u64),
+                },
+                None,
+            )
+        })
+        .collect::<Vec<_>>();
+    harness
+        .chain
+        .execution_layer
+        .as_ref()
+        .unwrap()
+        .update_proposer_preparation(
+            head_slot.epoch(E::slots_per_epoch()) + 1,
+            proposer_preparation_data.iter().map(|(a, b)| (a, b)),
+        )
+        .await;
+
+    // Create some chain depth. Sign sync committee signatures so validator balances don't dip
+    // below 32 ETH and become ineligible for withdrawals.
+    harness.advance_slot();
+    harness
+        .extend_chain_with_sync(
+            num_initial as usize,
+            BlockStrategy::OnCanonicalHead,
+            AttestationStrategy::AllValidators,
+            SyncCommitteeStrategy::AllValidators,
+            LightClientStrategy::Disabled,
+        )
+        .await;
+
+    // Start collecting fork choice updates.
+    let forkchoice_updates = Arc::new(Mutex::new(ForkChoiceUpdates::default()));
+    let forkchoice_updates_inner = forkchoice_updates.clone();
+    let chain_inner = harness.chain.clone();
+
+    execution_ctx
+        .hook
+        .lock()
+        .set_forkchoice_updated_hook(Box::new(move |state, payload_attributes| {
+            let received_at = chain_inner.slot_clock.now_duration().unwrap();
+            let state = ForkchoiceState::from(state);
+            let payload_attributes = payload_attributes.map(Into::into);
+            let update = ForkChoiceUpdateMetadata {
+                received_at,
+                state,
+                payload_attributes,
+            };
+            forkchoice_updates_inner.lock().insert(update);
+            None
+        }));
+
+    // We set up the following block graph, where B is a block that arrives late and is re-orged
+    // by C.
+    //
+    // A | B | - |
+    // ^ | - | C |
+
+    let slot_a = Slot::new(num_initial + 1);
+    let slot_b = slot_a + parent_distance;
+    let slot_c = slot_b + head_distance;
+
+    // We need to transition to at least epoch 2 in order to trigger
+    // `process_rewards_and_penalties`. This allows us to test withdrawals changes at epoch
+    // boundaries.
+    if expect_withdrawals_change_on_epoch {
+        assert!(
+            slot_c.epoch(E::slots_per_epoch()) >= 2,
+            "for withdrawals to change, test must end at an epoch >= 2"
+        );
+    }
+
+    harness.advance_slot();
+    let (block_a_root, block_a, mut state_a) = harness
+        .add_block_at_slot(slot_a, harness.get_current_state())
+        .await
+        .unwrap();
+    let state_a_root = state_a.canonical_root().unwrap();
+
+    // Attest to block A during slot A.
+    let (block_a_parent_votes, _) = harness.make_attestations_with_limit(
+        &all_validators,
+        &state_a,
+        state_a_root,
+        block_a_root,
+        slot_a,
+        num_parent_votes,
+    );
+    harness.process_attestations(block_a_parent_votes, &state_a);
+
+    // Attest to block A during slot B.
+    for _ in 0..parent_distance {
+        harness.advance_slot();
+    }
+    let (block_a_empty_votes, block_a_attesters) = harness.make_attestations_with_limit(
+        &all_validators,
+        &state_a,
+        state_a_root,
+        block_a_root,
+        slot_b,
+        num_empty_votes,
+    );
+    harness.process_attestations(block_a_empty_votes, &state_a);
+
+    let remaining_attesters = all_validators
+        .iter()
+        .copied()
+        .filter(|index| !block_a_attesters.contains(index))
+        .collect::<Vec<_>>();
+
+    // Produce block B and process it halfway through the slot.
+    let (block_b, mut state_b) = harness.make_block(state_a.clone(), slot_b).await;
+    let state_b_root = state_b.canonical_root().unwrap();
+    let block_b_root = block_b.0.canonical_root();
+
+    let obs_time = slot_clock.start_of(slot_b).unwrap() + slot_clock.slot_duration() / 2;
+    slot_clock.set_current_time(obs_time);
+    harness.chain.block_times_cache.write().set_time_observed(
+        block_b_root,
+        slot_b,
+        obs_time,
+        None,
+        None,
+    );
+    harness.process_block_result(block_b.clone()).await.unwrap();
+
+    // Add attestations to block B.
+    let (block_b_head_votes, _) = harness.make_attestations_with_limit(
+        &remaining_attesters,
+        &state_b,
+        state_b_root,
+        block_b_root.into(),
+        slot_b,
+        num_head_votes,
+    );
+    harness.process_attestations(block_b_head_votes, &state_b);
+
+    let payload_lookahead = harness.chain.config.prepare_payload_lookahead;
+    let fork_choice_lookahead = Duration::from_millis(500);
+    while harness.get_current_slot() != slot_c {
+        let current_slot = harness.get_current_slot();
+        let next_slot = current_slot + 1;
+
+        // Simulate the scheduled call to prepare proposers at 8 seconds into the slot.
+        harness.advance_to_slot_lookahead(next_slot, payload_lookahead);
+        harness
+            .chain
+            .prepare_beacon_proposer(current_slot)
+            .await
+            .unwrap();
+
+        // Simulate the scheduled call to fork choice + prepare proposers 500ms before the
+        // next slot.
+        harness.advance_to_slot_lookahead(next_slot, fork_choice_lookahead);
+        harness.chain.recompute_head_at_slot(next_slot).await;
+        harness
+            .chain
+            .prepare_beacon_proposer(current_slot)
+            .await
+            .unwrap();
+
+        harness.advance_slot();
+        harness.chain.per_slot_task().await;
+    }
+
+    // Produce block C.
+    // Advance state_b so we can get the proposer.
+    assert_eq!(state_b.slot(), slot_b);
+    let pre_advance_withdrawals = get_expected_withdrawals(&state_b, &harness.chain.spec)
+        .unwrap()
+        .withdrawals()
+        .to_vec();
+    complete_state_advance(&mut state_b, None, slot_c, &harness.chain.spec).unwrap();
+
+    let proposer_index = state_b
+        .get_beacon_proposer_index(slot_c, &harness.chain.spec)
+        .unwrap();
+    let randao_reveal = harness
+        .sign_randao_reveal(&state_b, proposer_index, slot_c)
+        .into();
+    let (unsigned_block_type, _) = tester
+        .client
+        .get_validator_blocks_v3::<E>(slot_c, &randao_reveal, None, None, None)
+        .await
+        .unwrap();
+
+    let (unsigned_block_c, block_c_blobs) = match unsigned_block_type.data {
+        ProduceBlockV3Response::Full(unsigned_block_contents_c) => {
+            unsigned_block_contents_c.deconstruct()
+        }
+        ProduceBlockV3Response::Blinded(_) => {
+            panic!("Should not be a blinded block");
+        }
+    };
+    let block_c = Arc::new(harness.sign_beacon_block(unsigned_block_c, &state_b));
+
+    if should_re_org {
+        // Block C should build on A.
+        assert_eq!(block_c.parent_root(), Hash256::from(block_a_root));
+    } else {
+        // Block C should build on B.
+        assert_eq!(block_c.parent_root(), block_b_root);
+    }
+
+    // Applying block C should cause it to become head regardless (re-org or continuation).
+    let block_root_c = Hash256::from(
+        harness
+            .process_block_result((block_c.clone(), block_c_blobs))
+            .await
+            .unwrap(),
+    );
+
+    assert_eq!(harness.head_block_root(), block_root_c);
+
+    // Check the fork choice updates that were sent.
+    let forkchoice_updates = forkchoice_updates.lock();
+
+    let block_a_exec_hash = block_a
+        .0
+        .message()
+        .execution_payload()
+        .unwrap()
+        .block_hash();
+    let block_b_exec_hash = block_b
+        .0
+        .message()
+        .execution_payload()
+        .unwrap()
+        .block_hash();
+
+    let block_c_timestamp = block_c.message().execution_payload().unwrap().timestamp();
+
+    // If we re-orged then no fork choice update for B should have been sent.
+    assert_eq!(
+        should_re_org,
+        !forkchoice_updates.contains_update_for(block_b_exec_hash),
+        "{block_b_exec_hash:?}"
+    );
+
+    // Check the timing of the first fork choice update with payload attributes for block C.
+    let c_parent_hash = if should_re_org {
+        block_a_exec_hash
+    } else {
+        block_b_exec_hash
+    };
+    let first_update = forkchoice_updates
+        .first_update_with_payload_attributes(c_parent_hash, block_c_timestamp)
+        .unwrap();
+    let payload_attribs = first_update.payload_attributes.as_ref().unwrap();
+
+    // Check that withdrawals from the payload attributes match those computed from the parent's
+    // advanced state.
+    let expected_withdrawals = if should_re_org {
+        let mut state_a_advanced = state_a.clone();
+        complete_state_advance(&mut state_a_advanced, None, slot_c, &harness.chain.spec).unwrap();
+        get_expected_withdrawals(&state_a_advanced, &harness.chain.spec)
+    } else {
+        get_expected_withdrawals(&state_b, &harness.chain.spec)
+    }
+    .unwrap()
+    .withdrawals()
+    .to_vec();
+    let payload_attribs_withdrawals = payload_attribs.withdrawals().unwrap();
+    assert_eq!(expected_withdrawals, *payload_attribs_withdrawals);
+    assert!(!expected_withdrawals.is_empty());
+
+    if should_re_org
+        || expect_withdrawals_change_on_epoch
+            && slot_c.epoch(E::slots_per_epoch()) != slot_b.epoch(E::slots_per_epoch())
+    {
+        assert_ne!(expected_withdrawals, pre_advance_withdrawals);
+    }
+
+    // Check that the `parent_beacon_block_root` of the payload attributes are correct.
+    if let Ok(parent_beacon_block_root) = payload_attribs.parent_beacon_block_root() {
+        assert_eq!(parent_beacon_block_root, block_c.parent_root());
+    }
+
+    let lookahead = slot_clock
+        .start_of(slot_c)
+        .unwrap()
+        .checked_sub(first_update.received_at)
+        .unwrap();
+
+    if !misprediction {
+        assert_eq!(
+            lookahead,
+            payload_lookahead,
+            "lookahead={lookahead:?}, timestamp={}, prev_randao={:?}",
+            payload_attribs.timestamp(),
+            payload_attribs.prev_randao(),
+        );
+    } else {
+        // On a misprediction we issue the first fcU 500ms before creating a block!
+        assert_eq!(
+            lookahead,
+            fork_choice_lookahead,
+            "timestamp={}, prev_randao={:?}",
+            payload_attribs.timestamp(),
+            payload_attribs.prev_randao(),
+        );
+    }
+}
+
+// Test that running fork choice before proposing results in selection of the correct head.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+pub async fn fork_choice_before_proposal() {
+    // Validator count needs to be at least 32 or proposer boost gets set to 0 when computing
+    // `validator_count // 32`.
+    let validator_count = 64;
+    let all_validators = (0..validator_count).collect::<Vec<_>>();
+    let num_initial: u64 = 31;
+
+    let tester = InteractiveTester::<E>::new(None, validator_count).await;
+    let harness = &tester.harness;
+
+    // Create some chain depth.
+    harness.advance_slot();
+    harness
+        .extend_chain(
+            num_initial as usize,
+            BlockStrategy::OnCanonicalHead,
+            AttestationStrategy::AllValidators,
+        )
+        .await;
+
+    // We set up the following block graph, where B is a block that is temporarily orphaned by C,
+    // but is then reinstated and built upon by D.
+    //
+    // A | B | - | D |
+    // ^ | - | C |
+    let slot_a = Slot::new(num_initial);
+    let slot_b = slot_a + 1;
+    let slot_c = slot_a + 2;
+    let slot_d = slot_a + 3;
+
+    let state_a = harness.get_current_state();
+    let (block_b, mut state_b) = harness.make_block(state_a.clone(), slot_b).await;
+    let block_root_b = harness
+        .process_block(slot_b, block_b.0.canonical_root(), block_b)
+        .await
+        .unwrap();
+    let state_root_b = state_b.canonical_root().unwrap();
+
+    // Create attestations to B but keep them in reserve until after C has been processed.
+    let attestations_b = harness.make_attestations(
+        &all_validators,
+        &state_b,
+        state_root_b,
+        block_root_b,
+        slot_b,
+    );
+
+    let (block_c, mut state_c) = harness.make_block(state_a, slot_c).await;
+    let block_root_c = harness
+        .process_block(slot_c, block_c.0.canonical_root(), block_c.clone())
+        .await
+        .unwrap();
+    let state_root_c = state_c.canonical_root().unwrap();
+
+    // Create attestations to C from a small number of validators and process them immediately.
+    let attestations_c = harness.make_attestations(
+        &all_validators[..validator_count / 2],
+        &state_c,
+        state_root_c,
+        block_root_c,
+        slot_c,
+    );
+    harness.process_attestations(attestations_c, &state_c);
+
+    // Apply the attestations to B, but don't re-run fork choice.
+    harness.process_attestations(attestations_b, &state_b);
+
+    // Due to proposer boost, the head should be C during slot C.
+    assert_eq!(
+        harness.chain.canonical_head.cached_head().head_block_root(),
+        Hash256::from(block_root_c)
+    );
+
+    // Ensure that building a block via the HTTP API re-runs fork choice and builds block D upon B.
+    // Manually prod the per-slot task, because the slot timer doesn't run in the background in
+    // these tests.
+    harness.advance_slot();
+    harness.chain.per_slot_task().await;
+
+    let proposer_index = state_b
+        .get_beacon_proposer_index(slot_d, &harness.chain.spec)
+        .unwrap();
+    let randao_reveal = harness
+        .sign_randao_reveal(&state_b, proposer_index, slot_d)
+        .into();
+    let block_d = tester
+        .client
+        .get_validator_blocks::<E>(slot_d, &randao_reveal, None)
+        .await
+        .unwrap()
+        .into_data()
+        .deconstruct()
+        .0;
+
+    // Head is now B.
+    assert_eq!(
+        harness.chain.canonical_head.cached_head().head_block_root(),
+        Hash256::from(block_root_b)
+    );
+    // D's parent is B.
+    assert_eq!(block_d.parent_root(), Hash256::from(block_root_b));
+}
+
+// Test that attestations to unknown blocks are requeued and processed when their block arrives.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn queue_attestations_from_http() {
+    let validator_count = 128;
+    let all_validators = (0..validator_count).collect::<Vec<_>>();
+
+    let tester = InteractiveTester::<E>::new(None, validator_count).await;
+    let harness = &tester.harness;
+    let client = tester.client.clone();
+
+    let num_initial = 5;
+
+    // Slot of the block attested to.
+    let attestation_slot = Slot::new(num_initial) + 1;
+
+    // Make some initial blocks.
+    harness.advance_slot();
+    harness
+        .extend_chain(
+            num_initial as usize,
+            BlockStrategy::OnCanonicalHead,
+            AttestationStrategy::AllValidators,
+        )
+        .await;
+
+    harness.advance_slot();
+    assert_eq!(harness.get_current_slot(), attestation_slot);
+
+    // Make the attested-to block without applying it.
+    let pre_state = harness.get_current_state();
+    let (block, post_state) = harness.make_block(pre_state, attestation_slot).await;
+    let block_root = block.0.canonical_root();
+    let fork_name = tester.harness.spec.fork_name_at_slot::<E>(attestation_slot);
+
+    // Make attestations to the block and POST them to the beacon node on a background thread.
+    let attestation_future = {
+        let single_attestations = harness
+            .make_single_attestations(
+                &all_validators,
+                &post_state,
+                block.0.state_root(),
+                block_root.into(),
+                attestation_slot,
+            )
+            .into_iter()
+            .flat_map(|attestations| attestations.into_iter().map(|(att, _subnet)| att))
+            .collect::<Vec<_>>();
+
+        tokio::spawn(async move {
+            client
+                .post_beacon_pool_attestations_v2::<E>(single_attestations, fork_name)
+                .await
+                .expect("attestations should be processed successfully")
+        })
+    };
+
+    // In parallel, apply the block. We need to manually notify the reprocess queue, because the
+    // `beacon_chain` does not know about the queue and will not update it for us.
+    harness
+        .process_block(attestation_slot, block_root, block)
+        .await
+        .unwrap();
+    tester
+        .ctx
+        .beacon_processor_send
+        .as_ref()
+        .unwrap()
+        .try_send(WorkEvent {
+            drop_during_sync: false,
+            work: Work::Reprocess(ReprocessQueueMessage::BlockImported { block_root }),
+        })
+        .unwrap();
+
+    attestation_future.await.unwrap();
+}
+
+// Test that a request for next epoch proposer duties suceeds when the current slot clock is within
+// gossip clock disparity (500ms) of the new epoch.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn proposer_duties_with_gossip_tolerance() {
+    let validator_count = 64;
+
+    let tester = InteractiveTester::<E>::new(None, validator_count).await;
+    let harness = &tester.harness;
+    let spec = &harness.spec;
+    let client = &tester.client;
+
+    let num_initial = 4 * E::slots_per_epoch() - 1;
+    let next_epoch_start_slot = Slot::new(num_initial + 1);
+
+    harness.advance_slot();
+    harness
+        .extend_chain_with_sync(
+            num_initial as usize,
+            BlockStrategy::OnCanonicalHead,
+            AttestationStrategy::AllValidators,
+            SyncCommitteeStrategy::NoValidators,
+            LightClientStrategy::Disabled,
+        )
+        .await;
+
+    assert_eq!(harness.chain.slot().unwrap(), num_initial);
+
+    // Set the clock to just before the next epoch.
+    harness
+        .chain
+        .slot_clock
+        .advance_time(spec.get_slot_duration() - spec.maximum_gossip_clock_disparity());
+    assert_eq!(
+        harness
+            .chain
+            .slot_clock
+            .now_with_future_tolerance(spec.maximum_gossip_clock_disparity())
+            .unwrap(),
+        next_epoch_start_slot
+    );
+
+    let head_state = harness.get_current_state();
+    let head_block_root = harness.head_block_root();
+    let tolerant_current_epoch = next_epoch_start_slot.epoch(E::slots_per_epoch());
+
+    // This is a regression test for the bug described here:
+    // https://github.com/sigp/lighthouse/pull/8130/files#r2386594566
+    //
+    // To trigger it, we need to prime the proposer shuffling cache with an incorrect entry which
+    // the previous code would be liable to lookup due to the bugs in its decision root calculation.
+    let wrong_decision_root = head_state
+        .proposer_shuffling_decision_root(head_block_root, spec)
+        .unwrap();
+    let wrong_proposer_indices = vec![0; E::slots_per_epoch() as usize];
+    harness
+        .chain
+        .beacon_proposer_cache
+        .lock()
+        .insert(
+            tolerant_current_epoch,
+            wrong_decision_root,
+            wrong_proposer_indices.clone(),
+            head_state.fork(),
+        )
+        .unwrap();
+
+    // Request the proposer duties.
+    let proposer_duties_tolerant_current_epoch = client
+        .get_validator_duties_proposer(tolerant_current_epoch)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        proposer_duties_tolerant_current_epoch.dependent_root,
+        head_state
+            .legacy_proposer_shuffling_decision_root_at_epoch(
+                tolerant_current_epoch,
+                head_block_root,
+            )
+            .unwrap()
+    );
+    assert_ne!(
+        proposer_duties_tolerant_current_epoch
+            .data
+            .iter()
+            .map(|data| data.validator_index as usize)
+            .collect::<Vec<_>>(),
+        wrong_proposer_indices,
+    );
+
+    // We should get the exact same result after properly advancing into the epoch.
+    harness
+        .chain
+        .slot_clock
+        .advance_time(spec.maximum_gossip_clock_disparity());
+    assert_eq!(harness.chain.slot().unwrap(), next_epoch_start_slot);
+    let proposer_duties_current_epoch = client
+        .get_validator_duties_proposer(tolerant_current_epoch)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        proposer_duties_tolerant_current_epoch,
+        proposer_duties_current_epoch
+    );
+}
+
+// Test that a request for next epoch v2 proposer duties succeeds when the current slot clock is
+// within gossip clock disparity (500ms) of the new epoch.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn proposer_duties_v2_with_gossip_tolerance() {
+    let validator_count = 64;
+
+    let tester = InteractiveTester::<E>::new(None, validator_count).await;
+    let harness = &tester.harness;
+    let spec = &harness.spec;
+    let client = &tester.client;
+
+    let num_initial = 4 * E::slots_per_epoch() - 1;
+    let next_epoch_start_slot = Slot::new(num_initial + 1);
+
+    harness.advance_slot();
+    harness
+        .extend_chain_with_sync(
+            num_initial as usize,
+            BlockStrategy::OnCanonicalHead,
+            AttestationStrategy::AllValidators,
+            SyncCommitteeStrategy::NoValidators,
+            LightClientStrategy::Disabled,
+        )
+        .await;
+
+    assert_eq!(harness.chain.slot().unwrap(), num_initial);
+
+    // Set the clock to just before the next epoch.
+    harness
+        .chain
+        .slot_clock
+        .advance_time(spec.get_slot_duration() - spec.maximum_gossip_clock_disparity());
+    assert_eq!(
+        harness
+            .chain
+            .slot_clock
+            .now_with_future_tolerance(spec.maximum_gossip_clock_disparity())
+            .unwrap(),
+        next_epoch_start_slot
+    );
+
+    let head_state = harness.get_current_state();
+    let head_block_root = harness.head_block_root();
+    let tolerant_current_epoch = next_epoch_start_slot.epoch(E::slots_per_epoch());
+
+    // Prime the proposer shuffling cache with an incorrect entry (regression test).
+    let wrong_decision_root = head_state
+        .proposer_shuffling_decision_root(head_block_root, spec)
+        .unwrap();
+    let wrong_proposer_indices = vec![0; E::slots_per_epoch() as usize];
+    harness
+        .chain
+        .beacon_proposer_cache
+        .lock()
+        .insert(
+            tolerant_current_epoch,
+            wrong_decision_root,
+            wrong_proposer_indices.clone(),
+            head_state.fork(),
+        )
+        .unwrap();
+
+    // Request the v2 proposer duties.
+    let proposer_duties_tolerant_current_epoch = client
+        .get_validator_duties_proposer_v2(tolerant_current_epoch)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        proposer_duties_tolerant_current_epoch.dependent_root,
+        head_state
+            .proposer_shuffling_decision_root_at_epoch(
+                tolerant_current_epoch,
+                head_block_root,
+                spec,
+            )
+            .unwrap()
+    );
+    assert_ne!(
+        proposer_duties_tolerant_current_epoch
+            .data
+            .iter()
+            .map(|data| data.validator_index as usize)
+            .collect::<Vec<_>>(),
+        wrong_proposer_indices,
+    );
+
+    // We should get the exact same result after properly advancing into the epoch.
+    harness
+        .chain
+        .slot_clock
+        .advance_time(spec.maximum_gossip_clock_disparity());
+    assert_eq!(harness.chain.slot().unwrap(), next_epoch_start_slot);
+    let proposer_duties_current_epoch = client
+        .get_validator_duties_proposer_v2(tolerant_current_epoch)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        proposer_duties_tolerant_current_epoch,
+        proposer_duties_current_epoch
+    );
+}
+
+// Test that post-Fulu, v1 and v2 proposer duties return different dependent roots.
+// Post-Fulu, the true dependent root shifts to the block root at the end of epoch N-2 (due to
+// `min_seed_lookahead`), while the legacy v1 root remains at the end of epoch N-1.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn proposer_duties_v2_post_fulu_dependent_root() {
+    type E = MinimalEthSpec;
+    let spec = test_spec::<E>();
+
+    if !spec.is_fulu_scheduled() {
+        return;
+    }
+
+    let validator_count = 24;
+    let slots_per_epoch = E::slots_per_epoch();
+
+    let tester = InteractiveTester::<E>::new(Some(spec.clone()), validator_count).await;
+    let harness = &tester.harness;
+    let client = &tester.client;
+    let mock_el = harness.mock_execution_layer.as_ref().unwrap();
+    mock_el.server.all_payloads_valid();
+
+    // Build 3 full epochs of chain so we're in epoch 3.
+    let num_slots = 3 * slots_per_epoch;
+    harness.advance_slot();
+    harness
+        .extend_chain_with_sync(
+            num_slots as usize,
+            BlockStrategy::OnCanonicalHead,
+            AttestationStrategy::AllValidators,
+            SyncCommitteeStrategy::AllValidators,
+            LightClientStrategy::Disabled,
+        )
+        .await;
+
+    let current_epoch = harness.chain.epoch().unwrap();
+    assert_eq!(current_epoch, Epoch::new(3));
+
+    // For epoch 3 with min_seed_lookahead=1:
+    //   Post-Fulu decision slot: end of epoch N-2 = end of epoch 1 = slot 15
+    //   Legacy decision slot:    end of epoch N-1 = end of epoch 2 = slot 23
+    let true_decision_slot = Epoch::new(1).end_slot(slots_per_epoch);
+    let legacy_decision_slot = Epoch::new(2).end_slot(slots_per_epoch);
+    assert_eq!(true_decision_slot, Slot::new(15));
+    assert_eq!(legacy_decision_slot, Slot::new(23));
+
+    // Fetch the block roots at these slots to compute expected dependent roots.
+    let expected_v2_root = harness
+        .chain
+        .block_root_at_slot(true_decision_slot, beacon_chain::WhenSlotSkipped::Prev)
+        .unwrap()
+        .unwrap();
+    let expected_v1_root = harness
+        .chain
+        .block_root_at_slot(legacy_decision_slot, beacon_chain::WhenSlotSkipped::Prev)
+        .unwrap()
+        .unwrap();
+
+    // Sanity check: the two roots should be different since they refer to different blocks.
+    assert_ne!(
+        expected_v1_root, expected_v2_root,
+        "legacy and true decision roots should differ post-Fulu"
+    );
+
+    // Query v1 and v2 proposer duties for the current epoch.
+    let v1_result = client
+        .get_validator_duties_proposer(current_epoch)
+        .await
+        .unwrap();
+    let v2_result = client
+        .get_validator_duties_proposer_v2(current_epoch)
+        .await
+        .unwrap();
+
+    // The proposer assignments (data) must be identical.
+    assert_eq!(v1_result.data, v2_result.data);
+
+    // The dependent roots must differ.
+    assert_ne!(
+        v1_result.dependent_root, v2_result.dependent_root,
+        "v1 and v2 dependent roots should differ post-Fulu"
+    );
+
+    // Verify each root matches the expected value.
+    assert_eq!(
+        v1_result.dependent_root, expected_v1_root,
+        "v1 dependent root should be block root at end of epoch N-1"
+    );
+    assert_eq!(
+        v2_result.dependent_root, expected_v2_root,
+        "v2 dependent root should be block root at end of epoch N-2"
+    );
+
+    // Also verify the next-epoch path (epoch 4).
+    let next_epoch = current_epoch + 1;
+    let v1_next = client
+        .get_validator_duties_proposer(next_epoch)
+        .await
+        .unwrap();
+    let v2_next = client
+        .get_validator_duties_proposer_v2(next_epoch)
+        .await
+        .unwrap();
+
+    assert_eq!(v1_next.data, v2_next.data);
+    assert_ne!(
+        v1_next.dependent_root, v2_next.dependent_root,
+        "v1 and v2 next-epoch dependent roots should differ post-Fulu"
+    );
+
+    // For epoch 4: true decision is end of epoch 2 (slot 23), legacy is end of epoch 3 (slot 31).
+    let expected_v2_next_root = harness
+        .chain
+        .block_root_at_slot(
+            Epoch::new(2).end_slot(slots_per_epoch),
+            beacon_chain::WhenSlotSkipped::Prev,
+        )
+        .unwrap()
+        .unwrap();
+    let expected_v1_next_root = harness
+        .chain
+        .block_root_at_slot(
+            Epoch::new(3).end_slot(slots_per_epoch),
+            beacon_chain::WhenSlotSkipped::Prev,
+        )
+        .unwrap()
+        .unwrap_or(harness.head_block_root());
+    assert_eq!(v1_next.dependent_root, expected_v1_next_root);
+    assert_eq!(v2_next.dependent_root, expected_v2_next_root);
+    assert_ne!(expected_v2_next_root, harness.head_block_root());
+}
+
+// Test that a request to `lighthouse/custody/backfill` succeeds by verifying that `CustodyContext` and `DataColumnCustodyInfo`
+// have been updated with the correct values.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn lighthouse_restart_custody_backfill() {
+    let spec = test_spec::<E>();
+
+    // Skip pre-Fulu.
+    if !spec.is_fulu_scheduled() {
+        return;
+    }
+
+    let validator_count = 64;
+
+    let tester = InteractiveTester::<E>::new_supernode(Some(spec), validator_count).await;
+    let harness = &tester.harness;
+    let spec = &harness.spec;
+    let client = &tester.client;
+    let min_cgc = spec.custody_requirement;
+    let max_cgc = spec.number_of_custody_groups;
+
+    let num_blocks = 2 * E::slots_per_epoch();
+
+    let custody_context = harness.chain.data_availability_checker.custody_context();
+
+    harness.advance_slot();
+    harness
+        .extend_chain_with_sync(
+            num_blocks as usize,
+            BlockStrategy::OnCanonicalHead,
+            AttestationStrategy::AllValidators,
+            SyncCommitteeStrategy::NoValidators,
+            LightClientStrategy::Disabled,
+        )
+        .await;
+
+    let cgc_at_head = custody_context.custody_group_count_at_head(spec);
+    let earliest_data_column_epoch = harness.chain.earliest_custodied_data_column_epoch();
+
+    assert_eq!(cgc_at_head, max_cgc);
+    assert_eq!(earliest_data_column_epoch, None);
+
+    custody_context
+        .update_and_backfill_custody_count_at_epoch(harness.chain.epoch().unwrap(), cgc_at_head);
+    client.post_lighthouse_custody_backfill().await.unwrap();
+
+    let cgc_at_head = custody_context.custody_group_count_at_head(spec);
+    let cgc_at_previous_epoch =
+        custody_context.custody_group_count_at_epoch(harness.chain.epoch().unwrap() - 1, spec);
+    let earliest_data_column_epoch = harness.chain.earliest_custodied_data_column_epoch();
+
+    // `DataColumnCustodyInfo` should have been updated to the head epoch
+    assert_eq!(
+        earliest_data_column_epoch,
+        Some(harness.chain.epoch().unwrap() + 1)
+    );
+    // Cgc requirements should have stayed the same at head
+    assert_eq!(cgc_at_head, max_cgc);
+    // Cgc requirements at the previous epoch should be `min_cgc`
+    // This allows for custody backfill to re-fetch columns for this epoch.
+    assert_eq!(cgc_at_previous_epoch, min_cgc);
+}
+
+// Test that a request for next epoch proposer duties suceeds when the current slot clock is within
+// gossip clock disparity (500ms) of the new epoch.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn lighthouse_custody_info() {
+    let mut spec = test_spec::<E>();
+
+    // Skip pre-Fulu.
+    if !spec.is_fulu_scheduled() {
+        return;
+    }
+
+    // Use a short DA expiry period so we can observe non-zero values for the oldest data column
+    // slot.
+    spec.min_epochs_for_blob_sidecars_requests = 2;
+    spec.min_epochs_for_data_column_sidecars_requests = 2;
+
+    let validator_count = 64;
+
+    let tester = InteractiveTester::<E>::new(Some(spec), validator_count).await;
+    let harness = &tester.harness;
+    let spec = &harness.spec;
+    let client = &tester.client;
+
+    let num_initial = 2 * E::slots_per_epoch();
+    let num_secondary = 2 * E::slots_per_epoch();
+
+    harness.advance_slot();
+    harness
+        .extend_chain_with_sync(
+            num_initial as usize,
+            BlockStrategy::OnCanonicalHead,
+            AttestationStrategy::AllValidators,
+            SyncCommitteeStrategy::NoValidators,
+            LightClientStrategy::Disabled,
+        )
+        .await;
+
+    assert_eq!(harness.chain.slot().unwrap(), num_initial);
+
+    let info = client.get_lighthouse_custody_info().await.unwrap();
+    assert_eq!(info.earliest_custodied_data_column_slot, 0);
+    assert_eq!(info.custody_group_count, spec.custody_requirement);
+    assert_eq!(
+        info.custody_columns.len(),
+        info.custody_group_count as usize
+    );
+
+    // Advance the chain some more to expire some blobs.
+    harness.advance_slot();
+    harness
+        .extend_chain_with_sync(
+            num_secondary as usize,
+            BlockStrategy::OnCanonicalHead,
+            AttestationStrategy::AllValidators,
+            SyncCommitteeStrategy::NoValidators,
+            LightClientStrategy::Disabled,
+        )
+        .await;
+
+    assert_eq!(harness.chain.slot().unwrap(), num_initial + num_secondary);
+
+    let info = client.get_lighthouse_custody_info().await.unwrap();
+    assert_eq!(
+        info.earliest_custodied_data_column_slot,
+        num_initial + num_secondary
+            - spec.min_epochs_for_data_column_sidecars_requests * E::slots_per_epoch()
+    );
+    assert_eq!(info.custody_group_count, spec.custody_requirement);
+    assert_eq!(
+        info.custody_columns.len(),
+        info.custody_group_count as usize
+    );
+}

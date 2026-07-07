@@ -1,0 +1,23 @@
+[package]
+name = "deposit_contract"
+version = "0.2.0"
+authors = ["Paul Hauner <paul@paulhauner.com>"]
+edition = { workspace = true }
+
+build = "build.rs"
+
+[dependencies]
+alloy-dyn-abi = { workspace = true }
+alloy-json-abi = { workspace = true }
+alloy-primitives = { workspace = true }
+bls = { workspace = true }
+ethereum_ssz = { workspace = true }
+serde_json = { workspace = true }
+tree_hash = { workspace = true }
+types = { workspace = true }
+
+[build-dependencies]
+hex = { workspace = true }
+reqwest = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }

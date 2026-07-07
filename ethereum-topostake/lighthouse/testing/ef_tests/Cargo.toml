@@ -1,0 +1,46 @@
+[package]
+name = "ef_tests"
+version = "0.2.0"
+authors = ["Paul Hauner <paul@paulhauner.com>"]
+edition = { workspace = true }
+
+[features]
+# `ef_tests` feature must be enabled to actually run the tests
+ef_tests = []
+disable_rayon = []
+fake_crypto = ["bls/fake_crypto"]
+portable = ["beacon_chain/portable"]
+
+[dependencies]
+alloy-primitives = { workspace = true }
+beacon_chain = { workspace = true }
+bls = { workspace = true }
+compare_fields = { workspace = true }
+context_deserialize = { workspace = true }
+educe = { workspace = true }
+eth2_network_config = { workspace = true }
+ethereum_ssz = { workspace = true }
+ethereum_ssz_derive = { workspace = true }
+execution_layer = { workspace = true }
+fork_choice = { workspace = true }
+fs2 = { workspace = true }
+hex = { workspace = true }
+kzg = { workspace = true }
+lighthouse_network = { workspace = true }
+logging = { workspace = true }
+milhouse = { workspace = true }
+network = { workspace = true }
+proto_array = { workspace = true }
+rayon = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_repr = { workspace = true }
+snap = { workspace = true }
+ssz_types = { workspace = true }
+state_processing = { workspace = true }
+swap_or_not_shuffle = { workspace = true }
+tree_hash = { workspace = true }
+tree_hash_derive = { workspace = true }
+typenum = { workspace = true }
+types = { workspace = true }
+yaml_serde = { workspace = true }

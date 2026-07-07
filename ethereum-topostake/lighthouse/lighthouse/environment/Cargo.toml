@@ -1,0 +1,25 @@
+[package]
+name = "environment"
+version = "0.1.2"
+authors = ["Paul Hauner <paul@paulhauner.com>"]
+edition = { workspace = true }
+
+[dependencies]
+async-channel = { workspace = true }
+clap = { workspace = true }
+eth2_config = { workspace = true }
+eth2_network_config = { workspace = true }
+futures = { workspace = true }
+logging = { workspace = true }
+logroller = { workspace = true }
+serde = { workspace = true }
+task_executor = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-appender = { workspace = true }
+tracing-log = { workspace = true }
+tracing-subscriber = { workspace = true }
+types = { workspace = true }
+
+[target.'cfg(not(target_family = "unix"))'.dependencies]
+ctrlc = { version = "3.1.6", features = ["termination"] }
