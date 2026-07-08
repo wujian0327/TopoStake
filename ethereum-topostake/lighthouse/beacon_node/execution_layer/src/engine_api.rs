@@ -26,7 +26,7 @@ pub use types::{
 use types::{
     ExecutionPayloadBellatrix, ExecutionPayloadCapella, ExecutionPayloadDeneb,
     ExecutionPayloadElectra, ExecutionPayloadFulu, ExecutionPayloadGloas, ExecutionRequests,
-    KzgProofs,
+    KzgProofs, TopoStakeSettlementRecord, TopoStakeSettlementRecords,
 };
 use types::{GRAFFITI_BYTES_LEN, Graffiti};
 
@@ -448,6 +448,7 @@ impl<E: EthSpec> GetPayloadResponse<E> {
 pub struct ExecutionPayloadBodyV1<E: EthSpec> {
     pub transactions: Transactions<E>,
     pub withdrawals: Option<Withdrawals<E>>,
+    pub topostake_settlement_records: TopoStakeSettlementRecords<E>,
 }
 
 impl<E: EthSpec> ExecutionPayloadBodyV1<E> {
@@ -478,6 +479,7 @@ impl<E: EthSpec> ExecutionPayloadBodyV1<E> {
                     base_fee_per_gas: header.base_fee_per_gas,
                     block_hash: header.block_hash,
                     transactions: self.transactions,
+                    topostake_settlement_records: self.topostake_settlement_records,
                 }))
             }
             ExecutionPayloadHeader::Capella(header) => {
@@ -497,6 +499,7 @@ impl<E: EthSpec> ExecutionPayloadBodyV1<E> {
                         base_fee_per_gas: header.base_fee_per_gas,
                         block_hash: header.block_hash,
                         transactions: self.transactions,
+                        topostake_settlement_records: self.topostake_settlement_records,
                         withdrawals,
                     }))
                 } else {
@@ -523,6 +526,7 @@ impl<E: EthSpec> ExecutionPayloadBodyV1<E> {
                         base_fee_per_gas: header.base_fee_per_gas,
                         block_hash: header.block_hash,
                         transactions: self.transactions,
+                        topostake_settlement_records: self.topostake_settlement_records,
                         withdrawals,
                         blob_gas_used: header.blob_gas_used,
                         excess_blob_gas: header.excess_blob_gas,
@@ -551,6 +555,7 @@ impl<E: EthSpec> ExecutionPayloadBodyV1<E> {
                         base_fee_per_gas: header.base_fee_per_gas,
                         block_hash: header.block_hash,
                         transactions: self.transactions,
+                        topostake_settlement_records: self.topostake_settlement_records,
                         withdrawals,
                         blob_gas_used: header.blob_gas_used,
                         excess_blob_gas: header.excess_blob_gas,
@@ -579,6 +584,7 @@ impl<E: EthSpec> ExecutionPayloadBodyV1<E> {
                         base_fee_per_gas: header.base_fee_per_gas,
                         block_hash: header.block_hash,
                         transactions: self.transactions,
+                        topostake_settlement_records: self.topostake_settlement_records,
                         withdrawals,
                         blob_gas_used: header.blob_gas_used,
                         excess_blob_gas: header.excess_blob_gas,

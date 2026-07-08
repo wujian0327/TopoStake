@@ -294,7 +294,7 @@ fn topostake_path_evidence_from_inline_record<E: EthSpec>(
         .map(usize::try_from)
         .collect::<Result<Vec<_>, _>>()
         .ok()?;
-    if path.len() < 2 {
+    if path.is_empty() {
         return None;
     }
     Some(TopoStakePathEvidence {
@@ -312,17 +312,22 @@ fn verify_topostake_inline_block_aggregate<E: EthSpec>(
     if records.is_empty() {
         return true;
     }
-    let Some(first_signature) = topostake_inline_aggregate_signature(&records[0]) else {
-        return false;
-    };
-    if records
-        .iter()
-        .any(|record| topostake_inline_aggregate_signature(record) != Some(first_signature))
-    {
-        return false;
-    }
+    let mut aggregate_signature = None;
     let mut signature_records = Vec::new();
     for record in records {
+        if !topostake_inline_record_requires_signature(record) {
+            continue;
+        }
+        let Some(record_signature) = topostake_inline_aggregate_signature(record) else {
+            return false;
+        };
+        if let Some(expected_signature) = aggregate_signature {
+            if record_signature != expected_signature {
+                return false;
+            }
+        } else {
+            aggregate_signature = Some(record_signature);
+        }
         let Some(mut per_tx_records) =
             topostake_inline_signature_records(record, registry, spec.deposit_chain_id)
         else {
@@ -330,7 +335,16 @@ fn verify_topostake_inline_block_aggregate<E: EthSpec>(
         };
         signature_records.append(&mut per_tx_records);
     }
-    verify_topostake_aggregate_signature_bytes(registry, &first_signature, &signature_records)
+    let Some(aggregate_signature) = aggregate_signature else {
+        return true;
+    };
+    verify_topostake_aggregate_signature_bytes(registry, &aggregate_signature, &signature_records)
+}
+
+fn topostake_inline_record_requires_signature<E: EthSpec>(
+    record: &TopoStakeInlineEvidenceRecord<E>,
+) -> bool {
+    record.relay_path.len() >= 2
 }
 
 fn topostake_inline_aggregate_signature<E: EthSpec>(

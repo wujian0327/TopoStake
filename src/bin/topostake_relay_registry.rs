@@ -85,6 +85,14 @@ fn write_json<T: Serialize>(path: &str, value: &T) {
     fs::write(path, json + "\n").expect("write json");
 }
 
+fn participant_service_number(index: u64, count: u64) -> String {
+    if count >= 10 {
+        format!("{:02}", index + 1)
+    } else {
+        format!("{}", index + 1)
+    }
+}
+
 fn main() {
     let args: Vec<String> = env::args().collect();
     let chain_id = parse_arg(&args, "--chain-id", &DEFAULT_CHAIN_ID.to_string())
@@ -116,7 +124,8 @@ fn main() {
         let relay_address = derive_address(&seed, chain_id, index, "relay-address");
         let payout_address = derive_address(&seed, chain_id, index, "payout-address");
         let node_id = format!("node-{}", index);
-        let service_name = format!("el-{}-geth-lighthouse", index + 1);
+        let service_number = participant_service_number(index, count);
+        let service_name = format!("el-{}-geth-lighthouse", service_number);
 
         public_relays.push(PublicRelay {
             node_id: node_id.clone(),

@@ -21,6 +21,28 @@ pub type Transactions<E> = VariableList<
     <E as EthSpec>::MaxTransactionsPerPayload,
 >;
 
+#[derive(Debug, Default, Clone, Serialize, Deserialize, Encode, Decode, TreeHash, Educe)]
+#[educe(PartialEq, Eq, Hash)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
+pub struct TopoStakeSettlementRecord {
+    #[serde(with = "serde_utils::quoted_u64")]
+    pub finalized_epoch: u64,
+    #[serde(with = "serde_utils::quoted_u64")]
+    pub epoch: u64,
+    /// 0 = proposer, 1 = relay, 2 = burned.
+    pub role: u8,
+    #[serde(with = "serde_utils::quoted_u64")]
+    pub validator_index: u64,
+    #[serde(with = "serde_utils::address_hex")]
+    pub payout_address: Address,
+    #[serde(with = "serde_utils::quoted_u256")]
+    pub amount_wei: Uint256,
+}
+
+pub type TopoStakeSettlementRecords<E> =
+    VariableList<TopoStakeSettlementRecord, <E as EthSpec>::MaxValidatorsPerCommittee>;
+
 #[superstruct(
     variants(Bellatrix, Capella, Deneb, Electra, Fulu, Gloas),
     variant_attributes(
@@ -98,6 +120,8 @@ pub struct ExecutionPayload<E: EthSpec> {
     pub block_hash: ExecutionBlockHash,
     #[serde(with = "ssz_types::serde_utils::list_of_hex_var_list")]
     pub transactions: Transactions<E>,
+    #[serde(default)]
+    pub topostake_settlement_records: TopoStakeSettlementRecords<E>,
     #[superstruct(only(Capella, Deneb, Electra, Fulu, Gloas))]
     pub withdrawals: Withdrawals<E>,
     #[superstruct(only(Deneb, Electra, Fulu, Gloas), partial_getter(copy))]

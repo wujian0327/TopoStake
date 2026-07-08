@@ -722,6 +722,7 @@ pub async fn handle_rpc<E: EthSpec>(
                         let payload_body: ExecutionPayloadBodyV1<E> = ExecutionPayloadBodyV1 {
                             transactions: payload.transactions().clone(),
                             withdrawals: payload.withdrawals().ok().cloned(),
+                            topostake_settlement_records: Default::default(),
                         };
                         let json_payload_body: JsonExecutionPayloadBodyV1<E> =
                             payload_body.try_into().unwrap();

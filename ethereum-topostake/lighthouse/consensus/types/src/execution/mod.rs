@@ -19,7 +19,7 @@ pub use execution_block_header::{EncodableExecutionBlockHeader, ExecutionBlockHe
 pub use execution_payload::{
     ExecutionPayload, ExecutionPayloadBellatrix, ExecutionPayloadCapella, ExecutionPayloadDeneb,
     ExecutionPayloadElectra, ExecutionPayloadFulu, ExecutionPayloadGloas, ExecutionPayloadRef,
-    Transaction, Transactions,
+    TopoStakeSettlementRecord, TopoStakeSettlementRecords, Transaction, Transactions,
 };
 pub use execution_payload_bid::ExecutionPayloadBid;
 pub use execution_payload_envelope::ExecutionPayloadEnvelope;

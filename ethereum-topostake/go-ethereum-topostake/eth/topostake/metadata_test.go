@@ -414,6 +414,7 @@ func TestStoreRecordsCommittedFeeInput(t *testing.T) {
 
 func TestStoreAppliesSubmittedSettlementOnce(t *testing.T) {
 	t.Setenv("TOPOSTAKE_FEE_ESCROW", "1")
+	t.Setenv("TOPOSTAKE_SETTLEMENT_MUTATION", "1")
 	store := testStore(0, blst.KeyGen([]byte("topostake prompt23 settlement execution key")))
 	payout := common.HexToAddress("0x000000000000000000000000000000000000beef")
 	records, err := store.SubmitSettlement(SettlementPayload{
@@ -475,6 +476,130 @@ func TestStoreAppliesSubmittedSettlementOnce(t *testing.T) {
 	}
 	if got, want := stateDB.GetBalance(payout), uint256.NewInt(700); !got.Eq(want) {
 		t.Fatalf("unexpected payout balance after duplicate apply %s want %s", got, want)
+	}
+
+	blockRecords := store.SettlementRecordsForRoot(root)
+	replayStateDB, err := state.New(types.EmptyRootHash, state.NewDatabase(triedb.NewDatabase(rawdb.NewMemoryDatabase(), nil), nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	replayStateDB.AddBalance(FeeEscrowAddress, uint256.NewInt(2_000), tracing.BalanceChangeUnspecified)
+	applied, err := store.ApplyCommittedSettlementRecords(root, blockRecords, replayStateDB, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if applied != 1 {
+		t.Fatalf("block-carried settlement records should replay despite local executed marker, got %d", applied)
+	}
+	if got, want := replayStateDB.GetBalance(FeeEscrowAddress), uint256.NewInt(1_000); !got.Eq(want) {
+		t.Fatalf("unexpected replay escrow balance %s want %s", got, want)
+	}
+	if got, want := replayStateDB.GetBalance(payout), uint256.NewInt(700); !got.Eq(want) {
+		t.Fatalf("unexpected replay payout balance %s want %s", got, want)
+	}
+}
+
+func TestStoreSettlementMutationDefaultsToNoop(t *testing.T) {
+	t.Setenv("TOPOSTAKE_FEE_ESCROW", "1")
+	store := testStore(0, blst.KeyGen([]byte("topostake prompt23 settlement noop key")))
+	payout := common.HexToAddress("0x000000000000000000000000000000000000babe")
+	_, err := store.SubmitSettlement(SettlementPayload{
+		Domain:         "TOPOSTAKE_FEE_SETTLEMENT_V1",
+		FinalizedEpoch: 2,
+		Epoch:          0,
+		Records: []SettlementRecord{
+			{
+				Epoch:          0,
+				Role:           "proposer",
+				ValidatorIndex: 1,
+				PayoutAddress:  payout.Hex(),
+				AmountWei:      "700",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	memoryDB := rawdb.NewMemoryDatabase()
+	stateDB, err := state.New(types.EmptyRootHash, state.NewDatabase(triedb.NewDatabase(memoryDB, nil), nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stateDB.AddBalance(FeeEscrowAddress, uint256.NewInt(2_000), tracing.BalanceChangeUnspecified)
+	root := store.PendingSettlementRoot()
+	if root == (common.Hash{}) {
+		t.Fatal("expected pending settlement root")
+	}
+	if applied := store.ApplyCommittedSettlement(root, stateDB); applied != 0 {
+		t.Fatalf("settlement mutation should default to noop, applied %d", applied)
+	}
+	if got, want := stateDB.GetBalance(FeeEscrowAddress), uint256.NewInt(2_000); !got.Eq(want) {
+		t.Fatalf("unexpected escrow balance %s want %s", got, want)
+	}
+	if got, want := stateDB.GetBalance(payout), uint256.NewInt(0); !got.Eq(want) {
+		t.Fatalf("unexpected payout balance %s want %s", got, want)
+	}
+}
+
+func TestApplyCommittedSettlementRecordsFallsBackToLocalStore(t *testing.T) {
+	t.Setenv("TOPOSTAKE_FEE_ESCROW", "1")
+	t.Setenv("TOPOSTAKE_SETTLEMENT_MUTATION", "1")
+	store := testStore(0, blst.KeyGen([]byte("topostake prompt43 local settlement fallback key")))
+	payout := common.HexToAddress("0x000000000000000000000000000000000000cafe")
+	_, err := store.SubmitSettlement(SettlementPayload{
+		Domain:         "TOPOSTAKE_FEE_SETTLEMENT_V1",
+		FinalizedEpoch: 3,
+		Epoch:          1,
+		Records: []SettlementRecord{
+			{
+				Epoch:          1,
+				Role:           "proposer",
+				ValidatorIndex: 2,
+				PayoutAddress:  payout.Hex(),
+				AmountWei:      "900",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	memoryDB := rawdb.NewMemoryDatabase()
+	stateDB, err := state.New(types.EmptyRootHash, state.NewDatabase(triedb.NewDatabase(memoryDB, nil), nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stateDB.AddBalance(FeeEscrowAddress, uint256.NewInt(1_000), tracing.BalanceChangeUnspecified)
+	root := store.PendingSettlementRoot()
+	if root == (common.Hash{}) {
+		t.Fatal("expected pending settlement root")
+	}
+	applied, err := store.ApplyCommittedSettlementRecords(root, nil, stateDB, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if applied != 1 {
+		t.Fatalf("expected fallback settlement apply, got %d", applied)
+	}
+	if got, want := stateDB.GetBalance(FeeEscrowAddress), uint256.NewInt(100); !got.Eq(want) {
+		t.Fatalf("unexpected escrow balance %s want %s", got, want)
+	}
+	if got, want := stateDB.GetBalance(payout), uint256.NewInt(900); !got.Eq(want) {
+		t.Fatalf("unexpected payout balance %s want %s", got, want)
+	}
+}
+
+func TestApplyCommittedSettlementRecordsErrorsWhenMissingEverywhere(t *testing.T) {
+	t.Setenv("TOPOSTAKE_FEE_ESCROW", "1")
+	t.Setenv("TOPOSTAKE_SETTLEMENT_MUTATION", "1")
+	store := testStore(0, blst.KeyGen([]byte("topostake prompt43 missing settlement records key")))
+	memoryDB := rawdb.NewMemoryDatabase()
+	stateDB, err := state.New(types.EmptyRootHash, state.NewDatabase(triedb.NewDatabase(memoryDB, nil), nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = store.ApplyCommittedSettlementRecords(common.HexToHash("0x1234"), nil, stateDB, true)
+	if err == nil {
+		t.Fatal("expected missing settlement records error")
 	}
 }
 

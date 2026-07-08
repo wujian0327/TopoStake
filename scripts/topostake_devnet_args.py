@@ -30,16 +30,25 @@ def el_rpc_registry(count: int) -> Dict[str, Any]:
     return {
         "endpoints": [
             {
-                "cl_service_name": f"cl-{index + 1}-lighthouse-geth",
-                "el_rpc_url": f"http://el-{index + 1}-geth-lighthouse:8545",
+                "cl_service_name": f"cl-{participant_service_number(index, count)}-lighthouse-geth",
+                "el_rpc_url": f"http://el-{participant_service_number(index, count)}-geth-lighthouse:8545",
             }
             for index in range(count)
         ]
     }
 
 
+def participant_service_number(index: int, count: int) -> str:
+    if count >= 10:
+        return f"{index + 1:02d}"
+    return str(index + 1)
+
+
 def write_args(args: argparse.Namespace) -> None:
     lines: List[str] = []
+    topostake_features = args.mode in ("pathobs", "topostake")
+    fee_escrow_enabled = args.mode == "topostake"
+
     lines.extend(
         [
             "participants:",
@@ -48,7 +57,7 @@ def write_args(args: argparse.Namespace) -> None:
             "    el_extra_params:",
             (
                 '      - "--http.api=admin,debug,eth,net,web3,txpool,topostake"'
-                if args.mode == "topostake"
+                if topostake_features
                 else '      - "--http.api=admin,debug,eth,net,web3,txpool"'
             ),
             '      - "--nodiscover"',
@@ -57,7 +66,7 @@ def write_args(args: argparse.Namespace) -> None:
         ]
     )
 
-    if args.mode == "topostake":
+    if topostake_features:
         private_registry = load_json(args.private_registry)
         public_registry = load_json(args.public_registry)
         lines.extend(
@@ -65,7 +74,8 @@ def write_args(args: argparse.Namespace) -> None:
                 "    el_extra_env_vars:",
                 f'      TOPOSTAKE_CHAIN_ID: "{args.chain_id}"',
                 '      TOPOSTAKE_RELAY_EPOCH: "0"',
-                '      TOPOSTAKE_FEE_ESCROW: "1"',
+                f'      TOPOSTAKE_FEE_ESCROW: "{1 if fee_escrow_enabled else 0}"',
+                f'      TOPOSTAKE_SETTLEMENT_MUTATION: "{1 if fee_escrow_enabled else 0}"',
                 f"      TOPOSTAKE_RELAY_PRIVATE_REGISTRY_JSON: {q(compact_json(private_registry))}",
             ]
         )
@@ -75,9 +85,10 @@ def write_args(args: argparse.Namespace) -> None:
             "    cl_image: topostake/lighthouse:dev",
         ]
     )
-    if args.mode == "topostake":
+    if topostake_features:
         public_registry = load_json(args.public_registry)
         rpc_registry = el_rpc_registry(args.count)
+        eta_scaled = 0 if args.mode == "pathobs" else args.eta_scaled
         lines.extend(
             [
                 "    cl_extra_env_vars:",
@@ -85,7 +96,7 @@ def write_args(args: argparse.Namespace) -> None:
                 f"      TOPOSTAKE_EL_RPC_REGISTRY_JSON: {q(compact_json(rpc_registry))}",
                 '      TOPOSTAKE_TX_EVIDENCE_GRAFFITI_COMMITMENT: "1"',
                 '      TOPOSTAKE_FORK_EPOCH: "0"',
-                f'      TOPOSTAKE_ETA_SCALED: "{args.eta_scaled}"',
+                f'      TOPOSTAKE_ETA_SCALED: "{eta_scaled}"',
                 '      TOPOSTAKE_EVIDENCE_FINALITY_DEPTH: "1"',
             ]
         )
@@ -111,7 +122,8 @@ def write_args(args: argparse.Namespace) -> None:
             "  preset: minimal",
         ]
     )
-    if args.mode == "topostake":
+    if topostake_features:
+        eta_scaled = 0 if args.mode == "pathobs" else args.eta_scaled
         lines.extend(
             [
                 "",
@@ -120,7 +132,7 @@ def write_args(args: argparse.Namespace) -> None:
                 "    TOPOSTAKE_CONFIG_YAML: |",
                 "      TOPOSTAKE_CONFIG:",
                 '        TOPOSTAKE_FORK_EPOCH: "0"',
-                f'        ETA_SCALED: "{args.eta_scaled}"',
+                f'        ETA_SCALED: "{eta_scaled}"',
                 '        BONUS_CAP_SCALED: "1000000000"',
                 '        EVIDENCE_FINALITY_DEPTH: "1"',
                 '        MAX_PATH_EVIDENCE_LEN: "32"',
@@ -150,7 +162,7 @@ def write_args(args: argparse.Namespace) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--mode", choices=["baseline", "topostake"], required=True)
+    parser.add_argument("--mode", choices=["baseline", "pathobs", "topostake"], required=True)
     parser.add_argument("--count", type=int, default=8)
     parser.add_argument("--validator-count", type=int, default=16)
     parser.add_argument("--chain-id", type=int, default=7_032_030)

@@ -181,9 +181,22 @@ func (h *Header) EmptyReceipts() bool {
 // Body is a simple (mutable, non-safe) data container for storing and moving
 // a block's data contents (transactions and uncles) together.
 type Body struct {
-	Transactions []*Transaction
-	Uncles       []*Header
-	Withdrawals  []*Withdrawal `rlp:"optional"`
+	Transactions               []*Transaction
+	Uncles                     []*Header
+	Withdrawals                []*Withdrawal               `rlp:"optional"`
+	TopoStakeSettlementRecords []TopoStakeSettlementRecord `rlp:"optional"`
+}
+
+// TopoStakeSettlementRecord is a devnet-only execution-payload extension used to
+// carry finalized fee settlement inputs with the block body.
+type TopoStakeSettlementRecord struct {
+	FinalizedEpoch uint64 `json:"finalizedEpoch"`
+	Epoch          uint64 `json:"epoch"`
+	Role           string `json:"role"`
+	ValidatorIndex uint64 `json:"validatorIndex"`
+	PayoutAddress  string `json:"payoutAddress"`
+	AmountWei      string `json:"amountWei"`
+	ID             string `json:"id,omitempty"`
 }
 
 // Block represents an Ethereum block.
@@ -204,10 +217,11 @@ type Body struct {
 //   - We do not copy body data on access because it does not affect the caches, and also
 //     because it would be too expensive.
 type Block struct {
-	header       *Header
-	uncles       []*Header
-	transactions Transactions
-	withdrawals  Withdrawals
+	header                     *Header
+	uncles                     []*Header
+	transactions               Transactions
+	withdrawals                Withdrawals
+	topostakeSettlementRecords []TopoStakeSettlementRecord
 
 	// witness is not an encoded part of the block body.
 	// It is held in Block in order for easy relaying to the places
@@ -226,10 +240,11 @@ type Block struct {
 
 // "external" block encoding. used for eth protocol, etc.
 type extblock struct {
-	Header      *Header
-	Txs         []*Transaction
-	Uncles      []*Header
-	Withdrawals []*Withdrawal `rlp:"optional"`
+	Header                     *Header
+	Txs                        []*Transaction
+	Uncles                     []*Header
+	Withdrawals                []*Withdrawal               `rlp:"optional"`
+	TopoStakeSettlementRecords []TopoStakeSettlementRecord `rlp:"optional"`
 }
 
 // NewBlock creates a new block. The input data is copied, changes to header and to the
@@ -245,10 +260,11 @@ func NewBlock(header *Header, body *Body, receipts []*Receipt, hasher ListHasher
 		body = &Body{}
 	}
 	var (
-		b           = NewBlockWithHeader(header)
-		txs         = body.Transactions
-		uncles      = body.Uncles
-		withdrawals = body.Withdrawals
+		b                          = NewBlockWithHeader(header)
+		txs                        = body.Transactions
+		uncles                     = body.Uncles
+		withdrawals                = body.Withdrawals
+		topostakeSettlementRecords = body.TopoStakeSettlementRecords
 	)
 
 	if len(txs) == 0 {
@@ -289,6 +305,7 @@ func NewBlock(header *Header, body *Body, receipts []*Receipt, hasher ListHasher
 		b.header.WithdrawalsHash = &hash
 		b.withdrawals = slices.Clone(withdrawals)
 	}
+	b.topostakeSettlementRecords = slices.Clone(topostakeSettlementRecords)
 
 	return b
 }
@@ -340,6 +357,7 @@ func (b *Block) DecodeRLP(s *rlp.Stream) error {
 		return err
 	}
 	b.header, b.uncles, b.transactions, b.withdrawals = eb.Header, eb.Uncles, eb.Txs, eb.Withdrawals
+	b.topostakeSettlementRecords = eb.TopoStakeSettlementRecords
 	b.size.Store(rlp.ListSize(size))
 	return nil
 }
@@ -347,17 +365,23 @@ func (b *Block) DecodeRLP(s *rlp.Stream) error {
 // EncodeRLP serializes a block as RLP.
 func (b *Block) EncodeRLP(w io.Writer) error {
 	return rlp.Encode(w, &extblock{
-		Header:      b.header,
-		Txs:         b.transactions,
-		Uncles:      b.uncles,
-		Withdrawals: b.withdrawals,
+		Header:                     b.header,
+		Txs:                        b.transactions,
+		Uncles:                     b.uncles,
+		Withdrawals:                b.withdrawals,
+		TopoStakeSettlementRecords: b.topostakeSettlementRecords,
 	})
 }
 
 // Body returns the non-header content of the block.
 // Note the returned data is not an independent copy.
 func (b *Block) Body() *Body {
-	return &Body{b.transactions, b.uncles, b.withdrawals}
+	return &Body{
+		Transactions:               b.transactions,
+		Uncles:                     b.uncles,
+		Withdrawals:                b.withdrawals,
+		TopoStakeSettlementRecords: b.topostakeSettlementRecords,
+	}
 }
 
 // Accessors for body data. These do not return a copy because the content
@@ -366,6 +390,9 @@ func (b *Block) Body() *Body {
 func (b *Block) Uncles() []*Header          { return b.uncles }
 func (b *Block) Transactions() Transactions { return b.transactions }
 func (b *Block) Withdrawals() Withdrawals   { return b.withdrawals }
+func (b *Block) TopoStakeSettlementRecords() []TopoStakeSettlementRecord {
+	return b.topostakeSettlementRecords
+}
 
 func (b *Block) Transaction(hash common.Hash) *Transaction {
 	for _, transaction := range b.transactions {
@@ -502,11 +529,12 @@ func (b *Block) WithSeal(header *Header) *Block {
 // provided body.
 func (b *Block) WithBody(body Body) *Block {
 	block := &Block{
-		header:       b.header,
-		transactions: slices.Clone(body.Transactions),
-		uncles:       make([]*Header, len(body.Uncles)),
-		withdrawals:  slices.Clone(body.Withdrawals),
-		witness:      b.witness,
+		header:                     b.header,
+		transactions:               slices.Clone(body.Transactions),
+		uncles:                     make([]*Header, len(body.Uncles)),
+		withdrawals:                slices.Clone(body.Withdrawals),
+		topostakeSettlementRecords: slices.Clone(body.TopoStakeSettlementRecords),
+		witness:                    b.witness,
 	}
 	for i := range body.Uncles {
 		block.uncles[i] = CopyHeader(body.Uncles[i])

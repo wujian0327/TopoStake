@@ -126,7 +126,14 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 			return nil, fmt.Errorf("failed to process consolidation queue: %w", err)
 		}
 	}
-	topostake.DefaultStore().ApplyCommittedSettlement(topostake.SettlementRootFromExtra(header.Extra), statedb)
+	if _, err := topostake.DefaultStore().ApplyCommittedSettlementRecords(
+		topostake.SettlementRootFromExtra(header.Extra),
+		block.TopoStakeSettlementRecords(),
+		statedb,
+		true,
+	); err != nil {
+		return nil, fmt.Errorf("failed to apply topostake settlement: %w", err)
+	}
 
 	// Finalize the block, applying any consensus engine specific extras (e.g. block rewards)
 	p.chain.Engine().Finalize(p.chain, header, tracingStateDB, block.Body())

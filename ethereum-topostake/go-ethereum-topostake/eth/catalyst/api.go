@@ -1063,6 +1063,7 @@ func getBody(block *types.Block) *engine.ExecutionPayloadBody {
 	if block.Withdrawals() == nil && block.Header().WithdrawalsHash != nil {
 		result.Withdrawals = []*types.Withdrawal{}
 	}
+	result.TopoStakeSettlementRecords = block.TopoStakeSettlementRecords()
 
 	return &result
 }

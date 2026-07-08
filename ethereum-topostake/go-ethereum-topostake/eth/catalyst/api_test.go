@@ -1511,6 +1511,9 @@ func checkEqualBody(a *types.Body, b *engine.ExecutionPayloadBody) error {
 	if !reflect.DeepEqual(a.Withdrawals, b.Withdrawals) {
 		return errors.New("withdrawals mismatch")
 	}
+	if !reflect.DeepEqual(a.TopoStakeSettlementRecords, b.TopoStakeSettlementRecords) {
+		return errors.New("topostake settlement records mismatch")
+	}
 	return nil
 }
 

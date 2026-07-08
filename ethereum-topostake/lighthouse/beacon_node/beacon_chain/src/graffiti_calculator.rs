@@ -260,7 +260,7 @@ impl TopoStakeTxEvidence {
         for edge in self.metadata.paths {
             path.push(edge.to);
         }
-        if path.len() < 2 || path.len() > max_len {
+        if path.is_empty() || path.len() > max_len {
             return Ok(None);
         }
         let priority_fee_wei = self

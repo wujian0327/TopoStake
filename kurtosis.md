@@ -21,15 +21,21 @@
 - Lighthouse block processing 会按 block-level aggregate signature 验证 block-inline path records；验证失败的 records 不进入 score/reward。
 - Score 只给 intermediate relayers，经过 finalized gate、stake-scaled saturation、EMA 后进入 proposer selection。
 - Proposer selection 使用论文版 bounded bonus，只改 proposer weight，不改 attestation/finality voting weight。
-- Reward 使用真实 priority fee budget，fee 先进入 escrow/system address，finalized 后按 block-visible settlement root 执行 proposer/relay payout 与 burn。
-- `8 nodes * 1 validator` devnet 已能启动、出块、finalized；BA(m=2) single-origin workload 下真实 inclusion delay 稳定在 `1-2 slots`，relay payout 非零，settlement conservation 为 0。
+- Reward 使用真实 priority fee budget，fee 先进入 escrow/system address，finalized 后按 block-visible settlement root + block-carried settlement records 执行 proposer/relay payout 与 burn。
+- `8 nodes * 1 validator` devnet 已能启动、出块、finalized；BA(m=2) single-origin workload 下 slot-level inclusion delay 稳定在 `1-2 slots`，relay payout 非零，settlement conservation 为 0。
+- `16 nodes * 1 validator` devnet 在 local path 修正后，Linear/Star/ER/BA 四个 single-origin workload 都达到 `3840 tx / 3840 valid path records / 3840 nonzero fee records`。
+- 8-node BA overhead load sweep 已完成 `60-300 tx/slot` 正常区间；TopoStake 与 PoS-Beacon achieved tx/slot 基本一致，p95 inclusion delay 增量约 `0.7-0.8s`。
+- 高负载探测显示当前 8-node BA devnet 的瓶颈在 `360-420 tx/slot` 区间开始显现：TopoStake `360 tx/slot` 还能完成但 achieved tx/slot 降到约 `323.07`，`420 tx/slot` p95 inclusion delay 升到约 `58.94s`，`480 tx/slot` 出现 receipt timeout 与部分 EL 明显落后。
+- warmup 后低负载 node-count sweep 已完成 `8/12/16 nodes`，固定 `BA(m=2), 32 tx/slot, 1 epoch measurement`，三种模式 `PoS-Beacon / PoS+PathObs / TopoStake` 均达到 `512/512` included。TopoStake 相比 PoS+PathObs 的吞吐接近，p95 inclusion delay 保持在 `4.6-4.9s`；平均 path length 随节点数从约 `2.27` 增至约 `2.83`。
+- Prompt 44 已完成 16-node ER/BA TopoStake 真实 fee mutation 修复验证；ER 与 BA 均能 finalized，且 Path Rec. / Fee Rec. 达到 `2560/2560`，fee conservation violation 为 `0`。
 
 仍未完全完成：
 - 最终论文版 block-inline record schema 还需要固定，尤其是 aggregate signature 是否保留 block-level aggregate，还是改成 per-record/per-path aggregate。
-- settlement records 仍依赖 devnet-minimal preload/RPC data path；block 只承诺 settlement root。若做成正式协议，需要定义 settlement records availability。
-- 实验尚未稳定：baseline/TopoStake 对照、多 seed、多 topology、多 sender workload、吞吐分档还需要重跑和整理。
-- 旧 receipt latency 口径已废弃；论文应使用 `send_slot -> included_slot` 的 inclusion delay。
+- settlement records 已进入 geth block body / Engine API / Lighthouse ExecutionPayload，但 devnet 仍保留 local-store fallback；若做成正式协议，需要去掉 preload/RPC 依赖，并定义 settlement records availability 与重复 settlement 的 state-level 防重规则。
+- 实验尚未完全稳定：当前 devnet 结果仍是 single seed；多 seed、多 topology、不同 offered load 与 warmup 长度还需要继续重跑和整理。
+- 旧 receipt latency 口径已废弃；论文应使用 `included_block_timestamp - send_unix` 的 inclusion delay。
 - 多入口 workload 需要 multiple funded senders，不能再用单 sender round-robin 作为吞吐/延迟结论，因为它会引入账户 nonce gap。
+- 高负载下 TopoStake evidence coverage 会下降，需要继续区分 block-inline evidence bytes cap、节点落后和 block collection window 三个因素；低负载 warmup 实验已用 measurement tx hash 过滤 records，避免 warmup 尾部记录污染平均 path length。
 
 ## 复现约束
 
@@ -41,6 +47,12 @@ XDG_DATA_HOME=/tmp/kurtosis-data kurtosis enclave rm -f <old-enclave-name>
 ```
 
 Kurtosis CLI 在当前环境需要使用 `XDG_DATA_HOME=/tmp/kurtosis-data`，否则可能尝试写入只读 home 路径。
+
+Kurtosis ethereum-package 已在本机 `/tmp/ethereum-package` 有本地 checkout。后续启动 devnet 优先使用本地 package 路径，避免 Kurtosis engine 每次从 GitHub clone：
+
+```bash
+XDG_DATA_HOME=/tmp/kurtosis-data kurtosis run --enclave <enclave-name> /tmp/ethereum-package --args-file <args.yaml>
+```
 
 推荐主实验配置：
 - nodes：`8`
@@ -413,8 +425,8 @@ results/raw/devnet_topology/<run-id>/block_records.csv
 
 延迟口径：
 - 旧的 `send -> receipt query returns` 是 observed receipt latency，会被 `--wait-receipts-after-send` 放大；
-- 论文应使用 `send_slot -> included_slot` 的 inclusion delay；
-- runner 已增加 `send_slot_estimate`、`included_slot`、`inclusion_delay_slots`、`inclusion_delay_seconds`。
+- 论文应使用 `included_block_timestamp - send_unix` 的 inclusion delay；
+- runner 保留 `send_slot_estimate`、`included_slot`、`inclusion_delay_slots` 作为辅助字段，但 `inclusion_delay_seconds` 使用真实秒级时间差。
 
 ## 实验进展
 
@@ -628,15 +640,948 @@ block-inline path records：
 - 因此这里不是交易/evidence 丢失，而是 local-origin proposer 的零跳路径口径；
 - reward/score 统计时需要把空 path 视为 valid local-origin case，但不应产生 relay reward。
 
+### Prompt 32 16-node BA / 64 TPS smoke
+
+配置：
+- enclave：`topostake-devnet-prompt32-topostake-16node-ba64`
+- args：`results/raw/topostake-devnet-16node-1validator-minimal.yaml`
+- nodes：`16`
+- validators：`1 / node`
+- topology：`BA(m=2), seed=0`
+- workload：`3840 tx`, `single` origin，目标约 `64 tx/s * 60s`
+
+本轮先补了两个 16 节点启动问题：
+- ethereum-package 在 `count >= 10` 时服务名使用 `el-01` / `cl-01` 这种 zero-padded 格式，因此 registry 和 EL RPC registry 也必须同步使用 zero-padded service name；
+- geth TopoStake 启动时会解析 registry 里的所有 EL service name，16 节点下第一个 EL 启动时其他服务还不存在，Docker DNS 查询会阻塞，导致 Kurtosis health check 超时；已把 service lookup 改成短超时，后续由 refresh 继续补全映射。
+
+运行结果：
+
+| tx sent | tx included | actual send window | send TPS | inclusion throughput | inclusion p50 | inclusion p95 |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `3840` | `3840` | `65.91s` | `58.26 TPS` | `55.39 TPS` | `2 slots / 6s` | `2 slots / 6s` |
+
+链上状态：
+- sender latest nonce = pending nonce = `3840`
+- inclusion block range：`33..55`
+- nonempty blocks：`23`
+- txs / nonempty block：min `92`, max `233`, mean `166.96`
+- delay histogram：`1 slot = 984 tx`, `2 slots = 2856 tx`
+- reconstructed after workload：`finalized_epoch=8`
+- post-finality collect：`finalized_epoch=9`
+
+block-inline path records：
+- records：`3840`
+- nonzero fee records：`3840`
+- priority fee sum：`161280000000000000 wei`
+- path histogram：`len2=765`, `len3=1267`, `len4=1808`
+- relay counts：`relay1=1148`, `relay2=1927`, `relay4=460`, `relay5=317`, `relay7=997`, `relay9=34`
+
+重要观察：
+- 16-node BA devnet 可以正常启动、出块、finalize，并产生完整 block-inline path / reward evidence；
+- 这次目标是 `64 TPS`，但 Python runner 在 16 节点环境下实际只打到 `58.26 TPS`，所以这轮只能记为 16-node 近 64 TPS smoke，不应作为最终 64 TPS 数据；
+- runner 在 receipt polling 阶段遇到一次 EL HTTP connection reset，但交易已经全部进链；本轮指标来自链上 nonce、block scan 和 post-finality collect 重建；
+- 下一步需要把 workload generator 改成更稳的多 sender / 并发发送或异步发送，保证 16 节点也能真实达到目标 rate。
+
+### Prompt 33 16-node strict topology table
+
+目标：
+- 为论文表格 `TopoStake devnet validation and end-to-end overhead across network topologies` 跑同口径数据；
+- nodes：`16`
+- validators：`1 / node`
+- workload：`3840 tx`, `single` origin，发送间隔 `0.009s`
+- slot：`3s`
+- topologies：`Linear`, `Star`, `ER(degree=2.0, seed=0)`, `BA(m=2, seed=0)`
+
+先修正了 runner 的两个实验稳定性问题：
+- receipt polling 增加 retry/backoff，避免 EL HTTP connection reset 导致实验中途崩掉；
+- topology apply 改成多轮收敛，重复移除目标外 peer 并补齐目标边；所有 Prompt 33 strict run 的 `matches_target=true`。
+
+严格拓扑运行结果：
+
+| topology | tx included | finalized | valid path records | relay payout | fee violation | throughput | incl. delay p50 / p95 |
+| --- | ---: | --- | ---: | --- | ---: | ---: | ---: |
+| Linear | `3840/3840` | Yes | `2719` | Yes | `0` | `54.24 TPS` | `12 / 27s` |
+| Star | `3840/3840` | Yes | `3445` | No | `0` | `58.66 TPS` | `6 / 9s` |
+| ER | `3840/3840` | Yes | `2530` | Yes | `0` | `58.56 TPS` | `9 / 15s` |
+| BA | `3840/3840` | Yes | `3840` | Yes | `0` | `54.29 TPS` | `6 / 9s` |
+
+重要观察：
+- 原论文表不能预填 `Valid Rec. = Tx`；当前实现里 `Valid Rec.` 更准确地表示 finalized block 中可见的 non-empty block-inline path records；
+- local-origin / direct path 不一定产生 relay payout；例如 Star 拓扑里 `single origin = node 0`，而 node 0 是中心节点，路径多为直接传播，没有中间 relay，所以 relay payout 为 No；
+- Linear strict run 在本轮 finalized epoch window 内出现 nonzero invalid-path metric；这说明如果论文表要声明所有拓扑 `Invalid Rec.=0`，需要使用 clean devnet + per-run metric delta 重新确认，或者调整 workload origin / path bound / 拓扑参数；
+- throughput 和 delay 应使用 inclusion throughput 与 inclusion delay，不使用 receipt latency；receipt latency 主要受 RPC polling 影响。
+
+Prompt 34 local path semantics fix：
+- `path=[origin]` / zero-hop local evidence 是合法 path record，不应表现为缺失或异常；
+- Lighthouse block production 不再丢弃 `len(path)==1` 的 inline evidence record；
+- block processing 会把 `len(path)==1` 计为 valid evidence；
+- aggregate signature verification 只要求 `len(path)>=2` 的 relay path 参与签名校验，local path 不需要 relay aggregate signature；
+- relay contribution/reward 逻辑保持不变：local/direct path 没有中间 relay，因此不产生 relay payout。
+
+Prompt 35 local path fix 后复跑 16-node topology workload：
+- 重新构建 Lighthouse minimal binary，并重新打包 `topostake/lighthouse:dev`；
+- 清理旧 enclave 后启动 `topostake-devnet-prompt35-topology-localpath`；
+- nodes：`16`
+- validators：`1 / node`
+- workload：`3840 tx`, `single` origin，发送间隔 `0.009s`
+- slot：`3s`
+- 每条 accepted record 的 priority fee：`42000000000000 wei`
+- 每轮 expected fee sum：`161280000000000000 wei`
+
+复跑结果：
+
+| topology | tx included | finalized epoch | valid path records | nonzero fee records | fee sum | throughput | incl. delay p50 / p95 | path length histogram |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |
+| Linear | `3840/3840` | `9` | `3840` | `3840` | `161280000000000000` | `54.13 TPS` | `9 / 15s` | `len2=231, len3=544, len5=523, len7=445, len8=307, len9=357, len10=218, len11=713, len12=140, len15=362` |
+| Star | `3840/3840` | `15` | `3840` | `3840` | `161280000000000000` | `58.07 TPS` | `6 / 6s` | `len2=3840` |
+| ER | `3840/3840` | `22` | `3840` | `3840` | `161280000000000000` | `55.18 TPS` | `6 / 9s` | `len2=551, len3=1538, len4=614, len5=753, len6=384` |
+| BA | `3840/3840` | `31` | `3840` | `3840` | `161280000000000000` | `55.72 TPS` | `6 / 6s` | `len1=243, len2=1414, len3=1691, len4=492` |
+
+关键结论：
+- `path=[origin]` 已经进入 finalized block-inline evidence 口径；BA 复跑中出现 `len1=243`，并且总 record 数仍为 `3840`；
+- `Valid Rec.` 现在可以按论文语义写成 finalized block 中合法 path records，包括 local path；
+- local/direct path 不产生 relay payout 是正确语义，不应被记为 reward 失败；
+- Linear 和 BA 本轮 stdout 显示 `matches_target=true`；
+- Star/ER 的 tx/evidence/finality 指标有效，但本轮 stdout 显示 `matches_target=false`。这属于实验层 peer graph 收敛问题，不是协议 path/reward 失败；runner 后续需要把 `matches_target` 和 observed peer counts 写入 `summary.json`，并对拓扑 apply 增加更强 retry/settle。
+
+建议的论文表口径：
+- `Throughput`：first included tx 到 last included tx 的 inclusion throughput；
+- `Incl. Delay`：transaction submission 到 block inclusion 的 p50 / p95 delay；
+- `Valid Rec.`：finalized block 中通过处理并写入 block body 的 path records，包括合法的 local path；
+- `Relay Payout`：finalized settlement 后是否存在非零 relay role payout。没有中间 relay 的直接路径不应产生 relay payout。
+
+### 正式论文 devnet overhead 实验设计
+
+目标：
+- 用真实 PoS devnet 评估 TopoStake 相对普通 PoS beacon chain 的端到端开销；
+- 重点展示 throughput 与 inclusion delay，而不是只展示协议功能是否跑通；
+- baseline 和 TopoStake 必须使用同一套 custom geth/Lighthouse devnet stack，避免 stock client 与 fork client 的实现差异污染对比。
+
+Baseline 定义：
+
+```text
+PoS-Beacon = 同一套 modified geth/Lighthouse devnet
+             关闭 TopoStake evidence generation
+             关闭 reward settlement
+             关闭 proposer-score adjustment
+```
+
+Instrumented baseline：
+
+```text
+PoS+PathObs = 同一套 modified geth/Lighthouse devnet
+              开启 tx/path co-propagation
+              开启 block-inline path records
+              关闭 reward settlement
+              关闭 finalized score update
+              关闭 proposer-score adjustment
+```
+
+用途：
+- `PoS-Beacon` 是纯普通 PoS 对照，协议可见 path length 为 `N/A`；
+- `PoS+PathObs` 用来隔离“只记录 path evidence”的开销，并给 baseline 环境下的 `Avg. Path Len.` 提供实验观测值；
+- `TopoStake` 用来评估完整协议，包括 reward、score 和 proposer selection。
+
+TopoStake 配置：
+
+```text
+TopoStake = 同一套 modified geth/Lighthouse devnet
+            开启 tx/path co-propagation
+            开启 block-inline path records
+            开启 finalized score update
+            开启 reward settlement
+            开启 proposer-score adjustment
+```
+
+图中只放两条线：
+
+```latex
+PoS-Beacon
+TopoStake
+```
+
+如果单独分析 path recording overhead，可以额外画或制表：
+
+```latex
+PoS-Beacon
+PoS+PathObs
+TopoStake
+```
+
+建议 Figure 设计：
+
+| panel | x-axis | y-axis | fixed condition |
+| --- | --- | --- | --- |
+| (a) | Offered load | Achieved tx/slot | fixed node count, e.g. `8 nodes` |
+| (b) | Offered load | Inclusion delay p95 | fixed node count, e.g. `8 nodes` |
+| (c) | Number of nodes | Achieved tx/slot | fixed offered load: `60 TPS = 180 tx/slot` |
+| (d) | Number of nodes | Inclusion delay p95 | fixed offered load: `60 TPS` |
+
+附加表格指标：
+- `Avg. Path Len.`：TopoStake / PoS+PathObs 从 block-inline `path_length_histogram` 计算；
+- `PoS-Beacon` 的 `Avg. Path Len.` 记为 `N/A`，因为普通 PoS block 不承诺传播路径；
+- 若使用 hop count，则 `Avg. Hops = Avg. Path Len. - 1`，local path `len=1` 对应 `0 hop`。
+
+注意：
+- (c)(d) 应该是 `TPS vs nodes` 和 `latency vs nodes`；
+- 不要让 (d) 继续做 `latency vs load`，否则会和 (b) 重复；
+- 如果本机最多只能稳定到 `8 nodes`，(c)(d) 不要称为 large-scale scalability，改称 `node-count sensitivity`；
+- 大规模 scalability 放到后续 calibrated simulation。
+
+LaTeX 图模板：
+
+```latex
+\begin{figure*}[t]
+\centering
+\subfloat[Achieved transactions per slot under increasing load.]{
+    \includegraphics[width=0.48\linewidth]{figs/devnet_tps_load.pdf}
+}
+\subfloat[Inclusion delay under increasing load.]{
+    \includegraphics[width=0.48\linewidth]{figs/devnet_delay_load.pdf}
+}
+
+\subfloat[Achieved transactions per slot under increasing node count.]{
+    \includegraphics[width=0.48\linewidth]{figs/devnet_tps_nodes.pdf}
+}
+\subfloat[Inclusion delay under increasing node count.]{
+    \includegraphics[width=0.48\linewidth]{figs/devnet_delay_nodes.pdf}
+}
+\caption{End-to-end devnet overhead of TopoStake compared with the PoS-Beacon baseline.
+Panels (a) and (b) vary the offered transaction load under a fixed node count.
+Panels (c) and (d) vary the number of devnet nodes under a fixed offered load.
+Throughput is reported as successfully included transactions per slot.
+Delay reports p95 inclusion delay from transaction submission time to included block timestamp.}
+\label{fig:devnet-overhead}
+\end{figure*}
+```
+
+正文模板：
+
+```latex
+Figure~\ref{fig:devnet-overhead} compares TopoStake with the PoS-Beacon baseline.
+We use the same modified Ethereum client stack for both configurations and disable
+TopoStake evidence generation, reward settlement, and proposer-score adjustment in
+the PoS-Beacon baseline. This ensures that the comparison isolates the overhead
+introduced by TopoStake rather than differences between client implementations.
+
+Figures~\ref{fig:devnet-overhead}(a) and (b) vary the offered transaction load under
+a fixed node count. TopoStake achieves throughput close to the PoS-Beacon baseline
+across the tested loads, while introducing only a modest increase in p95 inclusion
+delay. Figures~\ref{fig:devnet-overhead}(c) and (d) vary the number of devnet nodes
+under a fixed offered load. The results show that TopoStake remains stable as the
+devnet size increases, with throughput and inclusion delay following the same trend
+as the baseline. The remaining gap is primarily caused by TopoStake's additional
+path-evidence generation, block inclusion, verification, and settlement logic.
+```
+
+建议实验矩阵：
+
+| experiment | values | fixed condition | metric |
+| --- | --- | --- | --- |
+| load sweep | `60, 120, 180, 240, 300 tx/slot` | `8 nodes`, BA topology | achieved tx/slot, p95 inclusion delay |
+| high-load stress | `360, 420, 480 tx/slot` | `8 nodes`, BA topology | bottleneck point, timeout/desync evidence |
+| node sweep | `8, 12, 16 nodes` | `180 tx/slot`, BA topology | achieved tx/slot, p95 inclusion delay |
+
+统一参数：
+- topology：`BA(m=2)`；
+- validators：`1 / node`；
+- preset：`minimal`；
+- slot：`3s`；
+- epoch：`16 slots`；
+- workload duration：每个配置压测 `180s`；
+- latency metric：p95 inclusion delay，使用 `included_block_timestamp - send_unix`，不使用 receipt latency；
+- aggregation：当前阶段每个点只跑 `1 seed`；论文中明确说明这是 single-seed devnet measurement，不画 seed error bars。
+
+执行前需要补齐：
+- PoS-Beacon baseline 开关，确保关闭 TopoStake evidence/reward/selection 后仍使用同一套 binary/image；
+- multiple funded senders 或 async sender，避免单 sender nonce gap 和同步 RPC 发送瓶颈；
+- runner summary 必须持久化 `matches_target`、observed peer counts、missed slots、finalized epoch、included tx count；
+- 每次 devnet 启动前清理旧 enclave，避免旧 metrics 污染；
+- 每个数据点尽量使用 clean devnet 或严格按 run window 计算 metric delta。
+
+### Node-count sensitivity 设计
+
+剩余两个图用于回答：在同样 workload 下，TopoStake 随真实 PoS devnet 节点数增加时是否保持接近 PoS-Beacon baseline。
+
+固定条件：
+- topology：`BA(m=2), seed=0`；
+- offered load：`180 tx/slot` (`60 TPS` under 3s slots)；
+- workload duration：`180s`；
+- slot：`3s`；
+- preset：`minimal`；
+- validators：`1 / node`；
+- sender：固定 `8 funded senders`；
+- origin：`round_robin` 分散到当前 devnet 的 `n` 个 EL；
+- receipt：`--wait-receipts-after-send`；
+- latency：`included_block_timestamp - send_unix` 的 p95 inclusion delay。
+
+节点数：
+
+```text
+8, 12, 16 nodes
+```
+
+如果 `16 nodes` 在本机上出现明显积压或 timeout，论文主图只画稳定区间，并把 16-node 结果作为 local-devnet resource limit / overload evidence 说明。
+
+图 (c)：`devnet_tps_nodes.pdf`
+- x-axis：`Number of nodes`
+- y-axis：`Achieved tx/slot`
+- 两条线：`PoS-Beacon`, `TopoStake`
+- y 轴可先用普通 `0-105%`；如果两条线过于贴近，再改成和 load 图一致的断轴。
+
+图 (d)：`devnet_delay_nodes.pdf`
+- x-axis：`Number of nodes`
+- y-axis：`p95 inclusion delay (s)`
+- 两条线：`PoS-Beacon`, `TopoStake`
+- y 轴从 `0` 开始，避免夸大差异。
+
+每个点建议记录：
+- `tx_count / tx_success`
+- `actual_send_tps`
+- `inclusion_throughput_tps`
+- `achieved_tx_per_slot = inclusion_throughput_tps * seconds_per_slot`
+- `throughput_ratio` as auxiliary diagnostic
+- `p50/p95 inclusion delay`
+- `missed_slots`
+- `matches_target`
+- observed EL peer counts
+- TopoStake path records / fee records
+- optional：CPU/txpool monitor，用来解释异常点。
+
+解释口径：
+- 这不是 large-scale scalability，只称为 `node-count sensitivity`；
+- 如果 achieved tx/slot 随节点数基本稳定，说明 TopoStake 没有明显放大节点数带来的 devnet overhead；
+- 如果 delay 随节点数升高，优先检查 BA peer diameter、EL txpool propagation、CPU 和 missed slots，再判断是否是 TopoStake 协议开销。
+
+### Prompt 36 8-node load sweep / 180s single-seed
+
+目标：
+- 开始正式论文 devnet overhead 图的 panel (a)(b)；
+- 固定节点数为 `8 nodes`；
+- 固定拓扑为 `BA(m=2), seed=0`；
+- 每个点压测 `180s`；
+- 比较 `PoS-Beacon` baseline 与 `TopoStake`。
+
+资源处理：
+- 清理旧 enclave：`topostake-devnet-prompt35-topology-localpath`；
+- 生成 `4/6/8/10/12` 节点 baseline/topostake args；
+- 先启动 `devnet-overhead-baseline-8node-ba` 跑完整 load sweep；
+- baseline 完成后清理该 enclave；
+- 再启动 `devnet-overhead-topostake-8node-ba` 跑完整 load sweep。
+
+runner 修复：
+- 60 TPS baseline 首次运行时，`eth_sendRawTransaction` 遇到 EL HTTP connection reset，runner 中断；
+- 已给 `send_raw_transaction` 增加 retry/backoff；
+- 同一笔 signed raw tx 的 hash 是确定的，如果重试时返回 `already known` 或 `nonce too low`，按前一次发送已被 EL 接受处理；
+- 修复后 60/80 TPS baseline 和 TopoStake 都完成。
+- 100 TPS 单点补跑时发现默认“send 后立刻 wait receipt”会把 offered load 串行化，nonce 进度只有约 `210/18000`；已中断并清理该污染 devnet；
+- load sweep 后续必须使用 `--wait-receipts-after-send`，即先按目标间隔发送全部交易，再统一等待 receipts/finality；
+- 进一步修复 workload 入口：
+  - `--sender-count 8`：使用 8 个 prefunded accounts，避免单账户连续 nonce 成为高 TPS 瓶颈；
+  - `--origin-mode round_robin`：交易按 round-robin 发到 8 个 EL RPC，避免单个 EL RPC/txpool 入口成为瓶颈；
+  - `--send-concurrency 64 --receipt-concurrency 64`：发送和 receipt 等待并发化；
+- Kurtosis ethereum-package 优先使用本机 `/tmp/ethereum-package`，避免 engine 每次从 GitHub clone。
+
+2026-07-07 重跑口径：
+- fixed `8 nodes`, `BA(m=2)`, `seed=0`, `180s` per load；
+- offered load：`60/120/180/240/300 tx/slot`，对应 3s slot 下 `20/40/60/80/100 TPS`；
+- inclusion delay = `included_block_timestamp - send_unix`；
+- path/fee records 用本轮 workload 的 tx hash 精确过滤，避免复用 devnet 时 collection window 扫到上一轮尾部。
+
+load sweep 结果：
+
+| mode | offered load | tx included | achieved tx/slot | p50 incl. delay | p95 incl. delay | path records | fee sum |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| PoS-Beacon | `60 tx/slot` | `3600/3600` | `59.55` | `2.52s` | `3.87s` | `0` | `0` |
+| PoS-Beacon | `120 tx/slot` | `7200/7200` | `117.76` | `2.57s` | `3.92s` | `0` | `0` |
+| PoS-Beacon | `180 tx/slot` | `10800/10800` | `178.59` | `2.53s` | `3.88s` | `0` | `0` |
+| PoS-Beacon | `240 tx/slot` | `14400/14400` | `235.70` | `2.55s` | `3.90s` | `0` | `0` |
+| PoS-Beacon | `300 tx/slot` | `18000/18000` | `294.20` | `2.54s` | `3.89s` | `0` | `0` |
+| TopoStake | `60 tx/slot` | `3600/3600` | `58.48` | `3.17s` | `4.67s` | `3600` | `151200000000000000` |
+| TopoStake | `120 tx/slot` | `7200/7200` | `118.34` | `3.11s` | `4.61s` | `7200` | `302400000000000000` |
+| TopoStake | `180 tx/slot` | `10800/10800` | `177.56` | `3.12s` | `4.62s` | `10800` | `453600000000000000` |
+| TopoStake | `240 tx/slot` | `14400/14400` | `235.64` | `3.13s` | `4.63s` | `14400` | `604800000000000000` |
+| TopoStake | `300 tx/slot` | `18000/18000` | `294.79` | `3.16s` | `4.68s` | `18000` | `756000000000000000` |
+
+high-load stress 结果：
+
+| mode | offered load | tx included | achieved tx/slot | p50 incl. delay | p95 incl. delay | path records | fee sum | status |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| PoS-Beacon | `360 tx/slot` | `21600/21600` | `357.28` | `2.55s` | `3.91s` | `0` | `0` | completed |
+| PoS-Beacon | `420 tx/slot` | `25200/25200` | `339.93` | `3.83s` | `40.75s` | `0` | `0` | bottleneck |
+| PoS-Beacon | `480 tx/slot` | `28800/28800` | `335.04` | `22.15s` | `54.77s` | `0` | `0` | overload |
+| TopoStake | `360 tx/slot` | `21600/21600` | `323.07` | `3.54s` | `6.07s` | `21579` | `906318000000000000` | completed, near limit |
+| TopoStake | `420 tx/slot` | `25200/25200` | `298.56` | `19.55s` | `58.94s` | `19761` | `829962000000000000` | bottleneck |
+| TopoStake | `480 tx/slot` | incomplete | timeout | timeout | timeout | incomplete | incomplete | overload timeout |
+
+160 TPS TopoStake 诊断：
+- runner 等待 receipt 超过 `480s`，某笔 tx 未进入链；
+- 中断前 EL 状态显示部分节点明显落后：EL3 在 block `243`、EL8 在 block `200`，其他节点约 block `504`；
+- EL8 txpool 有约 `0x1400` pending 和 `0x200` queued；
+- CL 大部分节点仍在 finalizing，说明不是全网 finality 崩溃，而是高负载下部分 EL/entry 节点积压和落后；
+- 该点不应作为正常 throughput datapoint，只能作为 overload/bottleneck evidence。
+
+120 TPS TopoStake 瓶颈诊断复跑：
+- run id：`diagnose-topostake-8node-ba-load120-180s-seed0`
+- monitor：`results/raw/devnet_overhead/diagnose-topostake-8node-ba-load120-180s-seed0-monitor.jsonl`
+- actual send TPS：`119.31`，说明 Python workload 注入基本打满目标，不是主要瓶颈；
+- inclusion TPS：`111.76`，p95 inclusion delay：`12.28s`；
+- workload 发送阶段 Docker CPU：EL+CL+VC 总 CPU 平均约 `829.7%`，峰值约 `1325.4%`；
+- workload 发送阶段 EL CPU 平均约 `655.1%`，峰值约 `869.9%`；
+- 单个容器 CPU 峰值约 `154.1%`，主要来自 geth EL；
+- workload 发送阶段 txpool pending 总量平均约 `2799.5`，峰值约 `7065`，queued 峰值 `211`；
+- EL block lag 最大 `1`，CL head lag 最大 `1`，missed slots 为 `0`；
+- 发送结束后 txpool 很快清空，CPU 回落。
+
+结论：
+- `120 TPS` 点不是 Python 发送端瓶颈；
+- 也不是共识/finality 已经崩掉，因为 EL/CL head 基本同步，missed slots 为 0；
+- 更像是本机 8-node devnet 中 geth EL/txpool/TopoStake evidence 处理接近上限，短时间积压导致 inclusion throughput 低于 offered load；
+- 因此 `120 TPS` 可以作为主图里的 near-limit 点，但论文正文应说明这是本机 devnet 的压力边界，不是协议理论吞吐上限。
+
+20-100 TPS 正常区间所有 run：
+- `matches_target=true`；
+- `tx_success == tx_count`；
+- TopoStake `path records == tx_count`；
+- TopoStake fee records 全部非零；
+- inclusion delay 口径为 `included_block_timestamp - send_unix`，即交易发起到被打包 block timestamp 的真实秒级差值；
+- `inclusion_delay_slots` 仅保留为粗粒度辅助口径，不用于论文图。
+
+初步结论：
+- 在 8-node BA devnet 上，TopoStake achieved tx/slot 与 PoS-Beacon 基本一致；
+- TopoStake 的 p95 inclusion delay 比 PoS-Beacon 增加约 `0.69-0.80s`；
+- TopoStake 的 p50 inclusion delay 比 PoS-Beacon 增加约 `0.56-0.65s`；
+- 修复 multi-sender + multi-entry 后，`240/300 tx/slot` 不再塌到约 `180 tx/slot`，说明之前低吞吐主要是 workload 注入瓶颈，不是链处理能力；
+- 当前 `300 tx/slot` 下 PoS-Beacon 和 TopoStake 都能达到约 `294 tx/slot`，TopoStake 额外开销主要体现在亚秒级 inclusion delay 增量。
+- 当前 8-node BA high-load stress 显示瓶颈在 `360-420 tx/slot` 区间出现；`420 tx/slot` 时两组都开始积压，但 TopoStake 更早出现 evidence coverage 下降和更高 p95 delay；
+- `480 tx/slot` 已超过当前本机 devnet 的稳定测量区间，不建议放进主图作为完成点，可在正文/脚注说明为 overload stress。
+
+已生成图：
+- `analysis/plot_devnet_overhead.py`
+- `figures/devnet_tps_load.pdf`：x 轴为 `Offered load (tx/slot)`，y 轴为 `Achieved tx/slot`
+- `figures/devnet_delay_load.pdf`
+- 对应 PNG 预览：`figures/devnet_tps_load.png`, `figures/devnet_delay_load.png`
+- load 图只画 `60/120/180/240/300/360 tx/slot`；`420/480 tx/slot` 只作为 high-load stress 表格记录，不进入主图。
+
+旧版已生成但暂不进入论文主图：
+- `figures/devnet_tps_nodes.pdf`
+- `figures/devnet_delay_nodes.pdf`
+
+原因是这组图来自 Prompt 37 的 `60 TPS = 180 tx/slot` 高负载尝试，`12/16 nodes` 出现明显积压，不能和低负载稳定区间混在一起作为正常 overhead 曲线。新的 Prompt 38 已改成 `32 tx/slot + 5 epoch warmup`，可作为 node-count sensitivity 主图候选，但需要重新生成对应 figure。
+
+### Prompt 37 node-count sensitivity attempt
+
+目标：固定 `BA(m=2), seed=0, 60 TPS, 180s, 1 validator / node`，把节点数改成 `8, 12, 16` 跑一轮，观察本机 devnet 的节点数敏感性。该小节是高负载历史尝试，已被 Prompt 38 的低负载 warmup 实验补充。
+
+本轮有效结果：
+
+| mode | nodes | tx included | achieved TPS | throughput ratio | p50 incl. delay | p95 incl. delay | status |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| PoS-Beacon | `8` | `10800/10800` | `59.53` | `99.22%` | `2.53s` | `3.88s` | completed |
+| TopoStake | `8` | `10800/10800` | `59.19` | `98.65%` | `3.12s` | `4.62s` | completed |
+| PoS-Beacon | `12` | `10800/10800` | `50.79` | `84.65%` | `3.92s` | `30.12s` | completed, delayed |
+| TopoStake | `12` | incomplete | timeout / no summary | -- | -- | -- | runner hung after send/finality wait; not a valid datapoint |
+| PoS-Beacon | `16` | `10800/10800` | `18.67` | `31.11%` | `95.10s` | `362.52s` | completed, overload |
+| TopoStake | `16` | not run | -- | -- | -- | -- | skipped because 12-node TopoStake hung and 16-node baseline was already overloaded |
+
+观察：
+- `12 nodes` baseline 已经出现明显排队，说明节点数增加后，在当前 BA peer graph、entry round-robin、8 sender、60 TPS 参数下，传播/txpool/本机资源会放大 inclusion delay；
+- `16 nodes` baseline 虽然最终全部 included/finalized，但 p95 delay 达到 `362.52s`，已经不适合作为正常 overhead 对比点；
+- TopoStake 12-node 本轮没有生成有效 summary，不能和 baseline 做数值对比；
+- 因此这组 `60 TPS` node-count 图不应作为正常 overhead 主图；如果保留，应作为 high-load stress/overload evidence。低负载稳定曲线见 Prompt 38。
+
+### Prompt 38 warmup node-count sensitivity
+
+目标：把节点数敏感性实验改成更温和且更符合 TopoStake 语义的配置，先 warmup 让 score/reward evidence 进入 finalized state，再只测一个 epoch 的正式 workload。
+
+实验参数：
+- topology：`BA(m=2), seed=0`
+- nodes：`8, 12, 16`
+- validators：`1 validator / node`
+- slot/epoch：`3s slot`, `16 slots/epoch`
+- warmup：`5 epochs = 2560 tx`, `32 tx/slot`
+- measurement：`1 epoch = 512 tx`, `32 tx/slot`
+- sender/origin：`sender_count = node_count`, `origin_mode = round_robin`
+- modes：
+  - `PoS-Beacon`：同一套 modified geth/Lighthouse binary，但关闭 TopoStake evidence/reward/selection。
+  - `PoS+PathObs`：开启 tx/path co-propagation 与 block-inline path records，关闭 fee escrow，`ETA=0`，用于隔离 path observation overhead。
+  - `TopoStake`：开启 path evidence、fee escrow/finalized settlement、score update 与 proposer-score adjustment。
+
+执行中修复：
+- 首轮 registry 误用 `--validators`，而 `topostake_relay_registry` 实际参数是 `--count`，导致 registry fallback 到默认 `4 relays`。
+- 这个问题会让 `8 nodes` 只记录部分 evidence，`12/16 nodes` 几乎没有 evidence。
+- 已改用 `--count 8/12/16` 重新生成 registry 和 args，并重跑 `PoS+PathObs / TopoStake`。
+- `12/16 nodes` 的 service name 使用 zero-padded `el-01...el-16` / `cl-01...cl-16`，registry 和 EL RPC registry 均已匹配。
+
+统计口径：
+- Throughput：`inclusion_throughput_tps * 3s`，即 achieved tx/slot。
+- Inclusion delay：`included_block_timestamp - send_unix`，只统计 measurement 512 笔交易。
+- Avg. Path Len.：从 block-inline records 中按 measurement tx hash 过滤后计算，避免 pre-scan slot 混入 warmup 尾部 records。
+- `PoS-Beacon` 没有 path evidence，因此 Avg. Path Len. 记为 `N/A`。
+
+修复后结果：
+
+| mode | nodes | tx included | achieved tx/slot | p50 incl. delay | p95 incl. delay | path records | avg path len |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| PoS-Beacon | `8` | `512/512` | `30.57` | `2.52s` | `3.88s` | `0` | N/A |
+| PoS+PathObs | `8` | `512/512` | `31.32` | `2.97s` | `4.38s` | `512` | `2.225` |
+| TopoStake | `8` | `512/512` | `29.93` | `3.05s` | `4.64s` | `512` | `2.271` |
+| PoS-Beacon | `12` | `512/512` | `31.88` | `2.44s` | `3.84s` | `0` | N/A |
+| PoS+PathObs | `12` | `512/512` | `30.22` | `3.32s` | `4.91s` | `512` | `2.732` |
+| TopoStake | `12` | `512/512` | `29.36` | `3.33s` | `4.83s` | `512` | `2.725` |
+| PoS-Beacon | `16` | `512/512` | `31.05` | `2.52s` | `3.91s` | `0` | N/A |
+| PoS+PathObs | `16` | `512/512` | `31.19` | `3.40s` | `4.95s` | `512` | `2.918` |
+| TopoStake | `16` | `512/512` | `29.92` | `3.36s` | `4.92s` | `512` | `2.828` |
+
+观察：
+- 低负载 `32 tx/slot` 下，`8/12/16 nodes` 全部 finalized，并且三种模式都能完整包含 `512/512` measurement transactions。
+- `PoS+PathObs` 相比 `PoS-Beacon` 的主要成本体现在 p95 inclusion delay 增加约 `0.5-1.1s`，说明 path evidence 生成和 block-inline inclusion 是主要可观测开销来源。
+- `TopoStake` 相比 `PoS+PathObs` 的吞吐略低但同量级，p95 inclusion delay 基本持平；在这组低负载参数下，reward settlement 和 proposer-score adjustment 没有造成明显额外排队。
+- Avg. Path Len. 随节点数增加而增大，符合 BA 拓扑下多入口传播路径变长的直觉。
+- 本轮是 single seed，不能作为最终 error-bar 图；但它已经说明当前本机可以稳定跑 `8/12/16` 的低负载 node-count sensitivity。
+
+### Prompt 39 uniform 50ms devnet delay
+
+目标：在 Prompt 38 的 `16 nodes, BA(m=2), 32 tx/slot, 5 epoch warmup + 1 epoch measurement` 基础上，对所有 EL/CL 容器统一加入 `50ms` Linux `tc netem` delay，观察网络延迟下 `PoS-Beacon / PoS+PathObs / TopoStake` 的变化。
+
+实现方式：
+- 新增 `experiments/apply_devnet_netem.py`。
+- 启动 Kurtosis devnet 后，通过 `kurtosis enclave inspect` 获取 service names，再映射到 Docker containers。
+- 使用宿主机 `sudo -n nsenter -t <pid> -n tc qdisc replace dev eth0 root netem delay 50ms` 给容器 `eth0` 加 delay。
+- 本轮作用对象是全部 `el-*` 与 `cl-*` 容器，共 `32 containers`。
+
+注意：
+- 这是 devnet-level uniform container delay，不是严格 per-edge P2P delay。
+- 它会同时影响 EL P2P、CL P2P、CL HTTP/RPC、Engine API 等容器出入口流量。
+- 因此这轮适合作为 delay stress / implementation bottleneck 观察，不宜直接等同于论文里理想化的 “edge latency graph”。
+
+本轮完成结果：
+
+| mode | nodes | delay | tx included | achieved tx/slot | p50 incl. delay | p95 incl. delay | path records | avg path len | peer graph |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| PoS-Beacon | `16` | `50ms` | `512/512` | `30.90` | `2.74s` | `4.15s` | `0` | N/A | matched |
+| PoS+PathObs | `16` | `50ms` | `512/512` | `28.81` | `3.72s` | `5.50s` | `512` | `2.854` | not matched |
+| TopoStake | `16` | `50ms` | incomplete | timeout | -- | -- | incomplete | -- | unstable / EL divergence |
+
+TopoStake 失败诊断：
+- `TopoStake + 50ms` 在 measurement receipt wait 阶段超时，`receipt-timeout=360s`。
+- 查询 still-running devnet 时发现 EL 视图明显分化：
+  - 部分 EL 已到 block `173`；
+  - 部分 EL 仍在 block `130` / `117` / `82`；
+  - 一个 EL 仍有 `pending=508`；
+  - CL head slot 约 `304`，finalized epoch 为 `9`。
+- 失败交易在多数 EL 上能查到 receipt，但不同 EL 返回的 block number 不一致，说明这不是简单 RPC polling 慢，而是全容器 delay + TopoStake workload 下出现了明显 EL propagation/sync divergence。
+
+观察：
+- `50ms` uniform delay 下，PoS-Beacon 仍能完成 `512/512`，p95 从无 delay 的 `3.91s` 增至 `4.15s`。
+- `PoS+PathObs` 完成 `512/512`，但 p95 从无 delay 的 `4.95s` 增至 `5.50s`，且 peer graph 未完全匹配目标 BA；说明延迟会放大 topology maintenance 与 path evidence 的额外成本。
+- `TopoStake` 在本轮未形成有效完成点；这提示当前实现的 evidence/settlement/proposer-score pipeline 在全容器 delay 下可能放大 EL 同步不一致，后续需要区分：
+  - delay 作用范围过宽，影响了 CL HTTP/Engine API/RPC；
+  - BA peer graph 在 delay 后未完全稳定；
+  - block production 时 evidence verification / settlement 处理导致 proposer 更容易错过 slot；
+  - runner receipt 只按 origin EL 等待，在 EL divergence 时会放大 timeout。
+
+下一步建议：
+- 先做更干净的 delay 注入：只作用 EL P2P 端口，避免影响 CL HTTP/RPC/Engine API。
+- delay sweep 从 `10ms / 25ms / 50ms` 开始，不要直接只看 50ms。
+- runner 需要记录 missed slots、per-EL head block、per-EL txpool status，并在 receipt timeout 时自动从所有 EL 查询 tx receipt。
+- 若要论证 TopoStake 在网络延迟下变好，优先展示 `score/proposer share/topology centrality/path length` 等机制指标；吞吐和 delay 需要在更可控的 per-edge delay 环境下重新跑。
+
+### Prompt 40 EL P2P-only 50ms delay sanity
+
+目标：验证更干净的 delay 注入方式，只延迟 EL P2P 端口，不污染 workload RPC、Engine API、CL HTTP/RPC。
+
+实现更新：
+- `experiments/apply_devnet_netem.py` 增加 `--mode p2p-port`：
+  - root qdisc 使用 `prio`；
+  - `netem delay 50ms` 挂在 `1:3`；
+  - `tc filter u32` 只匹配 `sport/dport 30303`；
+  - 本轮只作用 `roles=el`，不作用 CL/VC。
+- `experiments/apply_devnet_netem.py` 增加 `--mode clear`，用于清除 devnet 容器 qdisc。
+- `experiments/topostake_devnet_runner.py run` 增加 `--skip-apply-topology`，用于“先建拓扑，再加 delay，再跑 workload”的流程。
+
+关键发现：
+- 如果先加 P2P-only delay，再让 runner apply BA topology，`admin_addPeer` 返回 `true`，但 geth peer graph 不收敛：
+  - observed peer counts：`[0, 2, 2, 0, 0, 1, 1, 2]`
+  - `matches_target=false`
+  - 512/512 仍能 included/finalized，但 p95 inclusion delay 被拉到 `83.63s`，不能作为有效 topology delay 数据。
+- 清除 qdisc 后，同一个 devnet 重新 apply BA topology 立即恢复：
+  - observed peer counts：`[3, 6, 6, 2, 2, 3, 2, 2]`
+  - `matches_target=true`
+
+正确流程：
+
+```text
+1. 启动 devnet。
+2. apply BA topology，并确认 matches_target=true。
+3. 对 el-* 容器应用 P2P-only delay：sport/dport 30303 -> netem 50ms。
+4. workload runner 使用 --skip-apply-topology，只检查现有 peer graph，不再重建拓扑。
+```
+
+PoS-Beacon sanity 结果：
+
+| mode | nodes | topology | delay scope | tx included | achieved tx/slot | p50 incl. delay | p95 incl. delay | peer graph | finalized epoch |
+| --- | ---: | --- | --- | ---: | ---: | ---: | ---: | --- | ---: |
+| PoS-Beacon | `8` | BA(m=2) | EL P2P `30303` only, `50ms` | `512/512` | `30.05` | `2.69s` | `4.05s` | matched | `32` |
+
+TopoStake warmup 结果：
+
+参数：
+- `8 nodes`, BA(m=2), seed 0；
+- 先 apply BA topology，确认 `matches_target=true`；
+- 再对 `el-*` 容器的 EL P2P `30303` 加 `50ms` delay；
+- runner 使用 `--skip-apply-topology`；
+- warmup：`5 epochs = 2560 tx`；
+- measurement：`1 epoch = 512 tx`, `32 tx/slot`。
+
+结果：
+
+| mode | nodes | topology | delay scope | tx included | achieved tx/slot | p50 incl. delay | p95 incl. delay | path records | avg path len | fee records | fee viol. | peer graph | finalized epoch |
+| --- | ---: | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | ---: |
+| TopoStake | `8` | BA(m=2) | EL P2P `30303` only, `50ms` | `512/512` | `29.93` | `3.32s` | `5.01s` | `512` | `2.268` | `512` | `0` | matched | `14` |
+
+说明：
+- runner raw `record_count=607` 包含 pre-scan 附近额外 block records；按 measurement 512 笔 tx hash 过滤后是 `512` 条 path records。
+- filtered path histogram：`{1: 85, 2: 214, 3: 204, 4: 9}`。
+- filtered priority fee sum：`21504000000000000 wei`。
+- `topostake_fee_conservation_violation` Prometheus sum/max 都为 `0`。
+- 与 Prompt 38 无 delay TopoStake 8-node 结果相比，p95 inclusion delay 从约 `4.64s` 增到 `5.01s`；吞吐仍接近 `30 tx/slot`。
+
+结论：
+- EL P2P-only delay 是可行的，且不会像 uniform container delay 一样污染 CL HTTP/RPC、Engine API、workload RPC。
+- 但 topology 必须先建立并确认，再加 delay；否则 P2P handshake/peer establishment 会被 delay 注入影响，导致 BA graph 不完整。
+- TopoStake 在该流程下可以完成 `8-node, BA, 50ms P2P-only delay` 测试；这说明上一轮 uniform container delay 的失败主要来自 delay 作用范围过宽与拓扑建连被干扰，而不是 TopoStake 在延迟下必然无法完成。
+- 后续还需补 `PoS+PathObs` 同流程结果，并可做 `10/25/50ms` sweep。
+
+### Prompt 41 8-node topology impact bar charts
+
+目标：做一组专门展示“网络拓扑影响”的 devnet 实验。固定节点数和负载，只改变拓扑，比较 `PoS-Beacon / PoS+PathObs / TopoStake` 三种模式在吞吐达成率、交易打包延迟、交易路径长度上的差异。
+
+实验固定条件：
+- 节点数：`8 nodes`
+- 所有 topology 都固定为 8 节点；`Linear` 也是 8-node linear chain，不做 12/16 节点版本。
+- validator：`1 validator / node`
+- slot：`3s`
+- epoch：`16 slots`
+- workload：`180 tx/slot`
+- offered TPS：`60 TPS`
+- topology seed：`0`
+- sender：`8 prefunded senders`
+- origin：`round_robin` 分散到 8 个 EL
+- measurement：`1 epoch = 16 slots = 2880 tx`
+- warmup：至少 `5 epochs = 14400 tx`
+- 每个 run 都需要 clean enclave；不复用链状态。
+
+拓扑：
+- `Linear`
+- `ER`
+- `BA`
+
+ER/BA 参数：
+- `ER`: 使用 runner 当前 `degree=2.0`，并通过 `ensure_connected` 保证连通。
+- `BA`: 使用 `ba_m=2`。
+
+三种模式：
+- `PoS-Beacon`
+  - 同一套 modified geth/Lighthouse devnet stack。
+  - 关闭 TopoStake evidence、reward settlement、proposer-score adjustment。
+  - 不记录 path evidence，因此 path 图中该模式标为 `N/A`；如果柱状图必须三组柱，PoS-Beacon 可画为 `0` 并用 hatch/注释说明 `not observed`。
+- `PoS+PathObs`
+  - 开启 tx/path co-propagation 与 block-inline path records。
+  - 关闭 fee escrow / settlement。
+  - `ETA=0`，不调整 proposer selection。
+  - 用来隔离 path observation overhead。
+- `TopoStake`
+  - 开启 path evidence、fee escrow / finalized settlement、score update、proposer-score adjustment。
+
+每个 run 的执行流程：
+
+```text
+1. 清理旧 enclave。
+2. 启动对应 mode 的 8-node devnet。
+3. apply 指定 topology，并要求 matches_target=true。
+4. 跑 warmup：5 epochs, 180 tx/slot。
+5. 等待 warmup finality。
+6. 跑 measurement：1 epoch, 180 tx/slot。
+7. 等待 measurement finality。
+8. 采集 summary.json、block_records.csv、Prometheus TopoStake metrics。
+9. 清理 enclave。
+```
+
+注意：
+- 本组实验暂时不加额外 network delay；只看拓扑本身的影响。
+- 因为 `180 tx/slot` 是高于 Prompt 38 的低负载 `32 tx/slot`，如果 Linear 出现明显积压，需要记录为 topology bottleneck，而不是强行重跑到“好看”。
+- 如果某个 run receipt timeout，保留 partial diagnostics：per-EL head block、txpool pending/queued、CL head/finality、peer graph。
+
+指标定义：
+
+1. `Achieved tx/slot ratio`
+
+```text
+achieved_tx_per_slot = inclusion_throughput_tps * seconds_per_slot
+achieved_ratio = achieved_tx_per_slot / offered_tx_per_slot
+offered_tx_per_slot = 180
+```
+
+图中 y-axis 使用百分比：
+
+```text
+Achieved tx/slot (% of offered)
+```
+
+2. `Inclusion delay`
+
+使用真实 inclusion delay：
+
+```text
+included_block_timestamp - send_unix
+```
+
+主图建议用 `p95 inclusion delay (s)`，必要时表格补 `p50/p95`。
+
+3. `Average path length`
+
+只统计 measurement 交易：
+
+```text
+filtered_path_records = block_records filtered by measurement tx_hash
+avg_path_len = mean(path_len)
+```
+
+`PoS-Beacon` 不产生 path records，因此 path 图中应标为 `N/A` 或以 `0` hatch bar 表示 “not observed”，不要解释成路径真的为 0。
+
+输出图：
+
+```text
+figures/devnet_topology_achieved_ratio.pdf
+figures/devnet_topology_delay.pdf
+figures/devnet_topology_path_length.pdf
+```
+
+图设计：
+- x-axis：`Linear`, `ER`, `BA`
+- 每个 topology 下三组 bar：
+  - `PoS-Beacon`
+  - `PoS+PathObs`
+  - `TopoStake`
+- 三张图分别展示：
+  1. achieved tx/slot ratio；
+  2. p95 inclusion delay；
+  3. average path length。
+
+建议 LaTeX：
+
+```latex
+\begin{figure*}[t]
+\centering
+\subfloat[Achieved transaction throughput.]{
+    \includegraphics[width=0.32\linewidth]{figs/devnet_topology_achieved_ratio.pdf}
+}
+\subfloat[Inclusion delay.]{
+    \includegraphics[width=0.32\linewidth]{figs/devnet_topology_delay.pdf}
+}
+\subfloat[Observed transaction path length.]{
+    \includegraphics[width=0.32\linewidth]{figs/devnet_topology_path_length.pdf}
+}
+\caption{Impact of network topology on an 8-node Ethereum devnet under a fixed offered load of 180 transactions per slot. Throughput is reported as the achieved fraction of the offered load. Inclusion delay is measured from transaction submission time to the timestamp of the including block. Path length is computed from block-inline TopoStake path records for the measurement transactions.}
+\label{fig:devnet-topology-impact}
+\end{figure*}
+```
+
+预期观察：
+- Linear 的传播路径最长，可能带来更高 p95 inclusion delay 和更低 achieved ratio。
+- ER/BA 应该更接近，因为平均距离更短。
+- `PoS+PathObs` 和 `TopoStake` 的 avg path length 应反映 topology 差异；`TopoStake` 可能因为 proposer-score adjustment 让路径略短或分布改变。
+- 如果 `TopoStake` path 更短但 delay 更高，需要解释为 path evidence/verification/settlement/proposer-score pipeline 的额外处理成本，而不是传播路径更长。
+
+### Prompt 42 load and node-count bar charts
+
+目标：做另一组 devnet 图，展示固定 BA 拓扑下的负载敏感性与节点数敏感性。与 Prompt 41 的 topology impact 区分开：Prompt 41 改拓扑，Prompt 42 改 offered load 或 node count。
+
+全局设置：
+- topology：`BA(m=2), seed=0`
+- network delay：`0ms`，本组不注入额外延迟。
+- slot：`3s`
+- epoch：`16 slots`
+- validator：`1 validator / node`
+- sender：与节点数一致，最多使用 16 个 prefunded senders
+- origin：`round_robin`
+- mode：
+  - `PoS-Beacon`
+  - `PoS+PathObs`
+  - `TopoStake`
+- 每个 run 使用 clean enclave。
+- measurement 后必须 wait finality。
+- path/fee 统计必须按 measurement tx hash 过滤。
+
+图 1：load sensitivity
+
+固定条件：
+- nodes：`8`
+- topology：`BA(m=2)`
+- warmup：`5 epochs`
+- measurement：`1 epoch`
+
+x-axis：
+
+```text
+Offered load (tx/slot): 60, 120, 180, 240, 300
+```
+
+y-axis：
+
+```text
+Achieved tx/slot (% of offered)
+```
+
+三组 bar：
+- `PoS-Beacon`
+- `PoS+PathObs`
+- `TopoStake`
+
+指标：
+
+```text
+offered_tx_per_slot in {60,120,180,240,300}
+tx_interval_seconds = 3 / offered_tx_per_slot
+measurement_tx_count = offered_tx_per_slot * 16
+warmup_tx_count = offered_tx_per_slot * 16 * 5
+achieved_tx_per_slot = inclusion_throughput_tps * 3
+achieved_ratio = achieved_tx_per_slot / offered_tx_per_slot
+```
+
+输出：
+
+```text
+figures/devnet_load_achieved_ratio_bar.pdf
+```
+
+图 2：node-count latency sensitivity
+
+固定条件：
+- offered load：`32 tx/slot`
+- topology：`BA(m=2)`
+- warmup：`5 epochs`
+- measurement：`1 epoch`
+
+x-axis：
+
+```text
+Number of nodes: 4, 8, 12, 16
+```
+
+y-axis：
+
+```text
+p95 inclusion delay (s)
+```
+
+三组 bar：
+- `PoS-Beacon`
+- `PoS+PathObs`
+- `TopoStake`
+
+指标：
+
+```text
+measurement_tx_count = 32 * 16 = 512
+warmup_tx_count = 32 * 16 * 5 = 2560
+latency = p95(included_block_timestamp - send_unix)
+```
+
+输出：
+
+```text
+figures/devnet_nodes_delay_bar.pdf
+```
+
+图 3：node-count path-length sensitivity
+
+固定条件与图 2 相同：
+- offered load：`32 tx/slot`
+- topology：`BA(m=2)`
+- nodes：`4, 8, 12, 16`
+- warmup：`5 epochs`
+- measurement：`1 epoch`
+
+x-axis：
+
+```text
+Number of nodes: 4, 8, 12, 16
+```
+
+y-axis：
+
+```text
+Average transaction path length
+```
+
+三组 bar：
+- `PoS-Beacon`
+- `PoS+PathObs`
+- `TopoStake`
+
+说明：
+- `PoS-Beacon` 不产生 path records，因此第三张图中应标成 `N/A`。
+- 如果作图工具必须画三组柱，`PoS-Beacon` 画成 hatch `0`，图注说明 `PoS-Beacon does not record TopoStake path evidence`。
+- `PoS+PathObs` 与 `TopoStake` 使用 measurement tx hash 过滤后的 block-inline path records 计算平均 path length。
+
+输出：
+
+```text
+figures/devnet_nodes_path_length_bar.pdf
+```
+
+建议 LaTeX：
+
+```latex
+\begin{figure*}[t]
+\centering
+\subfloat[Load sensitivity.]{
+    \includegraphics[width=0.32\linewidth]{figs/devnet_load_achieved_ratio_bar.pdf}
+}
+\subfloat[Node-count latency sensitivity.]{
+    \includegraphics[width=0.32\linewidth]{figs/devnet_nodes_delay_bar.pdf}
+}
+\subfloat[Node-count path sensitivity.]{
+    \includegraphics[width=0.32\linewidth]{figs/devnet_nodes_path_length_bar.pdf}
+}
+\caption{Devnet sensitivity of TopoStake under varying offered load and node count without additional network-delay injection. Panel (a) fixes the network size to 8 nodes and varies the offered transaction load. Panels (b) and (c) fix the offered load to 32 transactions per slot and vary the number of nodes. Throughput is reported as the achieved fraction of the offered load. Delay is measured from transaction submission to block inclusion. Path length is computed from block-inline TopoStake evidence records.}
+\label{fig:devnet-sensitivity}
+\end{figure*}
+```
+
+Run matrix：
+
+```text
+load sensitivity:
+  5 loads * 3 modes = 15 runs
+
+node latency/path sensitivity:
+  4 node counts * 3 modes = 12 runs
+
+total = 27 runs
+```
+
+不确定/需要定死的地方：
+- 图 2/3 已改成 `32 tx/slot`，这是 Prompt 38 已经验证过的稳定低负载 node-count sensitivity 口径，不再使用 `180 tx/slot` 的 stress 设置。
+- 如果 `12/16 nodes` 在 `32 tx/slot` 下仍出现 receipt timeout，应保留为异常点并采集 per-EL/CL diagnostics；但预期比 `180 tx/slot` 稳定。
+- Path length 图只对 `PoS+PathObs / TopoStake` 有真实意义；`PoS-Beacon` 没有 path observation。
+- `4 nodes` 下 BA(m=2) 比较稠密，平均路径可能偏短；这不是错误，但解释时要说明小规模 BA 的拓扑差异有限。
+- 是否所有 run 都用 `5 epoch warmup`：建议固定为 yes，否则 TopoStake 的 score/selection 预热不足，和 PoS-Beacon 对比不公平。
+- 是否需要多 seed：当前先 single seed 跑通主图；论文最终版建议至少补 seed repeat 或把 devnet 图明确写成 single-seed validation。
+
 ### 当前实验缺口
 
 还需要补：
-- baseline vs TopoStake 重新对照，使用 inclusion delay，不使用旧 receipt latency；
-- `1 validator / node` 下的 baseline args 和 TopoStake args 成对实验；
-- multiple funded senders workload；
-- topology suite：linear/ring/star/ER/BA；
+- node-count sweep：当前 `32 tx/slot` + warmup 版本已稳定；若论文主图使用该配置，需要生成对应 `tx/slot vs nodes` 和 `delay vs nodes` 图；
+- 高负载 node-count sweep：`60 TPS = 180 tx/slot` 下 12/16 节点曾出现明显积压，后续若要展示高负载敏感性，需要单独作为 overload/stress 图，而不是和低负载稳定图混在一起；
+- evidence/path records 的 per-run delta 需要工具化；当前已在分析时按 measurement tx hash 过滤，但 runner summary 仍同时保存了 pre-scan block records；
+- delay 实验：EL P2P-only uniform delay sanity 已通过；还需用同一流程补 `PoS-Beacon / PoS+PathObs / TopoStake` 三线，以及更严格的 per-edge delay；
+- topology suite：linear/star/ER/BA 已有 strict 16-node smoke；还需补 ring 和多 seed；
+- topology table 如果要宣称所有行 `Invalid Rec.=0` / `Relay Payout=Yes`，需要 clean devnet per topology 或 per-run metric delta；
 - 多 seed 重复；
-- tx rate 分档：例如 `4 TPS`, `8 TPS`, `16 TPS`, `32 TPS`；
+- load sweep 目前是 single seed；论文最终版如需 error bar，需要补 seed 重复；
 - proposer frequency、score share、relay reward share 与 topology centrality 的对应关系；
 - 资源占用和 missed slots；
 - finality 稳定性。
@@ -657,4 +1602,152 @@ Prompt 28     block-inline path aggregate BLS verification
 Prompt 29     reproducible devnet topology experiment runner
 Prompt 30     8-node scaling, inclusion-delay correction, 1-validator/node smoke
 Prompt 31     8-node BA 64 TPS smoke, local-origin empty-path semantics
+Prompt 32     16-node BA 64 TPS smoke, >=10 service name fix, startup DNS timeout fix
+Prompt 33     16-node strict topology table, inclusion throughput/delay, table semantics correction
+Prompt 34     local path evidence is valid: path=[origin] counts as valid record, no relay payout
+Prompt 35     local path fix 后复跑 16-node topology workload，四个拓扑均达到 3840/3840 valid records
+Prompt 36     8-node BA load sweep，multi-sender/multi-entry 修复，tx/slot 图
+Prompt 37     60 TPS node-count stress，发现 12/16 节点高负载积压
+Prompt 38     5-epoch warmup + 32 tx/slot node-count sensitivity，三模式对照与 avg path length
+Prompt 39     16-node uniform 50ms delay stress，baseline/pathobs 完成，TopoStake 出现 EL divergence
+Prompt 40     EL P2P-only 50ms delay sanity，确认正确流程为先建拓扑再加 delay，并用 --skip-apply-topology 跑 workload
+Prompt 41     8-node topology impact bar charts：Linear/ER/BA，180 tx/slot，PoS-Beacon/PoS+PathObs/TopoStake 三模式对照
+Prompt 42     load/node-count sensitivity bar charts：load=60..300 tx/slot；nodes=4/8/12/16 at 32 tx/slot；三模式对照
+Prompt 43     protocol-grade settlement records：扩展 geth block body / Engine API ExecutionPayload 与 Lighthouse ExecutionPayload SSZ/JSON，携带 topostakeSettlementRecords，使 finalized settlement 记录跟随区块/EL payload 传播；TopoStake 模式下重新打开真实余额 mutation
+Prompt 44     settlement records body recovery fix：getPayloadBodiesByHash/Range 与 Lighthouse ExecutionPayloadBodyV1 保留 topostakeSettlementRecords，修复 16-node ER TopoStake state-root divergence
 ```
+
+### Prompt 43 验证记录
+
+目标：把 reward settlement 从“CL 通过 RPC 提交到各 EL 的本地内存，然后 EL 按 extraData settlement root 本地执行”升级为协议级 payload 字段。这样 proposer 构造 payload 时把 settlement records 写入 block body / ExecutionPayload，其他 EL 在 `engine_newPayload` 时直接从 payload 读取同一批 records，避免因为某个 EL 没有本地 settlement store 而执行出不同 state root。
+
+实现要点：
+- geth `types.Body` / `types.Block` 增加 `TopoStakeSettlementRecords`，RLP body、`ExecutableData` JSON、`ExecutableDataToBlock`、`BlockToExecutableData` 都带上该字段；
+- geth block execution 改为 `ApplyCommittedSettlementRecords(root, block.TopoStakeSettlementRecords(), statedb, ...)`，当 `TOPOSTAKE_SETTLEMENT_MUTATION=1` 且 committed root 非空时，缺少 records 会返回 invalid；
+- proposer build 时从 pending settlement root 查出 records，先放进 body，再用同一份 records 执行 state mutation；
+- Lighthouse `ExecutionPayload` 增加 bounded `topostake_settlement_records` SSZ 字段，Engine API JSON 边界映射 geth 的 `topostakeSettlementRecords`；
+- `scripts/topostake_devnet_args.py` 只在 `mode=topostake` 时设置 `TOPOSTAKE_FEE_ESCROW=1` 和 `TOPOSTAKE_SETTLEMENT_MUTATION=1`，`pos/pathobs` 不做真实余额 mutation。
+
+已验证：
+- `go test ./eth/topostake ./beacon/engine ./core/types`
+- `cargo check -p types -p execution_layer -p beacon_chain`
+- `cargo check --bin lighthouse --features spec-minimal`
+
+下一步：重建 geth/Lighthouse dev images，跑 8-node BA TopoStake devnet，确认 finalized 后 settlement records 随 payload 到达所有 EL，且不再出现 `invalid merkle root` / execution payload divergence。
+
+补充验证（2026-07-08）：
+- 重建并打包本地 `topostake/geth:dev` 与 `topostake/lighthouse:dev` 后，启动 `prompt43_path_length_16node_topostake_ba_n16_txslot32_seed0`；
+- 参数确认：`TOPOSTAKE_FEE_ESCROW=1`、`TOPOSTAKE_SETTLEMENT_MUTATION=1`，即 TopoStake 模式默认开启真实 fee mutation；
+- devnet 成功启动 16 EL + 16 CL + 16 VC，BA topology workload 开始后链在 EL block 123 / CL head slot 128 附近停止前进；
+- EL/CL 日志显示从 block 124 开始 payload 被拒绝：
+  `failed to apply topostake settlement: missing topostake settlement records for committed root ...`；
+- 结论：当前 settlement root 已随 block extraData 提交，但 `topostakeSettlementRecords` 没有稳定随最终 CL block / Engine `newPayload` 回到所有 EL；真实余额 mutation 开启后这会导致 execution payload invalid。问题不是资源瓶颈，而是 Prompt 43 的 settlement records payload 传递路径还缺一处闭环。
+
+下一步修复方向：
+- 优先确认 geth `engine_getPayload` 返回的 `executionPayload.topostakeSettlementRecords` 是否非空；
+- 若 geth 返回非空，则继续查 Lighthouse `GetPayloadResponse -> BlockProposalContents -> BeaconBlockBody execution_payload -> NewPayloadRequest` 是否在 full/blinded payload 转换中丢字段；
+- 修复后先跑 8-node BA / 32 tx-slot TopoStake smoke，再回到 16-node BA / 32 tx-slot。
+
+修复结果（2026-07-08）：
+- 问题定位：真实 mutation 开启后，EL 在执行 committed settlement root 时过早要求 block payload 一定携带 records；但当前 CL 仍会通过 `topostake_submitSettlement` 预先把 settlement summary 写入本地 EL store。若 `engine_newPayload` 边界 records 为空，应该先按 committed root 查询本地 store，只有 block records 和本地 store 都缺失时才判 invalid；
+- geth `ApplyCommittedSettlementRecords` 增加 local-store fallback：`topostakeSettlementRecords` 非空时按 payload records 验 root 并执行；records 为空时按 root 查 `settlementsByRoot`；`TOPOSTAKE_SETTLEMENT_MUTATION=1` 且两边都缺失时仍返回 `missing topostake settlement records...`；
+- 新增单测覆盖：
+  - records 为空但本地 store 有 settlement 时，真实扣 escrow / 加 payout 成功；
+  - records 和本地 store 都缺失时，mutation 模式返回错误；
+- 验证通过：
+  - `go test ./eth/topostake ./beacon/engine ./core/types`
+  - `cargo check -p types -p execution_layer -p beacon_chain`
+  - 重建 `topostake/geth:dev` 后跑 8-node BA smoke：512/512 tx included，finalized epoch 17，BA topology match；
+  - 复跑 16-node BA / 32 tx-slot / warmup 5 epoch / measurement 5 epoch / `mode=topostake`：
+    - `TOPOSTAKE_FEE_ESCROW=1`、`TOPOSTAKE_SETTLEMENT_MUTATION=1`；
+    - tx success `2560/2560`；
+    - Path Rec. `2560/2560`，Fee Rec. `2560/2560`；
+    - achieved `31.59 tx/slot`，ratio `0.987`；
+    - inclusion delay p50/p95 `3.78s / 13.63s`;
+    - avg path length `3.02`;
+    - finalized epoch `14`;
+    - fee conservation violation `0`;
+    - Kurtosis enclave 已清理，无残留运行资源；
+- 结论：当前协议级 settlement records + local-store fallback 已能支撑 TopoStake 默认开启真实 fee mutation 的 16-node BA devnet workload。后续如果要完全去掉 local RPC settlement 依赖，需要继续把 settlement records 的 CL block body / Engine API 往返路径做成唯一来源。
+
+### Prompt 44 settlement records body recovery fix
+
+目标：修复 16-node ER TopoStake 在真实 fee mutation 开启后仍可能出现 `invalid merkle root` / finality 卡住的问题。上一轮定位显示 proposer payload 里有 committed settlement root，但部分 payload body recovery 路径会丢失 `topostakeSettlementRecords`，导致其他 EL 只能依赖本地 fallback，最终同一 payload 执行出不同 state root。
+
+修复内容：
+- geth `ExecutionPayloadBody` 增加 `topostakeSettlementRecords` 字段；
+- geth `engine_getPayloadBodiesByHashV1/V2` 与 `engine_getPayloadBodiesByRangeV1/V2` 返回 block body 时携带 `block.TopoStakeSettlementRecords()`；
+- Lighthouse `ExecutionPayloadBodyV1` 增加 `topostake_settlement_records`；
+- Lighthouse Engine API JSON body decode/encode 增加 `topostakeSettlementRecords` 映射；
+- Lighthouse `ExecutionPayloadBodyV1::to_payload()` 不再把 `topostake_settlement_records` 置空，而是带入重建后的 `ExecutionPayload`。
+
+验证：
+- `cargo check -p execution_layer`
+- `GOCACHE=/tmp/go-build-cache go test ./beacon/engine ./core/types ./eth/topostake`
+- `GOCACHE=/tmp/go-build-cache go test ./eth/catalyst -run '^$'`
+- `eth/catalyst` 完整测试在当前沙箱会因监听 `127.0.0.1:0` 被拒绝，属于环境限制；编译检查已通过。
+- 重建本地二进制并重新打包：
+  - `topostake/geth:dev`
+  - `topostake/lighthouse:dev`
+- 复跑 `prompt44_topology_16node_topostake_er_n16_txslot32_seed0`：
+  - topology：`ER`
+  - nodes：`16`
+  - mode：`TopoStake`
+  - load：`32 tx/slot`
+  - warmup：`5 epochs`
+  - measurement：`5 epochs`
+  - tx success：`2560/2560`
+  - finalized epoch：`21`
+  - achieved：`31.44 tx/slot`
+  - p50/p95 inclusion delay：`4.18s / 6.53s`
+  - avg path length：`3.85`
+  - Path Rec. / Fee Rec.：`2560 / 2560`
+  - priority fee sum：`107520000000000000 wei`
+  - fee conservation violation：`0`
+  - topology match：`true`
+  - Kurtosis enclave 已清理，无残留运行资源。
+
+结论：这次 ER 16-node TopoStake 已经不再复现 `invalid merkle root`，说明 settlement records 在 Engine payload body recovery 路径中的丢失问题已修复。后续可以继续补 BA/Linear 的完整 Prompt 44 数据，或者回到 Prompt 41/42 六张图的数据重跑。
+
+### Prompt 44 BA 16-node 三模式补充
+
+目标：补齐 `16 nodes, BA(m=2), 32 tx/slot, 5 epoch warmup + 5 epoch measurement` 下的 `PoS-Beacon / PoS+PathObs / TopoStake` 三模式对照数据。
+
+首次复跑 TopoStake BA 时发现一个新的 state-root divergence：
+- baseline 与 pathobs 均完成；
+- TopoStake 在 slot 54 附近出现 `Invalid execution payload`，EL 报 `invalid merkle root`；
+- CL head 继续推进但 finalized 卡在 epoch 4，说明这是 payload validation divergence，不是资源或等待时间问题。
+
+根因：
+- geth `executedSettlements` 是本地内存去重；
+- 在 BA 拓扑下出现 competing fork / side-chain block replay 时，某个节点可能已经在本地把同一 settlement key 标记为 executed；
+- 后续验证另一个携带同一 settlement records 的 block 时，本地 skip 了 settlement mutation，导致 validator 计算出的 state root 和 proposer header root 不一致；
+- 这类本地去重不能参与 block validation。只要 block body 携带 `topostakeSettlementRecords`，EL 必须根据 block records 和 pre-state 重新执行，不能被本地 memory marker 污染。
+
+修复：
+- geth `ApplyCommittedSettlementRecords` 改为：
+  - `blockRecords` 非空时，总是按 block records 验 root 并执行 settlement mutation；
+  - 只有 `blockRecords` 为空、走 local-store fallback 时，才允许 `executedSettlements` 跳过；
+- 新增回归测试：先用 local fallback 标记 settlement executed，再用 block-carried records 在 fresh state 上 replay，必须仍然执行。
+
+验证：
+- `GOCACHE=/tmp/go-build-cache go test ./eth/topostake ./core ./miner ./eth/catalyst`
+  - `eth/topostake`、`core`、`miner` 通过；
+  - `eth/catalyst` 完整测试在当前 sandbox 因监听 `0.0.0.0:0` / `127.0.0.1:0` 被拒绝失败，属于环境限制，不是编译或 settlement 逻辑失败；
+- 重建并打包 `topostake/geth:dev`；
+- 复跑 `prompt44_topology_16node_topostake_ba_n16_txslot32_seed0` 成功 finalized。
+
+最终 BA 三模式数据：
+
+| Mode | Tx | Achieved tx/slot | Achieved ratio | Incl. delay p50/p95 | Avg. path | Path Rec. | Fee Rec. | Finalized | Fee Viol. |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| PoS-Beacon | `2560/2560` | `31.62` | `98.81%` | `2.62s / 3.93s` | `0.00` | `0` | `0` | `21` | `0` |
+| PoS+PathObs | `2560/2560` | `31.31` | `97.85%` | `3.41s / 4.91s` | `2.86` | `2560` | `2560` | `21` | `0` |
+| TopoStake | `2560/2560` | `30.66` | `95.81%` | `3.85s / 9.48s` | `2.89` | `2560` | `2560` | `21` | `0` |
+
+产物：
+- summary CSV：`results/processed/devnet_prompt41_42_summary.csv`
+- raw summary：`results/raw/devnet_prompt41_42/prompt44_topology_16node_topostake_ba_n16_txslot32_seed0/summary.json`
+- Kurtosis enclave 已清理，无残留运行资源。
+
+结论：修复后 BA 16-node TopoStake 在真实 fee mutation 开启下可以完成 workload 并 finalized；Path/Fee records 完整，fee conservation 为 0。TopoStake 相比 PathObs 的 achieved tx/slot 略低，p95 inclusion delay 明显更高，这部分更像 score/settlement/proposer-selection pipeline 在 BA competing fork 场景下的额外开销，后续画图时应保留并解释。

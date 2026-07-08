@@ -4,6 +4,7 @@
 package topostake
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
@@ -32,6 +33,8 @@ const (
 	Domain          = "TOPOSTAKE_TX_PATH_V1"
 	DefaultChainID  = uint64(7_032_030)
 	DefaultMaxBytes = 64 * 1024
+
+	serviceLookupTimeout = 75 * time.Millisecond
 )
 
 var (
@@ -61,6 +64,15 @@ var (
 func FeeEscrowEnabled() bool {
 	switch strings.ToLower(strings.TrimSpace(os.Getenv("TOPOSTAKE_FEE_ESCROW"))) {
 	case "1", "true", "yes", "on", "escrow":
+		return true
+	default:
+		return false
+	}
+}
+
+func SettlementMutationEnabled() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("TOPOSTAKE_SETTLEMENT_MUTATION"))) {
+	case "1", "true", "yes", "on":
 		return true
 	default:
 		return false
@@ -685,6 +697,31 @@ func (s *Store) PendingSettlementRoot() common.Hash {
 	return common.Hash{}
 }
 
+func (s *Store) SettlementRecordsForRoot(root common.Hash) []types.TopoStakeSettlementRecord {
+	if s == nil || root == (common.Hash{}) {
+		return nil
+	}
+	s.lock.RLock()
+	defer s.lock.RUnlock()
+	payload := s.settlementsByRoot[root]
+	if payload == nil {
+		return nil
+	}
+	records := make([]types.TopoStakeSettlementRecord, 0, len(payload.Records))
+	for _, record := range payload.Records {
+		records = append(records, types.TopoStakeSettlementRecord{
+			FinalizedEpoch: payload.FinalizedEpoch,
+			Epoch:          payload.Epoch,
+			Role:           record.Role,
+			ValidatorIndex: record.ValidatorIndex,
+			PayoutAddress:  record.PayoutAddress,
+			AmountWei:      strings.TrimSpace(record.AmountWei),
+			ID:             record.ID,
+		})
+	}
+	return records
+}
+
 func (s *Store) SettlementRoot(finalizedEpoch, epoch uint64) common.Hash {
 	if s == nil {
 		return common.Hash{}
@@ -695,32 +732,64 @@ func (s *Store) SettlementRoot(finalizedEpoch, epoch uint64) common.Hash {
 }
 
 func (s *Store) ApplyCommittedSettlement(root common.Hash, statedb *state.StateDB) int {
-	return s.applyCommittedSettlement(root, statedb, true)
+	applied, _ := s.applyCommittedSettlement(root, nil, statedb, true)
+	return applied
 }
 
 func (s *Store) ApplyCommittedSettlementForBuild(root common.Hash, statedb *state.StateDB) int {
-	return s.applyCommittedSettlement(root, statedb, false)
+	applied, _ := s.applyCommittedSettlement(root, nil, statedb, false)
+	return applied
 }
 
-func (s *Store) applyCommittedSettlement(root common.Hash, statedb *state.StateDB, markExecuted bool) int {
+func (s *Store) ApplyCommittedSettlementRecords(root common.Hash, records []types.TopoStakeSettlementRecord, statedb *state.StateDB, markExecuted bool) (int, error) {
+	return s.applyCommittedSettlement(root, records, statedb, markExecuted)
+}
+
+func (s *Store) applyCommittedSettlement(root common.Hash, blockRecords []types.TopoStakeSettlementRecord, statedb *state.StateDB, markExecuted bool) (int, error) {
 	if s == nil || statedb == nil || !FeeEscrowEnabled() {
-		return 0
+		return 0, nil
 	}
 	if root == (common.Hash{}) {
-		return 0
+		return 0, nil
 	}
-	s.lock.Lock()
-	defer s.lock.Unlock()
-	payload := s.settlementsByRoot[root]
-	if payload == nil {
-		if markExecuted {
-			settlementSkippedMeter.Mark(1)
+	var payload *SettlementPayload
+	hasBlockRecords := len(blockRecords) > 0
+	if hasBlockRecords {
+		converted, err := settlementPayloadFromBlockRecords(blockRecords)
+		if err != nil {
+			return 0, err
 		}
-		return 0
+		computed := settlementPayloadRoot(converted)
+		if computed != root {
+			return 0, fmt.Errorf("topostake settlement root mismatch: committed %s computed %s", root, computed)
+		}
+		payload = &converted
+	} else {
+		s.lock.RLock()
+		payload = s.settlementsByRoot[root]
+		s.lock.RUnlock()
+		if payload == nil {
+			if SettlementMutationEnabled() {
+				return 0, fmt.Errorf("missing topostake settlement records for committed root %s", root)
+			}
+			if markExecuted {
+				settlementSkippedMeter.Mark(1)
+			}
+			return 0, nil
+		}
 	}
 	key := settlementPayloadKey(payload.FinalizedEpoch, payload.Epoch)
-	if markExecuted && s.executedSettlements[key] {
-		return 0
+	s.lock.Lock()
+	defer s.lock.Unlock()
+	if markExecuted && !hasBlockRecords && s.executedSettlements[key] {
+		return 0, nil
+	}
+	if !SettlementMutationEnabled() {
+		if markExecuted {
+			s.executedSettlements[key] = true
+			settlementSkippedMeter.Mark(1)
+		}
+		return 0, nil
 	}
 	total := new(uint256.Int)
 	amounts := make([]uint256.Int, len(payload.Records))
@@ -738,13 +807,13 @@ func (s *Store) applyCommittedSettlement(root common.Hash, statedb *state.StateD
 		if markExecuted {
 			settlementSkippedMeter.Mark(1)
 		}
-		return 0
+		return 0, nil
 	}
 	if statedb.GetBalance(FeeEscrowAddress).Cmp(total) < 0 {
 		if markExecuted {
 			settlementSkippedMeter.Mark(1)
 		}
-		return 0
+		return 0, nil
 	}
 	statedb.SubBalance(FeeEscrowAddress, total, tracing.BalanceDecreaseGasBuy)
 	for i, record := range payload.Records {
@@ -757,7 +826,7 @@ func (s *Store) applyCommittedSettlement(root common.Hash, statedb *state.StateD
 		s.executedSettlements[key] = true
 		settlementAppliedMeter.Mark(1)
 	}
-	return 1
+	return 1, nil
 }
 
 func SettlementRootFromExtra(extra []byte) common.Hash {
@@ -772,6 +841,36 @@ func SettlementExtraFromRoot(root common.Hash) []byte {
 		return nil
 	}
 	return root.Bytes()
+}
+
+func settlementPayloadFromBlockRecords(records []types.TopoStakeSettlementRecord) (SettlementPayload, error) {
+	if len(records) == 0 {
+		return SettlementPayload{}, fmt.Errorf("empty topostake settlement records")
+	}
+	payload := SettlementPayload{
+		Domain:         "TOPOSTAKE_FEE_SETTLEMENT_V1",
+		FinalizedEpoch: records[0].FinalizedEpoch,
+		Epoch:          records[0].Epoch,
+		Records:        make([]SettlementRecord, 0, len(records)),
+	}
+	for _, record := range records {
+		if record.FinalizedEpoch != payload.FinalizedEpoch || record.Epoch != payload.Epoch {
+			return SettlementPayload{}, fmt.Errorf("mixed topostake settlement epochs in block records")
+		}
+		settlement := SettlementRecord{
+			ID:             strings.TrimSpace(record.ID),
+			Epoch:          record.Epoch,
+			Role:           strings.ToLower(strings.TrimSpace(record.Role)),
+			ValidatorIndex: record.ValidatorIndex,
+			PayoutAddress:  normalizeRelayAddress(record.PayoutAddress),
+			AmountWei:      strings.TrimSpace(record.AmountWei),
+		}
+		if settlement.ID == "" {
+			settlement.ID = settlementRecordID(settlement)
+		}
+		payload.Records = append(payload.Records, settlement)
+	}
+	return payload, nil
 }
 
 func settlementPayloadKey(finalizedEpoch, epoch uint64) string {
@@ -1203,7 +1302,7 @@ func (s *Store) registerServiceAddress(serviceName string, identity relayIdentit
 		return nil
 	}
 	s.serviceIdentities[serviceName] = identity
-	hosts, err := net.LookupHost(serviceName)
+	hosts, err := lookupServiceHosts(serviceName)
 	if err != nil {
 		return nil
 	}
@@ -1250,7 +1349,7 @@ func topostakePrivateRelaySecretsFromEnv(s *Store) (map[uint64]*blst.SecretKey, 
 
 func (s *Store) refreshServiceAddresses() {
 	for serviceName, identity := range s.serviceIdentities {
-		hosts, err := net.LookupHost(serviceName)
+		hosts, err := lookupServiceHosts(serviceName)
 		if err != nil {
 			continue
 		}
@@ -1261,6 +1360,12 @@ func (s *Store) refreshServiceAddresses() {
 			}
 		}
 	}
+}
+
+func lookupServiceHosts(serviceName string) ([]string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), serviceLookupTimeout)
+	defer cancel()
+	return net.DefaultResolver.LookupHost(ctx, serviceName)
 }
 
 func (m propagationMetadata) indexSequence() []uint64 {

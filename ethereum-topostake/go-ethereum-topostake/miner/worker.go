@@ -135,6 +135,10 @@ func (miner *Miner) generateWork(genParam *generateParams, witness bool) *newPay
 		}
 	}
 	body := types.Body{Transactions: work.txs, Withdrawals: genParam.withdrawals}
+	settlementRoot := topostake.SettlementRootFromExtra(work.header.Extra)
+	if settlementRoot != (common.Hash{}) {
+		body.TopoStakeSettlementRecords = topostake.DefaultStore().SettlementRecordsForRoot(settlementRoot)
+	}
 
 	allLogs := make([]*types.Log, 0)
 	for _, r := range work.receipts {
@@ -162,7 +166,9 @@ func (miner *Miner) generateWork(genParam *generateParams, witness bool) *newPay
 		reqHash := types.CalcRequestsHash(requests)
 		work.header.RequestsHash = &reqHash
 	}
-	topostake.DefaultStore().ApplyCommittedSettlementForBuild(topostake.SettlementRootFromExtra(work.header.Extra), work.state)
+	if _, err := topostake.DefaultStore().ApplyCommittedSettlementRecords(settlementRoot, body.TopoStakeSettlementRecords, work.state, false); err != nil {
+		return &newPayloadResult{err: err}
+	}
 
 	block, err := miner.engine.FinalizeAndAssemble(miner.chain, work.header, work.state, &body, work.receipts)
 	if err != nil {

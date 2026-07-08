@@ -3,6 +3,7 @@ use alloy_rlp::RlpEncodable;
 use serde::{Deserialize, Serialize};
 use ssz::{Decode, Encode, TryFromIter};
 use ssz_types::{FixedVector, VariableList, typenum::Unsigned};
+use std::str::FromStr;
 use strum::EnumString;
 use superstruct::superstruct;
 use types::data::BlobsList;
@@ -63,6 +64,84 @@ pub struct JsonPayloadIdResponse {
     pub payload_id: PayloadId,
 }
 
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JsonTopoStakeSettlementRecord {
+    pub finalized_epoch: u64,
+    pub epoch: u64,
+    pub role: String,
+    pub validator_index: u64,
+    pub payout_address: String,
+    pub amount_wei: String,
+}
+
+fn topostake_settlement_role_code(role: &str) -> u8 {
+    match role.trim().to_ascii_lowercase().as_str() {
+        "relay" => 1,
+        "burned" => 2,
+        _ => 0,
+    }
+}
+
+fn topostake_settlement_role_name(role: u8) -> String {
+    match role {
+        1 => "relay",
+        2 => "burned",
+        _ => "proposer",
+    }
+    .to_string()
+}
+
+impl From<JsonTopoStakeSettlementRecord> for TopoStakeSettlementRecord {
+    fn from(record: JsonTopoStakeSettlementRecord) -> Self {
+        let amount_wei =
+            Uint256::from_str_radix(record.amount_wei.trim(), 10).unwrap_or(Uint256::ZERO);
+        let payout_address = Address::from_str(record.payout_address.trim()).unwrap_or_default();
+        Self {
+            finalized_epoch: record.finalized_epoch,
+            epoch: record.epoch,
+            role: topostake_settlement_role_code(&record.role),
+            validator_index: record.validator_index,
+            payout_address,
+            amount_wei,
+        }
+    }
+}
+
+impl From<TopoStakeSettlementRecord> for JsonTopoStakeSettlementRecord {
+    fn from(record: TopoStakeSettlementRecord) -> Self {
+        let payout_address = if record.role == 2 && record.payout_address == Address::ZERO {
+            String::new()
+        } else {
+            format!("{:#x}", record.payout_address)
+        };
+        Self {
+            finalized_epoch: record.finalized_epoch,
+            epoch: record.epoch,
+            role: topostake_settlement_role_name(record.role),
+            validator_index: record.validator_index,
+            payout_address,
+            amount_wei: record.amount_wei.to_string(),
+        }
+    }
+}
+
+fn topostake_settlements_from_json<E: EthSpec>(
+    records: VariableList<JsonTopoStakeSettlementRecord, E::MaxValidatorsPerCommittee>,
+) -> Result<VariableList<TopoStakeSettlementRecord, E::MaxValidatorsPerCommittee>, ssz_types::Error>
+{
+    VariableList::new(records.into_iter().map(Into::into).collect())
+}
+
+fn topostake_settlements_to_json<E: EthSpec>(
+    records: VariableList<TopoStakeSettlementRecord, E::MaxValidatorsPerCommittee>,
+) -> Result<
+    VariableList<JsonTopoStakeSettlementRecord, E::MaxValidatorsPerCommittee>,
+    ssz_types::Error,
+> {
+    VariableList::new(records.into_iter().map(Into::into).collect())
+}
+
 #[superstruct(
     variants(Bellatrix, Capella, Deneb, Electra, Fulu, Gloas),
     variant_attributes(
@@ -99,6 +178,9 @@ pub struct JsonExecutionPayload<E: EthSpec> {
     pub block_hash: ExecutionBlockHash,
     #[serde(with = "ssz_types::serde_utils::list_of_hex_var_list")]
     pub transactions: Transactions<E>,
+    #[serde(default)]
+    pub topostake_settlement_records:
+        VariableList<JsonTopoStakeSettlementRecord, E::MaxValidatorsPerCommittee>,
     #[superstruct(only(Capella, Deneb, Electra, Fulu, Gloas))]
     pub withdrawals: VariableList<JsonWithdrawal, E::MaxWithdrawalsPerPayload>,
     #[superstruct(only(Deneb, Electra, Fulu, Gloas))]
@@ -132,6 +214,10 @@ impl<E: EthSpec> From<ExecutionPayloadBellatrix<E>> for JsonExecutionPayloadBell
             base_fee_per_gas: payload.base_fee_per_gas,
             block_hash: payload.block_hash,
             transactions: payload.transactions,
+            topostake_settlement_records: topostake_settlements_to_json::<E>(
+                payload.topostake_settlement_records,
+            )
+            .expect("topostake settlement list length should be preserved"),
         }
     }
 }
@@ -154,6 +240,9 @@ impl<E: EthSpec> TryFrom<ExecutionPayloadCapella<E>> for JsonExecutionPayloadCap
             base_fee_per_gas: payload.base_fee_per_gas,
             block_hash: payload.block_hash,
             transactions: payload.transactions,
+            topostake_settlement_records: topostake_settlements_to_json::<E>(
+                payload.topostake_settlement_records,
+            )?,
             withdrawals: withdrawals_to_json(payload.withdrawals)?,
         })
     }
@@ -177,6 +266,9 @@ impl<E: EthSpec> TryFrom<ExecutionPayloadDeneb<E>> for JsonExecutionPayloadDeneb
             base_fee_per_gas: payload.base_fee_per_gas,
             block_hash: payload.block_hash,
             transactions: payload.transactions,
+            topostake_settlement_records: topostake_settlements_to_json::<E>(
+                payload.topostake_settlement_records,
+            )?,
             withdrawals: withdrawals_to_json(payload.withdrawals)?,
             blob_gas_used: payload.blob_gas_used,
             excess_blob_gas: payload.excess_blob_gas,
@@ -203,6 +295,9 @@ impl<E: EthSpec> TryFrom<ExecutionPayloadElectra<E>> for JsonExecutionPayloadEle
             base_fee_per_gas: payload.base_fee_per_gas,
             block_hash: payload.block_hash,
             transactions: payload.transactions,
+            topostake_settlement_records: topostake_settlements_to_json::<E>(
+                payload.topostake_settlement_records,
+            )?,
             withdrawals: withdrawals_to_json(payload.withdrawals)?,
             blob_gas_used: payload.blob_gas_used,
             excess_blob_gas: payload.excess_blob_gas,
@@ -229,6 +324,9 @@ impl<E: EthSpec> TryFrom<ExecutionPayloadFulu<E>> for JsonExecutionPayloadFulu<E
             base_fee_per_gas: payload.base_fee_per_gas,
             block_hash: payload.block_hash,
             transactions: payload.transactions,
+            topostake_settlement_records: topostake_settlements_to_json::<E>(
+                payload.topostake_settlement_records,
+            )?,
             withdrawals: withdrawals_to_json(payload.withdrawals)?,
             blob_gas_used: payload.blob_gas_used,
             excess_blob_gas: payload.excess_blob_gas,
@@ -255,6 +353,9 @@ impl<E: EthSpec> TryFrom<ExecutionPayloadGloas<E>> for JsonExecutionPayloadGloas
             base_fee_per_gas: payload.base_fee_per_gas,
             block_hash: payload.block_hash,
             transactions: payload.transactions,
+            topostake_settlement_records: topostake_settlements_to_json::<E>(
+                payload.topostake_settlement_records,
+            )?,
             withdrawals: withdrawals_to_json(payload.withdrawals)?,
             blob_gas_used: payload.blob_gas_used,
             excess_blob_gas: payload.excess_blob_gas,
@@ -306,6 +407,10 @@ impl<E: EthSpec> From<JsonExecutionPayloadBellatrix<E>> for ExecutionPayloadBell
             base_fee_per_gas: payload.base_fee_per_gas,
             block_hash: payload.block_hash,
             transactions: payload.transactions,
+            topostake_settlement_records: topostake_settlements_from_json::<E>(
+                payload.topostake_settlement_records,
+            )
+            .expect("topostake settlement list length should be preserved"),
         }
     }
 }
@@ -328,6 +433,9 @@ impl<E: EthSpec> TryFrom<JsonExecutionPayloadCapella<E>> for ExecutionPayloadCap
             base_fee_per_gas: payload.base_fee_per_gas,
             block_hash: payload.block_hash,
             transactions: payload.transactions,
+            topostake_settlement_records: topostake_settlements_from_json::<E>(
+                payload.topostake_settlement_records,
+            )?,
             withdrawals: withdrawals_from_json(payload.withdrawals)?,
         })
     }
@@ -352,6 +460,9 @@ impl<E: EthSpec> TryFrom<JsonExecutionPayloadDeneb<E>> for ExecutionPayloadDeneb
             base_fee_per_gas: payload.base_fee_per_gas,
             block_hash: payload.block_hash,
             transactions: payload.transactions,
+            topostake_settlement_records: topostake_settlements_from_json::<E>(
+                payload.topostake_settlement_records,
+            )?,
             withdrawals: withdrawals_from_json(payload.withdrawals)?,
             blob_gas_used: payload.blob_gas_used,
             excess_blob_gas: payload.excess_blob_gas,
@@ -378,6 +489,9 @@ impl<E: EthSpec> TryFrom<JsonExecutionPayloadElectra<E>> for ExecutionPayloadEle
             base_fee_per_gas: payload.base_fee_per_gas,
             block_hash: payload.block_hash,
             transactions: payload.transactions,
+            topostake_settlement_records: topostake_settlements_from_json::<E>(
+                payload.topostake_settlement_records,
+            )?,
             withdrawals: withdrawals_from_json(payload.withdrawals)?,
             blob_gas_used: payload.blob_gas_used,
             excess_blob_gas: payload.excess_blob_gas,
@@ -404,6 +518,9 @@ impl<E: EthSpec> TryFrom<JsonExecutionPayloadFulu<E>> for ExecutionPayloadFulu<E
             base_fee_per_gas: payload.base_fee_per_gas,
             block_hash: payload.block_hash,
             transactions: payload.transactions,
+            topostake_settlement_records: topostake_settlements_from_json::<E>(
+                payload.topostake_settlement_records,
+            )?,
             withdrawals: withdrawals_from_json(payload.withdrawals)?,
             blob_gas_used: payload.blob_gas_used,
             excess_blob_gas: payload.excess_blob_gas,
@@ -430,6 +547,9 @@ impl<E: EthSpec> TryFrom<JsonExecutionPayloadGloas<E>> for ExecutionPayloadGloas
             base_fee_per_gas: payload.base_fee_per_gas,
             block_hash: payload.block_hash,
             transactions: payload.transactions,
+            topostake_settlement_records: topostake_settlements_from_json::<E>(
+                payload.topostake_settlement_records,
+            )?,
             withdrawals: withdrawals_from_json(payload.withdrawals)?,
             blob_gas_used: payload.blob_gas_used,
             excess_blob_gas: payload.excess_blob_gas,
@@ -1070,6 +1190,9 @@ pub struct JsonExecutionPayloadBodyV1<E: EthSpec> {
     #[serde(with = "ssz_types::serde_utils::list_of_hex_var_list")]
     pub transactions: Transactions<E>,
     pub withdrawals: Option<VariableList<JsonWithdrawal, E::MaxWithdrawalsPerPayload>>,
+    #[serde(default)]
+    pub topostake_settlement_records:
+        VariableList<JsonTopoStakeSettlementRecord, E::MaxValidatorsPerCommittee>,
 }
 
 impl<E: EthSpec> TryFrom<JsonExecutionPayloadBodyV1<E>> for ExecutionPayloadBodyV1<E> {
@@ -1079,6 +1202,9 @@ impl<E: EthSpec> TryFrom<JsonExecutionPayloadBodyV1<E>> for ExecutionPayloadBody
         Ok(Self {
             transactions: value.transactions,
             withdrawals: value.withdrawals.map(withdrawals_from_json).transpose()?,
+            topostake_settlement_records: topostake_settlements_from_json::<E>(
+                value.topostake_settlement_records,
+            )?,
         })
     }
 }
@@ -1090,6 +1216,9 @@ impl<E: EthSpec> TryFrom<ExecutionPayloadBodyV1<E>> for JsonExecutionPayloadBody
         Ok(Self {
             transactions: value.transactions,
             withdrawals: value.withdrawals.map(withdrawals_to_json).transpose()?,
+            topostake_settlement_records: topostake_settlements_to_json::<E>(
+                value.topostake_settlement_records,
+            )?,
         })
     }
 }

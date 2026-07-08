@@ -12,6 +12,7 @@ import re
 import subprocess
 import time
 from collections import Counter, defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Sequence, Tuple
@@ -25,6 +26,24 @@ ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT_ROOT = ROOT / "results" / "raw" / "devnet_topology"
 DEFAULT_PRIVATE_KEY = "0xbcdf20249abf0ed6d944c0288fad489e33f66b3960d9e6229c1cd214ed3bbe31"
 DEFAULT_RECIPIENT = "0xE25583099BA105D9ec0A67f5Ae86D90e50036425"
+DEFAULT_PREFUNDED_PRIVATE_KEYS = [
+    "0xbcdf20249abf0ed6d944c0288fad489e33f66b3960d9e6229c1cd214ed3bbe31",
+    "0x39725efee3fb28614de3bacaffe4cc4bd8c436257e2c8bb887c4b5c4be45e76d",
+    "0x53321db7c1e331d93a11a41d16f004d7ff63972ec8ec7c25db329728ceeb1710",
+    "0xab63b23eb7941c1251757e24b3d2350d2bc05c3c388d06f8fe6feafefb1e8c70",
+    "0x5d2344259f42259f82d2c140aa66102ba89b57b4883ee441a8b312622bd42491",
+    "0x27515f805127bebad2fb9b183508bdacb8c763da16f54e0678b16e8f28ef3fff",
+    "0x7ff1a4c1d57e5e784d327c4c7651e952350bc271f156afb3d00d20f5ef924856",
+    "0x3a91003acaf4c21b3953d94fa4a6db694fa69e5242b2e37be05dd82761058899",
+    "0xbb1d0f125b4fb2bb173c318cdead45468474ca71474e2247776b2b4c0fa2d3f5",
+    "0x850643a0224065ecce3882673c21f56bcf6eef86274cc21cadff15930b59fc8c",
+    "0x94eb3102993b41ec55c241060f47daa0f6372e2e3ad7e91612ae36c364042e44",
+    "0xdaf15504c22a352648a71ef2926334fe040ac1d5005019e09f6c979808024dc7",
+    "0xeaba42282ad33c8ef2524f07277c03a776d98ae19f581990ce75becb7cfa1c23",
+    "0x3fd98b5187bf6526734efaa644ffbb4e3670d66f5d0268ce0323ec09124bff61",
+    "0x5288e2f440c7f0cb61a9be8afdeb4295f786383f96f5e35eb0c94ef103996b64",
+    "0xf296c7802555da2a5a662be70e078cbd38b44f96f8615ae529da41122ce8db05",
+]
 TOPOSTAKE_METRICS = [
     "topostake_evidence_paths_total",
     "topostake_evidence_sources_total",
@@ -250,22 +269,43 @@ def apply_topology(el_rpcs: List[str], edges: List[Edge], prune: bool) -> Dict[s
         target_neighbors[a].add(b)
         target_neighbors[b].add(a)
 
+    target_edges = normalize_edges(edges)
     if prune:
-        index_by_id = {node_id: index for index, node_id in enumerate(node_ids)}
-        for index, url in enumerate(el_rpcs):
-            for peer in rpc(url, "admin_peers"):
-                peer_index = index_by_id.get(peer.get("id", ""))
-                if peer_index is None or peer_index not in target_neighbors[index]:
-                    peer_enode = peer.get("enode")
-                    if peer_enode:
-                        rpc(url, "admin_removePeer", [peer_enode])
+        for _ in range(8):
+            remove_extra_peers(el_rpcs, enodes, node_ids, target_neighbors)
+            for a, b in target_edges:
+                rpc(el_rpcs[a], "admin_addPeer", [enodes[b]])
+                rpc(el_rpcs[b], "admin_addPeer", [enodes[a]])
+            time.sleep(2)
+            graph = inspect_peer_graph(el_rpcs, enodes, target_edges, node_ids=node_ids)
+            if graph["matches_target"]:
+                return graph
+        return graph
 
-    for a, b in edges:
+    for a, b in target_edges:
         rpc(el_rpcs[a], "admin_addPeer", [enodes[b]])
         rpc(el_rpcs[b], "admin_addPeer", [enodes[a]])
 
     time.sleep(2)
-    return inspect_peer_graph(el_rpcs, enodes, edges, node_ids=node_ids)
+    return inspect_peer_graph(el_rpcs, enodes, target_edges, node_ids=node_ids)
+
+
+def remove_extra_peers(
+    el_rpcs: List[str],
+    enodes: List[str],
+    node_ids: List[str],
+    target_neighbors: Dict[int, set[int]],
+) -> None:
+    index_by_id = {node_id: index for index, node_id in enumerate(node_ids)}
+    for index, url in enumerate(el_rpcs):
+        for peer in rpc(url, "admin_peers"):
+            peer_index = index_by_id.get(peer.get("id", ""))
+            if peer_index is None or peer_index not in target_neighbors[index]:
+                peer_enode = peer.get("enode")
+                if peer_enode:
+                    rpc(url, "admin_removePeer", [peer_enode])
+                if peer_index is not None:
+                    rpc(el_rpcs[peer_index], "admin_removePeer", [enodes[index]])
 
 
 def inspect_peer_graph(
@@ -320,23 +360,48 @@ def beacon_genesis(cl_api: str) -> Dict[str, int]:
     }
 
 
-def run_workload(args: argparse.Namespace, endpoints: Endpoints) -> Dict[str, Any]:
+def selected_private_keys(args: argparse.Namespace) -> List[str]:
+    if args.private_keys:
+        private_keys = [part.strip() for part in args.private_keys.split(",") if part.strip()]
+    elif args.sender_count == 1 and args.private_key != DEFAULT_PRIVATE_KEY:
+        private_keys = [args.private_key]
+    else:
+        private_keys = DEFAULT_PREFUNDED_PRIVATE_KEYS[: args.sender_count]
+    if not private_keys:
+        raise ValueError("at least one sender private key is required")
+    if len(private_keys) < args.sender_count:
+        raise ValueError(f"requested {args.sender_count} senders but only {len(private_keys)} private keys are available")
+    return private_keys[: args.sender_count]
+
+
+def run_workload(
+    args: argparse.Namespace,
+    endpoints: Endpoints,
+    *,
+    phase: str = "measurement",
+    tx_count: int | None = None,
+) -> Dict[str, Any]:
     from eth_account import Account
 
-    account = Account.from_key(args.private_key)
-    txs = []
+    private_keys = selected_private_keys(args)
+    accounts = [Account.from_key(private_key) for private_key in private_keys]
+    tx_count = args.tx_count if tx_count is None else tx_count
+    txs: List[Dict[str, Any]] = []
     genesis = beacon_genesis(endpoints.cl_apis[0])
     genesis_time = genesis["genesis_time"]
     seconds_per_slot = args.seconds_per_slot
     nonce_w3 = Web3(Web3.HTTPProvider(endpoints.el_rpcs[0], request_kwargs={"timeout": 10}))
     nonce_w3.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
-    nonce = nonce_w3.eth.get_transaction_count(account.address, "pending")
+    nonces = [nonce_w3.eth.get_transaction_count(account.address, "pending") for account in accounts]
     chain_id = nonce_w3.eth.chain_id
-    first_send_monotonic = None
+    first_schedule_monotonic = time.monotonic()
     last_receipt_monotonic = None
-    first_send_unix = None
-    for index in range(args.tx_count):
-        origin = choose_origin(index, len(endpoints.el_rpcs), args.origin_mode, args.seed)
+    send_workers = max(1, args.send_concurrency)
+    receipt_workers = max(1, args.receipt_concurrency)
+
+    def send_one(tx_record: Dict[str, Any]) -> Dict[str, Any]:
+        account = accounts[tx_record["sender_index"]]
+        origin = tx_record["origin"]
         w3 = Web3(Web3.HTTPProvider(endpoints.el_rpcs[origin], request_kwargs={"timeout": 10}))
         w3.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
         tx = {
@@ -345,7 +410,7 @@ def run_workload(args: argparse.Namespace, endpoints: Endpoints) -> Dict[str, An
             "to": Web3.to_checksum_address(args.recipient),
             "value": args.value_wei,
             "gas": 21000,
-            "nonce": nonce,
+            "nonce": tx_record["nonce"],
             "maxFeePerGas": Web3.to_wei(args.max_fee_gwei, "gwei"),
             "maxPriorityFeePerGas": Web3.to_wei(args.priority_fee_gwei, "gwei"),
         }
@@ -353,37 +418,68 @@ def run_workload(args: argparse.Namespace, endpoints: Endpoints) -> Dict[str, An
         raw_tx = getattr(signed, "raw_transaction", None) or getattr(signed, "rawTransaction")
         send_monotonic = time.monotonic()
         send_unix = time.time()
-        if first_send_monotonic is None:
-            first_send_monotonic = send_monotonic
-            first_send_unix = send_unix
-        tx_hash = w3.eth.send_raw_transaction(raw_tx).hex()
-        tx_record = {
-            "index": index,
-            "origin": origin,
-            "tx_hash": tx_hash,
-            "nonce": nonce,
-            "send_unix": send_unix,
-            "send_monotonic": send_monotonic,
-            "send_slot_estimate": slot_for_timestamp(send_unix, genesis_time, seconds_per_slot),
-        }
-        if not args.wait_receipts_after_send:
-            receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=args.receipt_timeout)
-            receipt_monotonic = time.monotonic()
-            last_receipt_monotonic = receipt_monotonic
-            tx_record.update(receipt_fields(w3, receipt, tx_record, receipt_monotonic, genesis_time, seconds_per_slot))
-        txs.append(tx_record)
-        nonce += 1
-        if index + 1 < args.tx_count:
-            time.sleep(args.tx_interval_seconds)
+        tx_hash = send_raw_transaction_with_retry(w3, raw_tx, timeout_seconds=args.receipt_timeout).hex()
+        tx_record.update(
+            {
+                "sender": account.address,
+                "tx_hash": tx_hash,
+                "send_unix": send_unix,
+                "send_monotonic": send_monotonic,
+                "send_slot_estimate": slot_for_timestamp(send_unix, genesis_time, seconds_per_slot),
+            }
+        )
+        return tx_record
+
+    futures = []
+    with ThreadPoolExecutor(max_workers=send_workers) as executor:
+        for index in range(tx_count):
+            sender_index = index % len(accounts)
+            origin = choose_origin(index, len(endpoints.el_rpcs), args.origin_mode, args.seed)
+            tx_record = {
+                "index": index,
+                "phase": phase,
+                "origin": origin,
+                "sender_index": sender_index,
+                "nonce": nonces[sender_index],
+            }
+            nonces[sender_index] += 1
+            txs.append(tx_record)
+            target_monotonic = first_schedule_monotonic + index * args.tx_interval_seconds
+            sleep_seconds = target_monotonic - time.monotonic()
+            if sleep_seconds > 0:
+                time.sleep(sleep_seconds)
+            futures.append(executor.submit(send_one, tx_record))
+        for future in as_completed(futures):
+            future.result()
+
+    txs.sort(key=lambda tx: tx["index"])
+    first_send_monotonic = min((tx["send_monotonic"] for tx in txs if "send_monotonic" in tx), default=None)
+    first_send_unix = min((tx["send_unix"] for tx in txs if "send_unix" in tx), default=None)
+    last_send_monotonic = max((tx["send_monotonic"] for tx in txs if "send_monotonic" in tx), default=None)
+    last_send_unix = max((tx["send_unix"] for tx in txs if "send_unix" in tx), default=None)
+
+    def wait_receipt(tx_record: Dict[str, Any]) -> Dict[str, Any]:
+        w3 = Web3(Web3.HTTPProvider(endpoints.el_rpcs[tx_record["origin"]], request_kwargs={"timeout": 10}))
+        w3.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
+        receipt = wait_for_transaction_receipt_with_retry(w3, tx_record["tx_hash"], args.receipt_timeout)
+        receipt_monotonic = time.monotonic()
+        tx_record.update(receipt_fields(w3, receipt, tx_record, receipt_monotonic, genesis_time, seconds_per_slot))
+        return tx_record
+
     if args.wait_receipts_after_send:
+        with ThreadPoolExecutor(max_workers=receipt_workers) as executor:
+            receipt_futures = [executor.submit(wait_receipt, tx_record) for tx_record in txs]
+            for future in as_completed(receipt_futures):
+                receipt_record = future.result()
+                receipt_monotonic = receipt_record.get("receipt_monotonic")
+                if receipt_monotonic is not None:
+                    last_receipt_monotonic = max(last_receipt_monotonic or receipt_monotonic, receipt_monotonic)
+    else:
         for tx_record in txs:
-            origin = tx_record["origin"]
-            w3 = Web3(Web3.HTTPProvider(endpoints.el_rpcs[origin], request_kwargs={"timeout": 10}))
-            w3.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
-            receipt = w3.eth.wait_for_transaction_receipt(tx_record["tx_hash"], timeout=args.receipt_timeout)
-            receipt_monotonic = time.monotonic()
-            last_receipt_monotonic = receipt_monotonic
-            tx_record.update(receipt_fields(w3, receipt, tx_record, receipt_monotonic, genesis_time, seconds_per_slot))
+            receipt_record = wait_receipt(tx_record)
+            receipt_monotonic = receipt_record.get("receipt_monotonic")
+            if receipt_monotonic is not None:
+                last_receipt_monotonic = max(last_receipt_monotonic or receipt_monotonic, receipt_monotonic)
     receipt_latencies = [
         tx["observed_receipt_latency_seconds"]
         for tx in txs
@@ -413,15 +509,29 @@ def run_workload(args: argparse.Namespace, endpoints: Endpoints) -> Dict[str, An
         if first_send_unix is not None and latest_inclusion_timestamp is not None
         else 0.0
     )
+    send_elapsed = (
+        last_send_monotonic - first_send_monotonic
+        if first_send_monotonic is not None and last_send_monotonic is not None
+        else 0.0
+    )
     success_count = sum(1 for tx in txs if tx.get("status") == 1)
     return {
-        "sender": account.address,
+        "sender": accounts[0].address,
+        "senders": [account.address for account in accounts],
+        "sender_count": len(accounts),
         "chain_id": chain_id,
         "genesis_time": genesis_time,
         "seconds_per_slot": seconds_per_slot,
-        "tx_count": args.tx_count,
+        "phase": phase,
+        "tx_count": tx_count,
         "success_count": success_count,
         "send_interval_seconds": args.tx_interval_seconds,
+        "send_concurrency": send_workers,
+        "receipt_concurrency": receipt_workers,
+        "send_elapsed_seconds": send_elapsed,
+        "actual_send_tps": (tx_count / send_elapsed) if send_elapsed > 0 else 0.0,
+        "first_send_unix": first_send_unix or 0.0,
+        "last_send_unix": last_send_unix or 0.0,
         "wait_receipts_after_send": args.wait_receipts_after_send,
         "receipt_elapsed_seconds": receipt_elapsed,
         "observed_receipt_throughput_tps": (success_count / receipt_elapsed) if receipt_elapsed > 0 else 0.0,
@@ -434,6 +544,52 @@ def run_workload(args: argparse.Namespace, endpoints: Endpoints) -> Dict[str, An
     }
 
 
+def wait_for_transaction_receipt_with_retry(w3: Web3, tx_hash: str, timeout_seconds: int) -> Any:
+    deadline = time.monotonic() + timeout_seconds
+    delay = 0.5
+    last_error: Exception | None = None
+    while time.monotonic() < deadline:
+        try:
+            return w3.eth.wait_for_transaction_receipt(tx_hash, timeout=min(10, timeout_seconds))
+        except Exception as exc:
+            last_error = exc
+            time.sleep(delay)
+            delay = min(delay * 1.5, 5.0)
+    raise TimeoutError(f"receipt not available for {tx_hash} after {timeout_seconds}s") from last_error
+
+
+def get_block_with_retry(w3: Web3, block_number: int, timeout_seconds: int = 120) -> Any:
+    deadline = time.monotonic() + timeout_seconds
+    delay = 0.5
+    last_error: Exception | None = None
+    while time.monotonic() < deadline:
+        try:
+            return w3.eth.get_block(block_number)
+        except Exception as exc:
+            last_error = exc
+            time.sleep(delay)
+            delay = min(delay * 1.5, 5.0)
+    raise TimeoutError(f"block {block_number} not available after {timeout_seconds}s") from last_error
+
+
+def send_raw_transaction_with_retry(w3: Web3, raw_tx: bytes, timeout_seconds: int) -> bytes:
+    deadline = time.monotonic() + min(timeout_seconds, 60)
+    delay = 0.25
+    expected_hash = Web3.keccak(raw_tx)
+    last_error: Exception | None = None
+    while time.monotonic() < deadline:
+        try:
+            return w3.eth.send_raw_transaction(raw_tx)
+        except Exception as exc:
+            message = str(exc).lower()
+            if "already known" in message or "nonce too low" in message:
+                return expected_hash
+            last_error = exc
+            time.sleep(delay)
+            delay = min(delay * 1.5, 3.0)
+    raise TimeoutError(f"raw transaction send failed after retries: {expected_hash.hex()}") from last_error
+
+
 def receipt_fields(
     w3: Web3,
     receipt: Any,
@@ -442,17 +598,18 @@ def receipt_fields(
     genesis_time: int,
     seconds_per_slot: int,
 ) -> Dict[str, Any]:
-    block = w3.eth.get_block(receipt.blockNumber)
+    block = get_block_with_retry(w3, int(receipt.blockNumber))
     block_timestamp = int(block.timestamp)
     included_slot = slot_for_timestamp(block_timestamp, genesis_time, seconds_per_slot)
     send_slot = tx_record["send_slot_estimate"]
+    inclusion_delay_seconds = max(0.0, block_timestamp - float(tx_record["send_unix"]))
     return {
         "status": int(receipt.status),
         "block_number": int(receipt.blockNumber),
         "included_block_timestamp": block_timestamp,
         "included_slot": included_slot,
         "inclusion_delay_slots": max(0, included_slot - send_slot),
-        "inclusion_delay_seconds": max(0, included_slot - send_slot) * seconds_per_slot,
+        "inclusion_delay_seconds": inclusion_delay_seconds,
         "gas_used": int(receipt.gasUsed),
         "receipt_unix": time.time(),
         "receipt_monotonic": receipt_monotonic,
@@ -488,6 +645,13 @@ def percentile(ordered_values: List[float], pct: float) -> float:
     high = min(low + 1, len(ordered_values) - 1)
     fraction = rank - low
     return ordered_values[low] * (1.0 - fraction) + ordered_values[high] * fraction
+
+
+def path_length_summary(records: List[Dict[str, Any]]) -> Dict[str, float]:
+    summary = latency_summary([float(record["path_len"]) for record in records])
+    summary["avg_path_len"] = summary["mean"]
+    summary["avg_hops"] = max(0.0, summary["mean"] - 1.0) if summary["count"] else 0.0
+    return summary
 
 
 def choose_origin(index: int, n: int, mode: str, seed: int) -> int:
@@ -539,6 +703,7 @@ def collect_blocks(cl_api: str, start_slot: int, end_slot: int) -> Dict[str, Any
         "nonzero_fee_records": sum(1 for record in records if record["priority_fee_wei"] > 0),
         "priority_fee_sum_wei": sum(record["priority_fee_wei"] for record in records),
         "path_length_histogram": dict(sorted(path_histogram.items())),
+        "path_length": path_length_summary(records),
         "relay_counts": dict(sorted(relay_counts.items(), key=lambda item: int(item[0]))),
         "records": records,
     }
@@ -619,12 +784,32 @@ def command_run(args: argparse.Namespace) -> Dict[str, Any]:
     endpoints.el_rpcs = endpoints.el_rpcs[: args.n]
     endpoints.cl_apis = endpoints.cl_apis[: args.n]
     before = beacon_head(endpoints.cl_apis[0])
-    peer_graph = apply_topology(endpoints.el_rpcs, edges, prune=args.prune_peers)
-    workload = run_workload(args, endpoints)
+    if args.skip_apply_topology:
+        node_infos = [rpc(url, "admin_nodeInfo") for url in endpoints.el_rpcs]
+        peer_graph = inspect_peer_graph(
+            endpoints.el_rpcs,
+            [info["enode"] for info in node_infos],
+            normalize_edges(edges),
+            node_ids=[info["id"] for info in node_infos],
+        )
+    else:
+        peer_graph = apply_topology(endpoints.el_rpcs, edges, prune=args.prune_peers)
+    warmup = None
+    if args.warmup_tx_count > 0:
+        warmup = run_workload(args, endpoints, phase="warmup", tx_count=args.warmup_tx_count)
+        if args.warmup_finality_epochs > 0:
+            wait_for_finality(
+                endpoints.cl_apis[0],
+                before["finalized_epoch"],
+                args.warmup_finality_epochs,
+                args.finality_timeout_seconds,
+            )
+    measurement_before = beacon_head(endpoints.cl_apis[0])
+    workload = run_workload(args, endpoints, phase="measurement")
     if args.wait_finality:
         after_finality = wait_for_finality(
             endpoints.cl_apis[0],
-            before["finalized_epoch"],
+            measurement_before["finalized_epoch"],
             args.wait_finality_epochs,
             args.finality_timeout_seconds,
         )
@@ -633,7 +818,7 @@ def command_run(args: argparse.Namespace) -> Dict[str, Any]:
     after = beacon_head(endpoints.cl_apis[0])
     blocks = collect_blocks(
         endpoints.cl_apis[0],
-        max(0, before["head_slot"] - args.pre_scan_slots),
+        max(0, measurement_before["head_slot"] - args.pre_scan_slots),
         after["head_slot"],
     )
     result = {
@@ -653,9 +838,11 @@ def command_run(args: argparse.Namespace) -> Dict[str, Any]:
             "prometheus": endpoints.prometheus,
         },
         "beacon_before": before,
+        "beacon_before_measurement": measurement_before,
         "beacon_after_finality_wait": after_finality,
         "beacon_after": after,
         "peer_graph": peer_graph,
+        "warmup": warmup,
         "workload": workload,
         "blocks": blocks,
         "prometheus": collect_prometheus(endpoints.prometheus),
@@ -734,10 +921,15 @@ def main() -> None:
     run.add_argument("--run-id", default="manual-run")
     run.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT)
     run.add_argument("--prune-peers", action="store_true", default=True)
+    run.add_argument("--skip-apply-topology", action="store_true")
     run.add_argument("--tx-count", type=int, default=16)
     run.add_argument("--tx-interval-seconds", type=float, default=3.0)
     run.add_argument("--origin-mode", choices=["single", "round_robin", "random"], default="single")
     run.add_argument("--private-key", default=DEFAULT_PRIVATE_KEY)
+    run.add_argument("--private-keys", help="Comma-separated sender private keys; overrides --private-key/--sender-count defaults")
+    run.add_argument("--sender-count", type=int, default=1)
+    run.add_argument("--send-concurrency", type=int, default=1)
+    run.add_argument("--receipt-concurrency", type=int, default=1)
     run.add_argument("--recipient", default=DEFAULT_RECIPIENT)
     run.add_argument("--value-wei", type=int, default=1)
     run.add_argument("--priority-fee-gwei", type=float, default=2.0)
@@ -745,6 +937,8 @@ def main() -> None:
     run.add_argument("--receipt-timeout", type=int, default=90)
     run.add_argument("--wait-receipts-after-send", action="store_true")
     run.add_argument("--seconds-per-slot", type=int, default=3)
+    run.add_argument("--warmup-tx-count", type=int, default=0)
+    run.add_argument("--warmup-finality-epochs", type=int, default=0)
     run.add_argument("--wait-finality", action="store_true")
     run.add_argument("--wait-finality-epochs", type=int, default=2)
     run.add_argument("--finality-timeout-seconds", type=int, default=240)
@@ -759,6 +953,8 @@ def main() -> None:
             "peer_counts": result["peer_graph"]["peer_counts"],
             "matches_target": result["peer_graph"]["matches_target"],
             "tx_success": result["workload"]["success_count"],
+            "sender_count": result["workload"]["sender_count"],
+            "actual_send_tps": result["workload"]["actual_send_tps"],
             "observed_receipt_throughput_tps": result["workload"]["observed_receipt_throughput_tps"],
             "observed_receipt_latency_seconds": result["workload"]["observed_receipt_latency_seconds"],
             "inclusion_throughput_tps": result["workload"]["inclusion_throughput_tps"],
@@ -766,6 +962,8 @@ def main() -> None:
             "inclusion_delay_seconds": result["workload"]["inclusion_delay_seconds"],
             "record_count": result["blocks"]["record_count"],
             "path_length_histogram": result["blocks"]["path_length_histogram"],
+            "avg_path_len": result["blocks"]["path_length"]["avg_path_len"],
+            "avg_hops": result["blocks"]["path_length"]["avg_hops"],
             "priority_fee_sum_wei": result["blocks"]["priority_fee_sum_wei"],
             "finalized_epoch": result["beacon_after"]["finalized_epoch"],
             "output": str(args.output_root / args.run_id),
