@@ -10,7 +10,7 @@ use std::fmt::Debug;
 use std::future::Future;
 use std::ops::Deref;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use task_executor::TaskExecutor;
 use tokio::sync::mpsc;
 use tracing::{Instrument, debug, error, info, info_span, instrument, trace, warn};
@@ -340,6 +340,7 @@ impl<S: ValidatorStore + 'static, T: SlotClock + 'static> BlockService<S, T> {
         validator_pubkey: &PublicKeyBytes,
         unsigned_block: UnsignedBlock<S::E>,
     ) -> Result<(), BlockError> {
+        let sign_publish_started = Instant::now();
         let signing_timer = validator_metrics::start_timer(&validator_metrics::BLOCK_SIGNING_TIMES);
 
         let res = self
@@ -389,6 +390,7 @@ impl<S: ValidatorStore + 'static, T: SlotClock + 'static> BlockService<S, T> {
                     .await
             })
             .await?;
+        let sign_publish_ms = sign_publish_started.elapsed().as_millis();
 
         let metadata = BlockMetadata::from(&signed_block);
         info!(
@@ -397,6 +399,8 @@ impl<S: ValidatorStore + 'static, T: SlotClock + 'static> BlockService<S, T> {
             attestations = metadata.num_attestations,
             graffiti = ?graffiti.map(|g| g.as_utf8_lossy()),
             slot = metadata.slot.as_u64(),
+            sign_publish_ms = sign_publish_ms,
+            slot_elapsed_ms = self.slot_clock.millis_from_current_slot_start().map(|d| d.as_millis()),
             "Successfully published block"
         );
         Ok(())
@@ -413,6 +417,11 @@ impl<S: ValidatorStore + 'static, T: SlotClock + 'static> BlockService<S, T> {
         validator_pubkey: PublicKeyBytes,
         builder_boost_factor: Option<u64>,
     ) -> Result<(), BlockError> {
+        let duty_started = Instant::now();
+        let duty_start_slot_elapsed_ms = self
+            .slot_clock
+            .millis_from_current_slot_start()
+            .map(|d| d.as_millis());
         let _timer = validator_metrics::start_timer_vec(
             &validator_metrics::BLOCK_SERVICE_TIMES,
             &[validator_metrics::BEACON_BLOCK],
@@ -442,6 +451,7 @@ impl<S: ValidatorStore + 'static, T: SlotClock + 'static> BlockService<S, T> {
                 )));
             }
         };
+        let randao_ms = duty_started.elapsed().as_millis();
 
         let graffiti = determine_graffiti(
             &validator_pubkey,
@@ -458,7 +468,13 @@ impl<S: ValidatorStore + 'static, T: SlotClock + 'static> BlockService<S, T> {
             proposer_nodes: self.proposer_nodes.clone(),
         };
 
-        info!(slot = slot.as_u64(), "Requesting unsigned block");
+        info!(
+            slot = slot.as_u64(),
+            duty_start_slot_elapsed_ms = duty_start_slot_elapsed_ms,
+            randao_ms = randao_ms,
+            "Requesting unsigned block"
+        );
+        let unsigned_block_request_started = Instant::now();
 
         // Check if Gloas fork is active at this slot
         let fork_name = self_ref.chain_spec.fork_name_at_slot::<S::E>(slot);
@@ -604,7 +620,17 @@ impl<S: ValidatorStore + 'static, T: SlotClock + 'static> BlockService<S, T> {
             }
         };
 
-        info!(slot = slot.as_u64(), "Received unsigned block");
+        let unsigned_block_ms = unsigned_block_request_started.elapsed().as_millis();
+        info!(
+            slot = slot.as_u64(),
+            unsigned_block_ms = unsigned_block_ms,
+            duty_elapsed_ms = duty_started.elapsed().as_millis(),
+            slot_elapsed_ms = self_ref
+                .slot_clock
+                .millis_from_current_slot_start()
+                .map(|d| d.as_millis()),
+            "Received unsigned block"
+        );
         if proposer_index != Some(block_proposer) {
             return Err(BlockError::Recoverable(
                 "Proposer index does not match block proposer. Beacon chain re-orged".to_string(),
@@ -620,6 +646,16 @@ impl<S: ValidatorStore + 'static, T: SlotClock + 'static> BlockService<S, T> {
                 unsigned_block,
             )
             .await?;
+
+        info!(
+            slot = slot.as_u64(),
+            total_duty_ms = duty_started.elapsed().as_millis(),
+            slot_elapsed_ms = self_ref
+                .slot_clock
+                .millis_from_current_slot_start()
+                .map(|d| d.as_millis()),
+            "Completed block proposal duty"
+        );
 
         // TODO(gloas) we only need to fetch, sign and publish the envelope in the local building case.
         // Right now we always default to local building. Once we implement trustless/trusted builder logic

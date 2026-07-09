@@ -9,7 +9,7 @@
 
 最后一节单独归纳目前实验进展。当前实验结果仍属于 devnet/smoke 阶段，论文实验表还需要多 seed、多 topology、多 sender workload 和吞吐分档后再固定。
 
-当前实现是 custom geth + custom Lighthouse 的 devnet fork，不保持 stock client 混跑兼容。主实验建议使用 `1 validator / node`，minimal preset，3s slot，16 slots/epoch。旧的 `4 nodes * 16 validators` 只作为历史 smoke/finality 验证入口保留。
+当前实现是 custom geth + custom Lighthouse 的 devnet fork，不保持 stock client 混跑兼容。主实验建议使用 `1 validator / node`，minimal preset，3s slot，8 slots/epoch。旧的 `4 nodes * 16 validators` 只作为历史 smoke/finality 验证入口保留。
 
 ## 当前状态
 
@@ -28,11 +28,13 @@
 - 高负载探测显示当前 8-node BA devnet 的瓶颈在 `360-420 tx/slot` 区间开始显现：TopoStake `360 tx/slot` 还能完成但 achieved tx/slot 降到约 `323.07`，`420 tx/slot` p95 inclusion delay 升到约 `58.94s`，`480 tx/slot` 出现 receipt timeout 与部分 EL 明显落后。
 - warmup 后低负载 node-count sweep 已完成 `8/12/16 nodes`，固定 `BA(m=2), 32 tx/slot, 1 epoch measurement`，三种模式 `PoS-Beacon / PoS+PathObs / TopoStake` 均达到 `512/512` included。TopoStake 相比 PoS+PathObs 的吞吐接近，p95 inclusion delay 保持在 `4.6-4.9s`；平均 path length 随节点数从约 `2.27` 增至约 `2.83`。
 - Prompt 44 已完成 16-node ER/BA TopoStake 真实 fee mutation 修复验证；ER 与 BA 均能 finalized，且 Path Rec. / Fee Rec. 达到 `2560/2560`，fee conservation violation 为 `0`。
+- Prompt 45 复跑 `16 nodes, BA(m=2), 32 tx/slot, warmup 10 epochs, no extra wait, measurement 5 epochs`，PathObs 与 TopoStake 均 `2560/2560` included；TopoStake 平均 path length `2.949` 仍高于 PathObs `2.878`，说明当前 score/selection 还没有稳定产生“更短 path”的效果。
 
 仍未完全完成：
 - 最终论文版 block-inline record schema 还需要固定，尤其是 aggregate signature 是否保留 block-level aggregate，还是改成 per-record/per-path aggregate。
 - settlement records 已进入 geth block body / Engine API / Lighthouse ExecutionPayload，但 devnet 仍保留 local-store fallback；若做成正式协议，需要去掉 preload/RPC 依赖，并定义 settlement records availability 与重复 settlement 的 state-level 防重规则。
 - 实验尚未完全稳定：当前 devnet 结果仍是 single seed；多 seed、多 topology、不同 offered load 与 warmup 长度还需要继续重跑和整理。
+- 如果论文主张 TopoStake path 更短，当前 devnet 还需要继续调整 score/selection 目标；仅靠 finalized historical relay score，在 BA 单 seed 下还不能保证 measurement path 优于 PathObs。
 - 旧 receipt latency 口径已废弃；论文应使用 `included_block_timestamp - send_unix` 的 inclusion delay。
 - 多入口 workload 需要 multiple funded senders，不能再用单 sender round-robin 作为吞吐/延迟结论，因为它会引入账户 nonce gap。
 - 高负载下 TopoStake evidence coverage 会下降，需要继续区分 block-inline evidence bytes cap、节点落后和 block collection window 三个因素；低负载 warmup 实验已用 measurement tx hash 过滤 records，避免 warmup 尾部记录污染平均 path length。
@@ -59,9 +61,17 @@ XDG_DATA_HOME=/tmp/kurtosis-data kurtosis run --enclave <enclave-name> /tmp/ethe
 - validators：`1 / node`
 - preset：`minimal`
 - slot：`seconds_per_slot=3`
-- epoch：`slots_per_epoch=16`
+- epoch：`slots_per_epoch=8`
 - geth image：`topostake/geth:dev`
 - Lighthouse image：`topostake/lighthouse:dev`
+- additional services：默认关闭 `Prometheus/Grafana/ethereum-metrics-exporter`
+
+Prometheus/Grafana 使用原则：
+- 默认 devnet 压测和 missed-slot 诊断不启动 Prometheus/Grafana；
+- 主指标从 runner 输出的 `summary.json`、`block_records.csv`、Beacon API、EL/CL/VC logs 计算；
+- 只有需要跨 CL runtime gauge/counter，例如 proposer score、selection weight、settlement counter spread 时，才单独开启 Prometheus/Grafana；
+- 原因是 Prometheus/Grafana 会增加容器数、scrape 压力和本机调度噪声，在 `3s slot`、多 EL/CL/VC 本机实验里可能放大 timing 抖动；
+- 若某轮开启 Prometheus/Grafana，必须在 prompt/summary 中明确标注，不能和默认 no-prometheus run 直接混合比较。
 
 历史稳定 smoke 配置：
 - args：`results/raw/topostake-devnet-4node-16validator-natural-topology.yaml`
@@ -416,12 +426,15 @@ results/raw/devnet_topology/<run-id>/block_records.csv
 `single` origin：
 - 只从一个 EL RPC 发交易；
 - 适合观察自然 path expansion；
-- 当前主实验推荐默认使用。
+- 只用于专门的 single-entry 对照，不作为主实验默认入口。
 
 `round_robin` / `random` origin：
 - 适合多入口实验；
-- 但不能用单 sender 连续 nonce，否则会引入账户 nonce gap；
-- 后续应改成 multiple funded senders，每个 origin 使用独立 nonce 序列。
+- 主实验默认使用 `round_robin`，让交易入口覆盖当前 devnet 的所有 EL；
+- 任意节点数 `n` 下，sender 数、发送并发、receipt 并发都应默认等于 `n`；
+- 不能用单 sender 连续 nonce 分散到多个 EL，否则会引入账户 nonce gap；
+- runner 已把 `--sender-count 0 --send-concurrency 0 --receipt-concurrency 0` 解释为自动等于当前 EL 节点数；
+- summary 会记录 `origin_counts` / `success_origin_counts`，每轮实验必须检查各 EL 入口交易数是否均匀。对于不能被 `n` 整除的 tx count，各节点最多只应相差 1 笔。
 
 延迟口径：
 - 旧的 `send -> receipt query returns` 是 observed receipt latency，会被 `--wait-receipts-after-send` 放大；
@@ -1253,24 +1266,29 @@ TopoStake warmup 结果：
 - TopoStake 在该流程下可以完成 `8-node, BA, 50ms P2P-only delay` 测试；这说明上一轮 uniform container delay 的失败主要来自 delay 作用范围过宽与拓扑建连被干扰，而不是 TopoStake 在延迟下必然无法完成。
 - 后续还需补 `PoS+PathObs` 同流程结果，并可做 `10/25/50ms` sweep。
 
-### Prompt 41 8-node topology impact bar charts
+### Prompt 41 10-node topology impact bar charts
 
 目标：做一组专门展示“网络拓扑影响”的 devnet 实验。固定节点数和负载，只改变拓扑，比较 `PoS-Beacon / PoS+PathObs / TopoStake` 三种模式在吞吐达成率、交易打包延迟、交易路径长度上的差异。
 
 实验固定条件：
-- 节点数：`8 nodes`
-- 所有 topology 都固定为 8 节点；`Linear` 也是 8-node linear chain，不做 12/16 节点版本。
+- 节点数：`10 nodes`
+- 所有 topology 都固定为 10 节点；`Linear` 也是 10-node linear chain。
 - validator：`1 validator / node`
 - slot：`3s`
-- epoch：`16 slots`
-- workload：`180 tx/slot`
-- offered TPS：`60 TPS`
+- epoch：minimal preset，`8 slots`
+- workload：`32 tx/slot`
+- offered TPS：`10.67 TPS`
 - topology seed：`0`
-- sender：`8 prefunded senders`
-- origin：`round_robin` 分散到 8 个 EL
-- measurement：`1 epoch = 16 slots = 2880 tx`
-- warmup：至少 `5 epochs = 14400 tx`
+- sender：`10 prefunded senders`
+- origin：`round_robin` 分散到 10 个 EL
+- sender/concurrency：`sender_count = send_concurrency = receipt_concurrency = 10`；runner 中使用 `0` 自动等于当前节点数。
+- measurement：`5 epochs = 40 slots = 1280 tx`
+- warmup：
+  - `PoS-Beacon`：`3 epochs = 24 slots = 768 tx`
+  - `PoS+PathObs`：`3 epochs = 24 slots = 768 tx`
+  - `TopoStake`：`5 epochs = 40 slots = 1280 tx`
 - 每个 run 都需要 clean enclave；不复用链状态。
+- additional services：默认关闭 `Prometheus/Grafana/ethereum-metrics-exporter`。
 
 拓扑：
 - `Linear`
@@ -1298,20 +1316,26 @@ ER/BA 参数：
 
 ```text
 1. 清理旧 enclave。
-2. 启动对应 mode 的 8-node devnet。
+2. 启动对应 mode 的 10-node devnet。
 3. apply 指定 topology，并要求 matches_target=true。
-4. 跑 warmup：5 epochs, 180 tx/slot。
+4. 跑 warmup：PoS-Beacon/PoS+PathObs 为 3 epochs，TopoStake 为 5 epochs，均为 32 tx/slot。
 5. 等待 warmup finality。
-6. 跑 measurement：1 epoch, 180 tx/slot。
+6. 跑 measurement：5 epochs, 32 tx/slot。
 7. 等待 measurement finality。
-8. 采集 summary.json、block_records.csv、Prometheus TopoStake metrics。
+8. 采集 summary.json、block_records.csv、必要时采集容器日志；默认不采集 Prometheus TopoStake metrics。
 9. 清理 enclave。
 ```
 
 注意：
 - 本组实验暂时不加额外 network delay；只看拓扑本身的影响。
-- 因为 `180 tx/slot` 是高于 Prompt 38 的低负载 `32 tx/slot`，如果 Linear 出现明显积压，需要记录为 topology bottleneck，而不是强行重跑到“好看”。
+- 本组使用 `32 tx/slot`，目标是避免 high-load stress 干扰，主要观察 topology 对 path length、inclusion delay 和 achieved tx/slot 的影响。
+- TopoStake 需要更长 warmup 来让 finalized evidence 进入 score/selection；PoS-Beacon 与 PoS+PathObs 不使用 score adjustment，因此只保留 3 epochs warmup 做链稳定与 txpool 预热。
 - 如果某个 run receipt timeout，保留 partial diagnostics：per-EL head block、txpool pending/queued、CL head/finality、peer graph。
+
+执行备注：
+- 曾按旧口径 `warmup=10 epochs` 完成 `baseline-linear` 与 `pathobs-linear` 两个 10-node run；
+- 这两个旧结果不和新口径混用；
+- 更新脚本后，Prompt 41 应使用 mode-specific warmup 重新开始。
 
 指标定义：
 
@@ -1320,7 +1344,7 @@ ER/BA 参数：
 ```text
 achieved_tx_per_slot = inclusion_throughput_tps * seconds_per_slot
 achieved_ratio = achieved_tx_per_slot / offered_tx_per_slot
-offered_tx_per_slot = 180
+offered_tx_per_slot = 32
 ```
 
 图中 y-axis 使用百分比：
@@ -1404,8 +1428,12 @@ figures/devnet_topology_path_length.pdf
 - slot：`3s`
 - epoch：`16 slots`
 - validator：`1 validator / node`
-- sender：与节点数一致，最多使用 16 个 prefunded senders
-- origin：`round_robin`
+- origin：`round_robin`，交易入口均匀覆盖当前 run 的所有 EL；
+- sender/concurrency：
+  - load sweep 固定 `8 nodes`，使用 `8 senders / 8 send workers / 8 receipt workers`；
+  - node-count sweep 使用 `sender_count = send_concurrency = receipt_concurrency = node_count`；
+  - runner 中可用 `0` 表示自动等于当前节点数；
+  - 每轮 summary 需要检查 `origin_counts`，确认所有节点入口交易数均匀。
 - mode：
   - `PoS-Beacon`
   - `PoS+PathObs`
@@ -1611,8 +1639,8 @@ Prompt 37     60 TPS node-count stress，发现 12/16 节点高负载积压
 Prompt 38     5-epoch warmup + 32 tx/slot node-count sensitivity，三模式对照与 avg path length
 Prompt 39     16-node uniform 50ms delay stress，baseline/pathobs 完成，TopoStake 出现 EL divergence
 Prompt 40     EL P2P-only 50ms delay sanity，确认正确流程为先建拓扑再加 delay，并用 --skip-apply-topology 跑 workload
-Prompt 41     8-node topology impact bar charts：Linear/ER/BA，180 tx/slot，PoS-Beacon/PoS+PathObs/TopoStake 三模式对照
-Prompt 42     load/node-count sensitivity bar charts：load=60..300 tx/slot；nodes=4/8/12/16 at 32 tx/slot；三模式对照
+Prompt 41     16-node topology impact bar charts：Linear/ER/BA，32 tx/slot，warmup 10 epochs，measurement 5 epochs，PoS-Beacon/PoS+PathObs/TopoStake 三模式对照
+Prompt 42     load/node-count sensitivity bar charts：load=60..300 tx/slot；nodes=4/8/12/16 at 32 tx/slot；三模式对照；workload 默认 round_robin 覆盖所有 EL，sender/concurrency 随节点数自动匹配
 Prompt 43     protocol-grade settlement records：扩展 geth block body / Engine API ExecutionPayload 与 Lighthouse ExecutionPayload SSZ/JSON，携带 topostakeSettlementRecords，使 finalized settlement 记录跟随区块/EL payload 传播；TopoStake 模式下重新打开真实余额 mutation
 Prompt 44     settlement records body recovery fix：getPayloadBodiesByHash/Range 与 Lighthouse ExecutionPayloadBodyV1 保留 topostakeSettlementRecords，修复 16-node ER TopoStake state-root divergence
 ```
@@ -1751,3 +1779,837 @@ Prompt 44     settlement records body recovery fix：getPayloadBodiesByHash/Rang
 - Kurtosis enclave 已清理，无残留运行资源。
 
 结论：修复后 BA 16-node TopoStake 在真实 fee mutation 开启下可以完成 workload 并 finalized；Path/Fee records 完整，fee conservation 为 0。TopoStake 相比 PathObs 的 achieved tx/slot 略低，p95 inclusion delay 明显更高，这部分更像 score/settlement/proposer-selection pipeline 在 BA competing fork 场景下的额外开销，后续画图时应保留并解释。
+
+### Prompt 45 BA warm10 no-wait path 对照
+
+目标：验证“更长 warmup、但 warm 后不额外等待”的设置是否能让 TopoStake 在 BA 拓扑下产生更短的 measurement path。只比较 `PoS+PathObs` 和 `TopoStake`，不跑 PoS-Beacon。
+
+参数：
+- topology：`BA(m=2), seed=0`
+- nodes：`16`
+- sender/origin：`16 senders`, `origin_mode=round_robin`
+- slot/epoch：`3s slot`, `16 slots/epoch`
+- load：`32 tx/slot`
+- warmup：`10 epochs = 5120 tx`
+- warmup 后额外等待：`0 finalized epoch`
+- measurement：`5 epochs = 2560 tx`
+- measurement 后等待：`1 finalized epoch`
+- fee mutation：TopoStake 模式默认开启真实 fee mutation
+
+结果：
+
+| Mode | Tx | Achieved tx/slot | Incl. delay p50/p95 | Avg. path | Path length histogram | Finalized | Topology |
+| --- | ---: | ---: | ---: | ---: | --- | ---: | --- |
+| PoS+PathObs | `2560/2560` | `31.57` | `3.51s / 5.11s` | `2.878` | `{1:206, 2:585, 3:1121, 4:613, 5:36}` | `32` | match |
+| TopoStake | `2560/2560` | `30.46` | `4.33s / 13.33s` | `2.949` | `{1:193, 2:544, 3:1063, 4:722, 5:39}` | `25` | match |
+
+产物：
+- PathObs summary：`results/raw/devnet_warm10_path_compare/prompt45_warm10_pathobs_ba_n16_txslot32_seed0/summary.json`
+- TopoStake summary：`results/raw/devnet_warm10_path_compare/prompt45_warm10_topostake_ba_n16_txslot32_seed0/summary.json`
+- 两轮 Kurtosis enclave 均已清理，无残留运行资源。
+
+结论：
+- 这轮没有支持“TopoStake path 更短”的预期；TopoStake 平均 path 比 PathObs 长 `0.071`，且 p95 inclusion delay 高出约 `8.23s`。
+- `warmup 10 epochs` 只能提供更多历史 evidence，但当前 proposer score 使用 finalized-gated historical score，默认 `evidence_finality_depth=1` 时 proposer epoch `E` 读取 `E-2` 的 evidence score；warm 后不额外等待会让 measurement 前半段仍受较早 evidence 影响。
+- 更关键的是，当前 score 奖励的是 finalized historical relay contribution，不是直接最小化当前 tx path length。BA 拓扑里 hub already-short path 很强，TopoStake 选出的 proposer 未必就是当前 batch 的最短接收者。
+- 若论文目标是“TopoStake 牺牲少量吞吐/延迟，但 path 一定更短”，下一步应调整 selection objective：把 proposer weight 与 candidate proposer 对当前/近期 origin 的 path-distance 或 relay-position score 更直接绑定，而不是只用历史 relay contribution。
+
+### Prompt 46 block-inline aggregate verification coverage fix
+
+问题：
+- Prompt 41/44/45 的 TopoStake 数据里，block body 已经携带大量 `path_records`，但 score 覆盖率异常低；
+- BA 16-node run 中 `path_records=2560`，但最终只有 validator 7 的一批 evidence 进入 raw contribution / score；
+- ER 16-node run 中 `path_records=2560`，但 `valid evidence=0`，导致 proposer score 全 0、proposer weight 全相同，TopoStake selection 实际退化成普通 PoS。
+
+定位：
+- `per_block_processing.rs` 的 inline block aggregate verification 是 block-level aggregate，一旦 aggregate 验证失败，就把整个 block 的 inline records 全部记为 invalid；
+- geth 侧 block aggregate 会包含 origin-only transaction 的 origin signature；
+- Lighthouse 侧 `topostake_inline_record_requires_signature()` 原先只对 `relay_path.len() >= 2` 的 record 重建签名集合，跳过了 `path_len=1` 的 origin-only record；
+- 当一个 block 同时包含 `path_len=1` 和 `path_len>=2` records 时，CL 验证的是 aggregate 的子集，而 EL 给的是全集 aggregate，容易导致整块 evidence 被拒绝。
+
+修复：
+- Lighthouse inline aggregate verification 改为：所有非空 `relay_path` 都需要参与 aggregate signature verification；
+- `path_len=1` record 只重建 origin signature record，不重建 edge signature；
+- scoring 语义不变：`path_len=1` 不产生 relay score，因为没有中继边；它只用于让 block-level aggregate 的签名集合与 geth 保持一致。
+
+验证：
+- 新增混合 block 测试：同一个 inline block aggregate 同时包含 relayed record `[0,1]` 与 origin-only record `[0]`，验证必须通过；
+- 已通过：
+
+```bash
+cd ethereum-topostake/lighthouse
+cargo test -p state_processing topostake_inline_block_aggregate_verifies_and_rejects_tampering
+```
+
+后续：
+- 旧 Prompt 41/44/45 的 ER/BA TopoStake score/selection 结论需要在重建 Lighthouse 镜像后重跑；
+- 尤其是 ER 数据，修复前不能用于证明 TopoStake score/selection 生效；
+- 重跑后需要检查：
+  - `path_records == fee_records == tx_count`
+  - `topostake_evidence_epoch_valid_paths > 0`
+  - `topostake_epoch_score_scaled` 覆盖多个 validator
+  - `topostake_proposer_weight_scaled` 出现非均匀权重
+  - 高 score/weight validator 的 proposer selection share 是否上升。
+
+### Prompt 47 settlement epoch dedup 与 ER/BA score 验证
+
+目标：在 Prompt 46 修复 inline aggregate verification 后，重跑 `16 nodes, TopoStake, 32 tx/slot, 10 epoch warmup + 5 epoch measurement` 的 ER 与 BA 拓扑，确认 score、selection、reward settlement 在真实 devnet 中是否按论文设计生效。
+
+首次 ER 复跑时发现确定性 EL payload build 错误：
+
+```text
+Failed to build payload err="insufficient topostake escrow balance ... have 7896000000000000 need 15876000000000000"
+```
+
+根因：
+- geth pending settlement 的 key 使用了 `(finalized_epoch, evidence_epoch)`；
+- 同一个 evidence epoch 可能被不同 CL 节点在不同 finalized epoch 首次提交；
+- 这样会为同一个 evidence epoch 生成多个 pending settlement root；
+- 第一次 payout 会消耗 escrow，第二次 duplicate payout 再执行时就会出现 `insufficient topostake escrow balance`；
+- 因此 settlement 的支付身份必须是 evidence epoch，而不是 `(finalized_epoch, evidence_epoch)`。
+
+修复：
+- geth `settlementPayloadKey` 改为只按 evidence epoch 去重；
+- 若同一个 evidence epoch 的 pending settlement 被新 root 替换，删除旧 root；
+- 若该 evidence epoch 已经 executed，再次提交直接跳过，不再生成新的 pending payout；
+- `finalized_epoch` 仍然保留在 settlement payload/root 中，用于审计和 block record 语义，但不参与 payout identity。
+
+回归测试与镜像：
+
+```bash
+cd ethereum-topostake/go-ethereum-topostake
+GOCACHE=/tmp/go-build-cache go test ./eth/topostake ./core/types
+GOCACHE=/tmp/pog-go-build-cache GOTMPDIR=/tmp make geth
+GETH_BINARY=/home/wujian/pog-rs/ethereum-topostake/go-ethereum-topostake/build/bin/geth ./scripts/geth_image.sh package-local
+./scripts/geth_image.sh verify
+```
+
+同时把 `experiments/topostake_devnet_runner.py` 的 Beacon API `get_json()` 改为 `30s timeout + 3 retries`，避免单次 CL API 抖动直接中断实验。
+
+复跑参数：
+- modes：`TopoStake`
+- topologies：`ER`, `BA`
+- nodes：`16`
+- sender/origin：`16 senders`, `origin_mode=round_robin`，measurement 中每个节点各发 `160 tx`
+- load：`32 tx/slot`
+- slot/epoch：`3s slot`, `16 slots/epoch`
+- warmup：`10 epochs`
+- measurement：`5 epochs`
+- package：使用本地 `/tmp` ethereum-package 与本地 `topostake/geth:dev`、`topostake/lighthouse:dev`
+
+验证结果：
+
+| Topology | Tx | Finalized | Path Rec. | Fee Rec. | Invalid Evidence | Fee Viol. | Avg. Path | Incl. Delay p50/p95 | Score Epoch Used | Max Weight/Base | Weight-Selection Corr. | Top-Weight Path |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | ---: | ---: | --- |
+| ER | `2560/2560` | `32` | `2560` | `2560` | `0` | `0` | `3.813` | `4.67s / 27.22s` | `21..31` | `1.71x` | `0.444` | `3.125` vs all `3.813` |
+| BA | `2560/2560` | `40` | `2560` | `2560` | `0` | `0` | `2.795` | `4.13s / 45.48s` | `30..40` | `1.95x` | `0.667` | `2.49` vs all `2.795` |
+
+ER 结论：
+- `path_records == fee_records == tx_count`；
+- 所有 measurement epoch 的 invalid evidence 为 `0`；
+- fee conservation violation 为 `0`；
+- 每个 measurement epoch 的 valid paths 在 CL 间一致，score 覆盖稳定；
+- proposer selection 使用 finalized historical score，measurement slot 中没有退化成 all-base weight；
+- 高权重 proposer 打包的交易平均 path 明显短于全局平均值。
+
+BA 结论：
+- 链可以 finalized，真实 fee mutation 开启，path/fee records 完整，fee conservation 为 `0`；
+- `cl-01` 观察到 proposer weight 非均匀，max/base 接近 `1.95x`，weight 与 selected count 的相关性约 `0.667`；
+- BA 下 top-weight proposers 的 path 平均值 `2.49`，短于全局平均 `2.795`，说明 score/selection 对 path 有正向效果；
+- 但 BA 的跨 CL Prometheus 指标仍有局部不一致：部分 epoch 中不同 CL 的 valid/settled metric spread 不完全相同，个别 CL 显示 pending 未及时 settle；
+- 因此 BA 当前可以证明“链上 block records、fee settlement、selection 在 observed proposer 侧生效”，但还不能声称“所有 CL 本地 score/settlement metrics 完全一致”。后续应优先区分这是 Prometheus scrape/本地 runtime 指标滞后，还是 CL-local score state 仍有 canonicalization 问题。
+
+产物：
+- ER raw summary：`results/raw/devnet_prompt41_42/prompt41_topology_topostake_er_n16_txslot32_seed0/summary.json`
+- ER block records：`results/raw/devnet_prompt41_42/prompt41_topology_topostake_er_n16_txslot32_seed0/block_records.csv`
+- BA raw summary：`results/raw/devnet_prompt41_42/prompt41_topology_topostake_ba_n16_txslot32_seed0/summary.json`
+- BA block records：`results/raw/devnet_prompt41_42/prompt41_topology_topostake_ba_n16_txslot32_seed0/block_records.csv`
+- 两轮 Kurtosis enclave 均已清理，无残留运行资源。
+
+后续：
+- 若论文图表只需要链上结果，ER/BA 这轮可以作为 Prompt 41 TopoStake 修复后的候选数据；
+- 若要证明“每个 CL 的 score state 完全一致”，需要新增一个 canonical score audit：从 finalized block body records 重放每个 evidence epoch 的 score，而不是只读各 CL 的 Prometheus runtime counter；
+- BA 仍建议再补一次 score audit，再进入最终画图。
+
+### Prompt 48 measurement score/election audit
+
+目标：专门检查 Prompt 47 的 ER/BA 两轮中，measurement 阶段的 score 与 proposer election 是否真的起作用，特别是“实验 5 个 epoch”内的 selection 是否符合 TopoStake 设计。
+
+先修正一个实验口径：
+- `experiments/run_devnet_prompt41_42.py` 里把 `SLOTS_PER_EPOCH` 写成 `16`，所以 `5 measurement epochs` 被换算成 `32 tx/slot * 16 slots * 5 = 2560 tx`；
+- 但当前 Kurtosis/Lighthouse 使用的是 `preset: minimal`，真实 CL epoch 是 `8 slots/epoch`；
+- 因此这轮所谓 `10 warmup + 5 measurement` 在交易量上等价于 `20 minimal CL epochs warmup + 10 minimal CL epochs measurement`；
+- 这不影响这轮 score/election 是否生效的判断，但后续论文实验需要把术语改成 `measurement workload = 2560 tx`，或真正把 devnet 配成 `16 slots/epoch` 后再叫 `5 epochs`。
+
+按真实 CL epoch 口径：
+
+| Topology | Measurement included slots | Measurement CL epochs | Score epochs used by selection |
+| --- | --- | --- | --- |
+| ER | `188..270` | `23..33` | `21..31` |
+| BA | `257..337` | `32..42` | `30..40` |
+
+这说明 selection 使用的是 finalized historical score，约落后当前 proposer epoch `2` 个 minimal epochs，符合当前 `EVIDENCE_FINALITY_DEPTH=1` 加 finalized-gated score 的设计。
+
+ER audit：
+- actual block slots：`74`
+- majority election 与 block body proposer：`74/74` 匹配；
+- `cl-01` 与 actual proposer：`74/74` 匹配；
+- `15/16` 个 CL 与 actual proposer：`74/74` 匹配；
+- `cl-12` 偏离：`10/74` 匹配，说明它的本地 selection metric/视图异常；
+- measurement evidence：
+  - valid paths 在 CL 间一致：epoch `11..16` 的 spread 均为 `min=max`
+  - invalid paths：全部 `0`
+  - scored validators：每个 measurement workload epoch 均为 `10`
+- weight：
+  - non-base weight validators：每 slot 约 `9..10`
+  - max/base weight ratio：约 `1.66x..1.83x`
+  - weight-selection correlation：`0.444`
+  - top-weight proposer 的 path 均值：`3.125`，短于全局 `3.813`
+
+ER 结论：score/election 主路径正常。少数 CL metric 偏离存在，但 majority election、`cl-01` election、block body proposer 三者一致，ER 数据可用于说明 TopoStake selection 生效。
+
+BA audit：
+- actual block slots：`64`
+- majority election 与 block body proposer：`64/64` 匹配；
+- `cl-01` 与 actual proposer：`64/64` 匹配；
+- `13/16` 个 CL 与 actual proposer：`64/64` 匹配；
+- `cl-03`、`cl-11`、`cl-16` 偏离明显：
+  - `cl-03`: `5/64`
+  - `cl-11`: `5/64`
+  - `cl-16`: `2/64`
+- measurement evidence：
+  - invalid paths：全部 `0`
+  - valid paths 在部分 epoch 有 spread，例如 workload epoch `20` 为 `64..254`
+  - scored validators 在部分 epoch 也有 spread，例如 `7..10`
+- weight：
+  - non-base weight validators：每 slot 约 `6..9`
+  - max/base weight ratio：约 `1.88x..2.00x`
+  - weight-selection correlation：`0.667`
+  - top-weight proposer 的 path 均值：`2.49`，短于全局 `2.795`
+
+BA 结论：链上 actual proposer 与 majority/`cl-01` selection 一致，score 确实改变了 proposer weight，并且高权重 proposer 的 path 更短；但 BA 下有 `3/16` 个 CL 的本地 selection/evidence metric 与 majority 明显偏离。因此 BA 不能直接用于证明“所有 CL 本地 score state 完全一致”，只能证明“canonical chain 上的 observed election 生效”。
+
+下一步修复方向：
+- 优先补 canonical score audit：从 finalized block body 的 path records 离线重放 score，得到每个 evidence epoch 的 canonical score；
+- 把 CL Prometheus runtime score 与 canonical replay score 对比，定位 `cl-03/cl-11/cl-16/cl-12` 是 metric 滞后、fork-view 暂态，还是本地 score state 没有 canonical 化；
+- 修正实验脚本的 epoch 口径：要么把 `SLOTS_PER_EPOCH` 改成 `8` 匹配 minimal，要么真正配置 devnet 为 `16 slots/epoch`。
+
+### Prompt 49 minimal epoch 口径统一
+
+目标：把后续 devnet 实验的 epoch 口径统一到 Lighthouse `minimal` preset，避免脚本按 `16 slots/epoch` 计算交易量，而共识层实际按 `8 slots/epoch` 推进。
+
+变更：
+- `experiments/run_devnet_prompt41_42.py`
+  - `SLOTS_PER_EPOCH = 16` 改为 `SLOTS_PER_EPOCH = 8`
+
+影响：
+- 从 Prompt 49 之后，新实验里 `32 tx/slot, measurement 5 epochs` 会发送：
+
+```text
+32 tx/slot * 8 slots/epoch * 5 epochs = 1280 tx
+```
+
+- `warmup 10 epochs` 会发送：
+
+```text
+32 tx/slot * 8 slots/epoch * 10 epochs = 2560 tx
+```
+
+- 这和当前 Kurtosis/Lighthouse `preset: minimal` 的真实 CL epoch 对齐；
+- Prompt 47/48 之前的旧结果不回写改数值，它们仍然表示旧脚本下的 `2560 tx measurement workload`，约等于 `10` 个 minimal CL epochs；
+- 后续论文图表如果引用旧结果，应写成 `2560 measurement transactions over 80 slots`，不要写成 `5 epochs`；
+- 后续新跑结果可以直接写 `5 minimal epochs`。
+
+后续：
+- 重新跑 Prompt 41/42/44 类实验时，默认使用 minimal 统一口径；
+- 图表 caption 建议显式写：
+
+```text
+minimal preset, 3s slots, 8 slots per epoch
+```
+
+### Prompt 50 score/election 偏离根因分析
+
+问题：Prompt 47/48 中 ER/BA 主链 proposer 与 majority election 匹配，但少数 CL 的本地 `topostake_selected_proposer` / evidence metric 偏离。需要确认这是实验采集问题，还是协议实现问题。
+
+结论：这是当前 devnet 实现的协议状态边界问题，不只是画图或 Prometheus 展示问题。
+
+证据：
+- `topostake_selected_proposer`、`topostake_proposer_weight_scaled`、`topostake_selection_score_epoch` 在 `BeaconState::compute_topostake_proposer_index()` 中写入；
+- 这些 metrics 的 labels 只有 `slot / proposer_epoch / score_epoch / validator_index`，没有 `block_root / head_root / state_root`；
+- 如果某个 CL 对 side fork、旧 head 或非最终 canonical view 计算过同一个 slot 的 proposer，Prometheus gauge 会被最后一次本地计算覆盖；
+- block body 里的 actual proposer 仍然和 majority election 匹配，说明 canonical 链的主路径选举没有错；
+- 但少数 CL 的本地 gauge 可能留下 fork-view 结果，所以会出现 `cl-12`、`cl-03`、`cl-11`、`cl-16` 这类局部偏离。
+
+更深层根因：
+- TopoStake score 当前不在 `BeaconState` 里；
+- `TopoStakeStateSkeleton` 仍只是 non-SSZ placeholder；
+- 真实 score 存在 `chain_spec.rs` 的进程级全局 runtime：
+
+```rust
+static TOPOSTAKE_EVIDENCE_RUNTIME: OnceLock<RwLock<TopoStakeEvidenceRuntime>>
+```
+
+- block processing 看到 block-inline path records 后，会直接更新这个本地 runtime；
+- 该 runtime 不是 state root 的一部分，不能随 fork choice / block replay 自动回滚；
+- `accepted_tx_hashes` 也是 runtime 级去重：某节点如果先在 side fork 中接受了某 tx，后续 canonical block 中同一个 tx 可能会被本地当成 duplicate 跳过；
+- BA 拓扑下 fork/late-view 更多，所以 evidence valid paths 和 scored validators 的 CL 间 spread 更明显。
+
+因此：
+- 当前结果能说明 canonical chain 上 TopoStake score/election 生效；
+- 但不能证明所有 CL 的本地 score state 完全一致；
+- 更严格地说，当前 score 作为 proposer selection 输入仍不是完全 protocol-grade，因为它依赖 CL process-local runtime，而不是 canonical BeaconState。
+
+短期可接受口径：
+- 论文 devnet 图表可以使用 canonical block records 统计 path、fee、actual proposer；
+- selection 生效性应以 block body actual proposer 与 majority/canonical replay 结果为准；
+- 不应把所有 CL 的 Prometheus runtime metric 当作 canonical truth。
+
+协议级修复方向：
+1. 把 TopoStake score/settled score 正式放进 BeaconState SSZ 字段，参与 state root。
+2. 在 epoch transition 或 finalized checkpoint processing 中，从 finalized block-inline path records 计算 canonical score。
+3. proposer selection 只读取 BeaconState 中的 canonical score。
+4. duplicate tx/path 去重必须按 canonical evidence epoch + block/root 语义处理，不能用进程全局 `accepted_tx_hashes` 直接决定共识 score。
+5. Prometheus metrics 只从 canonical state 导出，或者 label 加上 `head_root/state_root`，避免 fork-view 覆盖 canonical-view 指标。
+
+短期工程修复方向：
+- 先做 `canonical score audit`：从 finalized block body records 离线重放 score，输出每个 epoch/validator 的 canonical score；
+- 把 CL runtime metric 与 canonical replay score 对比，量化偏离；
+- 后续再把 runtime score 替换为 BeaconState-backed score。
+
+### Prompt 51 missed slot 根因分析
+
+问题：TopoStake runs 中出现明显更多 `missed_slots`，例如：
+- Prompt 41 TopoStake ER：`11`
+- Prompt 41 TopoStake BA：`20`
+- Prompt 41 TopoStake Linear：`7`
+- PathObs/Baseline 多数为 `0..3`
+
+先明确当前 `missed_slots` 口径：
+- runner 只从 `cl-01` 调 `/eth/v2/beacon/blocks/{slot}`；
+- 返回 `404` 就记为 missed；
+- 这表示 `cl-01` 当前 canonical view 中该 slot 没有 block；
+- 它大概率是 skipped proposal / missed proposal，但旧 summary 没保存具体 slot list，所以还不能逐 slot 对齐 proposer duty。
+
+已补观测：
+- `experiments/topostake_devnet_runner.py::collect_blocks()` 新增 `missed_slot_list`；
+- 后续每轮 summary 会保存具体 404 slot，方便和 `topostake_selected_proposer`、actual block proposer、VC duty 对齐。
+
+当前最可能根因：
+- TopoStake proposer selection 依赖每个 CL 进程本地的 TopoStake runtime score；
+- 少数 CL 的本地 score/selection metric 已经证明会偏离 majority；
+- validator 是否提议区块，取决于它连接的本地 CL/VC 认为自己是不是该 slot 的 proposer；
+- 如果 canonical majority 认为 validator X 应该提议，但 validator X 自己的 CL 本地 runtime 偏了，认为该 slot proposer 是 Y，那么 X 不会出块；
+- 其他节点即使算对 proposer，也不能替 X 签块；
+- 结果就是该 slot 在 canonical chain 上 skipped/missed。
+
+为什么 TopoStake 更容易出现：
+- Baseline/PathObs proposer election 不读 TopoStake score，所有 CL 用同一套标准 PoS proposer selection；
+- TopoStake 当前 score 是进程级 runtime，不是 BeaconState canonical state；
+- BA/ER 拓扑更容易产生 late view / side fork / block replay；
+- 这些非 canonical 处理会污染部分 CL 的本地 score runtime，进而污染该 CL 的 proposer duty 判断；
+- 所以 TopoStake 下 missed slot 增多，和 Prompt 50 的 score/election 本地偏离是同一个根因的两个表现。
+
+这不是最终协议应有行为：
+- 如果 score 正式进入 BeaconState 并参与 state root，所有 honest CL 在同一 canonical state 上会得到同一个 proposer duty；
+- missed slot 应显著下降到接近 baseline/pathobs，只剩真实资源/网络/validator offline 导致的 miss。
+
+下一步验证：
+1. 重跑 TopoStake BA/ER，使用新的 `missed_slot_list`。
+2. 对每个 missed slot：
+   - 查 majority selection 认为的 proposer；
+   - 查该 proposer 所属 CL 的本地 `topostake_selected_proposer`；
+   - 如果该 CL 本地没有选自己，就能直接证明 missed slot 来自本地 proposer duty divergence。
+3. 之后做协议级修复：把 score/settled score 迁入 BeaconState-backed canonical state，再重跑比较 missed slots。
+
+### Prompt 52 fee mutation isolation: BA missed/fork check
+
+目标：先把 TopoStake 的真实 fee balance mutation 暂时关掉，只保留 path evidence、score/selection 与 fee accounting metrics，重跑 16-node BA，区分：
+- 之前的 fork/invalid root 是否来自真实余额 mutation；
+- 当前 missed slot 是否仍然存在；
+- 如果仍然存在，问题更偏向 proposer duty / timing / resource，而不是 fee settlement state mutation。
+
+实验配置：
+- mode：`TopoStake`
+- topology：`BA(m=2), seed=0`
+- nodes：`16`
+- validators：`1 validator / node`
+- preset：`minimal`
+- slot/epoch：`3s slot, 8 slots/epoch`
+- warmup：`10 epochs = 2560 tx`
+- measurement：`5 epochs = 1280 tx`
+- workload：`32 tx/slot`
+- origin：`round_robin`，16 个 EL 入口均匀发交易
+- fee mutation isolation：
+
+```yaml
+TOPOSTAKE_FEE_ESCROW: "0"
+TOPOSTAKE_SETTLEMENT_MUTATION: "0"
+```
+
+结果：
+- peer graph matches target：`true`
+- tx success：`1280 / 1280`
+- finalized：从 measurement 前 `finalized_epoch=22` 推进到 `finalized_epoch=37`
+- inclusion throughput：`3.92 TPS`
+- inclusion delay：
+  - p50：`3 slots / 6.08s`
+  - p95：`45.05 slots / 134.21s`
+- measurement window：slot `202..318`
+- missed slots：`51`
+- missed slot list：
+
+```text
+202, 204, 205, 209, 211, 213, 216, 218, 219, 220, 222, 224, 225,
+229, 231, 232, 234, 236, 237, 242, 256, 257, 259, 261, 265, 266,
+267, 269, 270, 271, 274, 276, 278, 281, 283, 284, 285, 288, 290,
+293, 294, 295, 304, 305, 307, 308, 311, 312, 314, 316, 317
+```
+
+Path/fee record 口径：
+- block-inline path records：`178`
+- nonzero fee records：`178`
+- priority fee sum：`7476000000000000 wei`
+- avg path length：`1.62`
+- path length histogram：`{1: 75, 2: 96, 3: 7}`
+
+注意：
+- `TOPOSTAKE_SETTLEMENT_MUTATION=0` 关闭的是真实余额 mutation；
+- Prometheus 里 `topostake_fee_*` 仍会出现非零 accounting metrics，因为 block record 中仍带 `priority_fee_wei`，CL 仍可计算 settlement ledger / fee conservation；
+- 这轮不应该把这些 metrics 解读成真实余额已发生 mutation。
+
+日志检查：
+- `merkle`：`0`
+- payload/state-root 级别的 invalid：未发现；
+- 日志里的 `invalid` 计数来自 geth 启动期的 `Sanitizing invalid node buffer size`，不是 block invalid；
+- CL 日志出现大量：
+  - `Producing block at incorrect slot`
+  - `Block was broadcast too late`
+  - `Duplicate payload cached`
+- 计数：
+  - `broadcast_too_late / broadcast delayed`：`120`
+  - `incorrect_slot`：`123`
+  - `duplicate_payload`：`128`
+  - `engine_connect / forkchoice engine call failed`：存在多次 CL->EL connection 抖动
+
+结论：
+- 关掉真实 fee mutation 后，没有复现 `invalid merkle root` / execution state-root 分叉；
+- 因此之前真实 fee settlement records 的 bug 修复方向是对的，fee balance mutation 已不再是这轮 observed fork 的主因；
+- 但 missed slot 仍然非常严重，说明当前主要问题已经转移到 proposer production timing / local proposer duty divergence / 本机资源压力；
+- 特别是 3s slot + 16 EL/CL/VC + TopoStake score/selection 逻辑下，多个 CL 出现 late block 和 incorrect slot，导致 canonical view 中大量 slot 查不到 block；
+- 下一步应优先做 missed slot 对齐分析：
+  1. 对每个 missed slot 找 canonical/majority TopoStake selected proposer；
+  2. 查该 proposer 所属 CL/VC 当时是否认为自己该出块；
+  3. 检查 block production 是否卡在 proposer selection、payload build、path verification、Engine API，还是系统负载；
+  4. 如果 duty divergence 成立，优先把 TopoStake score 从 process-local runtime 迁入 BeaconState-backed canonical state；
+  5. 如果 duty 一致但出块过晚，则优化 block production critical path，尤其是 path record collection/verification 和 payload preparation。
+
+### Prompt 53 missed slot alignment audit
+
+目标：对 Prompt 52 的 `51` 个 missed slots 做离线对齐，确认：
+- majority/canonical TopoStake selection 每个 missed slot 选了谁；
+- 该 proposer 自己连接的 CL 是否也认为自己该出块；
+- missed slots 更像 election/duty divergence，还是 block production timing / Engine API / resource 问题。
+
+数据源：
+- `results/raw/devnet_prompt41_42/prompt52_nofee_topostake_ba_n16_txslot32_seed0/summary.json`
+- `blocks.missed_slot_list`
+- Prometheus `topostake_selected_proposer`
+- Prometheus `topostake_proposer_weight_scaled`
+
+重要限制：
+- Prompt 52 结束后 enclave 已清理；
+- 因此本轮只能用 summary 中保存的 metrics 做 selection/duty 对齐；
+- 无法再逐 slot 拉 Docker logs 来确认每个 missed slot 的 payload build / Engine API / validator API 具体耗时；
+- Prompt 52 运行时日志曾观察到大量 `Producing block at incorrect slot` 与 `Block was broadcast too late`，但这些日志没有逐 slot 持久化到 summary。
+
+对齐结果：
+
+| Scope | slots | owner self-selected | owner mismatch | all CL agree | avg majority count |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| all measurement slots | `117` | `115` | `2` | `109` | `15.62 / 16` |
+| missed slots | `51` | `50` | `1` | `47` | `15.67 / 16` |
+| non-missed slots | `66` | `65` | `1` | `62` | `15.59 / 16` |
+
+解释：
+- `47/51` missed slots 中，16 个 CL 完全一致地选中同一个 proposer；
+- `50/51` missed slots 中，被 majority 选中的 proposer，其自己连接的 CL 也认为“自己就是 proposer”；
+- 只有 slot `232` 出现 owner mismatch：majority 选 validator `2`，但 validator `2` 所属 CL 本地选到 validator `1`；
+- 因此 missed slots 的主因不像是 TopoStake score/election 本地分叉导致 proposer 不知道自己该出块；
+- 更可能发生在 proposer duty 已确定之后：validator client 请求 block、CL 生产 block、EL payload build、path verification、Engine API、或者本机资源调度没赶上 3s slot。
+
+missed slots majority proposer 分布：
+
+| Validator | selected slots | missed slots | miss rate |
+| ---: | ---: | ---: | ---: |
+| 0 | 9 | 5 | 55.56% |
+| 1 | 14 | 10 | 71.43% |
+| 2 | 10 | 9 | 90.00% |
+| 3 | 7 | 1 | 14.29% |
+| 4 | 4 | 1 | 25.00% |
+| 5 | 4 | 4 | 100.00% |
+| 6 | 8 | 2 | 25.00% |
+| 7 | 6 | 3 | 50.00% |
+| 8 | 7 | 3 | 42.86% |
+| 9 | 7 | 4 | 57.14% |
+| 10 | 7 | 0 | 0.00% |
+| 11 | 10 | 3 | 30.00% |
+| 12 | 7 | 1 | 14.29% |
+| 13 | 5 | 2 | 40.00% |
+| 14 | 6 | 2 | 33.33% |
+| 15 | 6 | 1 | 16.67% |
+
+观察：
+- miss 明显集中在 validator `1/2/5`，不是所有 proposer 均匀失败；
+- high weight 不是直接原因：多数 missed slots 的 selected proposer weight 仍是 base `1.00x`，少数为 `2.00x`；
+- 这说明“TopoStake 把某些高分节点选太多导致 miss”的解释不够强；
+- 更值得查的是这些 validator 对应 CL/EL/VC 的 block production path 是否慢，或它们在 BA topology/资源调度下更容易产生 delayed proposal。
+
+当前结论：
+- Prompt 52 的 missed slot 主因暂时不支持“selection/duty divergence”；
+- 更支持“duty 已对齐，但 proposer production 过晚或 block orphaned”；
+- 之前日志中的 `incorrect slot` / `broadcast too late` 与这个结论一致；
+- 下一轮需要保留逐 slot 日志，才能判断具体卡在 payload build、path verification、Engine API 还是 validator API。
+
+下一步 instrumentation：
+1. runner 在每轮结束前保存所有 CL/EL/VC 的 Docker logs 到 run output 目录。
+2. `collect_blocks()` 不只保存 path records，还要保存每个 slot 的 block presence、block root、proposer index、execution payload block hash。
+3. 对 missed slot 保存 majority proposer、owner CL local proposer、owner VC logs、owner CL block production logs、owner EL payload build logs。
+4. 给 Lighthouse block production 增加 TopoStake scoped timing：
+   - proposer selection time；
+   - path record selection/packing time；
+   - path verification time；
+   - Engine API `forkchoiceUpdated/getPayload/newPayload` time；
+   - broadcast time。
+5. 重跑 `16-node BA, 32 tx/slot, warmup 10 epochs, measurement 5 epochs`，再逐 slot 判定真正瓶颈。
+
+### Prompt 54 16 tx/slot interrupted missed-slot diagnosis
+
+目标：把 Prompt 52 的负载从 `32 tx/slot` 降到 `16 tx/slot`，确认 missed slot 是否只是因为交易负载太满。
+
+实验配置：
+- mode：`TopoStake`
+- topology：`BA(m=2), seed=0`
+- nodes：`16`
+- preset：`minimal`
+- slot/epoch：`3s slot, 8 slots/epoch`
+- workload：`16 tx/slot`
+- warmup：`10 epochs = 1280 tx`
+- measurement：计划 `5 epochs = 640 tx`
+- origin：`round_robin`，16 个 EL 入口均匀发交易
+- fee mutation isolation：
+
+```yaml
+TOPOSTAKE_FEE_ESCROW: "0"
+TOPOSTAKE_SETTLEMENT_MUTATION: "0"
+```
+
+状态：
+- workload 在 warmup receipt waiting 阶段被手动停止；
+- 因此没有可用的 measurement summary；
+- Kurtosis enclave 名称：`ts-prompt54-nofee-topostake-ba-n16-txslot16-seed0`。
+
+现场日志观察：
+- 所有 EL/CL/VC 容器均为 `RUNNING`，没有容器退出或重启；
+- RAM 正常：`23Gi` total，约 `14Gi` available；
+- CPU 线程：`32`；
+- host load average：约 `13.24, 9.73, 4.81`；
+- 每个 CL 都出现：
+  - `ForkChoiceSignalOutOfOrder`：约 `14` 次；
+  - `Block was broadcast too late`：`0..5` 次；
+  - `Producing block at incorrect slot`：`0..3` 次；
+  - `empty` slot 日志几十次；
+- 每个 VC 都出现大量：
+  - `Proposer duties re-org`：约 `154..166` 次；
+- EL 日志没有 payload invalid / state-root invalid；
+- EL payload import/build 很快，常见耗时为微秒到数毫秒级，例如 `Updated payload ... elapsed="333µs"`、`Imported new potential chain segment ... elapsed=1..7ms`。
+
+解释：
+- `Block was broadcast too late` 在 Lighthouse 中表示 block 从 slot 开始到 publish 的 delay 超过 attestation due threshold，日志文本明确提示 `system may be overloaded, block likely to be orphaned`；
+- 因此 `empty slot` 不是“没有交易”，而是 canonical view 中该 slot 没有成功落地的 block；
+- `16 tx/slot` 仍然出现 late/empty/re-org，说明问题不是 `32 tx/slot` 太满；
+- fee mutation 已关闭，且 EL 没有 invalid payload/state-root，说明这轮也不是真实余额 mutation 导致的分叉；
+- geth payload build 不是主要瓶颈：EL 多数 payload/chain import 是毫秒级；
+- 更可能的链路是：
+
+```text
+3s slot + 16 EL/CL/VC + exporter/Prometheus + TopoStake CL logic
+    -> host scheduler / CL fork-choice timing 抖动
+    -> VC 频繁重拉 proposer duties，出现 proposer duties re-org
+    -> proposer 出块窗口被压缩或 block 基于旧/变化中的 head 生成
+    -> block publish 过晚或被 orphaned
+    -> canonical view 中表现为 empty/missed slot
+```
+
+当前结论：
+- 这轮支持 Prompt 53 的判断：missed slot 的主因更像 proposer duty 已对齐后的 production/broadcast timing 问题，而不是 selection 完全分叉；
+- 但 `Proposer duties re-org` 频率异常高，说明 CL/VC 对 dependent root/head 的视图非常不稳定，需要进一步拆分：
+  1. 这是 3s minimal + 16 组客户端在本机上的调度压力；
+  2. 还是 TopoStake proposer selection/runtime metric 触发了更多 fork-choice churn；
+  3. 或者两者叠加。
+
+下一步建议：
+1. 先做一个低风险 sanity：`16 nodes, BA, 16 tx/slot` 下把 slot 从 `3s` 临时调到 `6s` 或 `12s`。如果 miss 大幅下降，说明主要是 timing/resource budget。
+2. 同样配置下跑 `PoS-Beacon` / `PoS+PathObs` / `TopoStake` 三模式对照，确认 `Proposer duties re-org` 是否 TopoStake 独有。
+3. 给 block production path 增加持久 timing 日志：
+   - VC request block time；
+   - CL proposer selection time；
+   - Engine API `forkchoiceUpdated/getPayload` time；
+   - TopoStake evidence packing/verification time；
+   - publish block time。
+4. 如果 `6s/12s` 明显稳定，再决定论文 devnet 是否继续用 `3s slot`；否则 3s slot 下 16-node 结果更多是在测本机时序压力，不适合作为协议 overhead 主图。
+
+### Prompt 55 block production timing instrumentation
+
+目标：继续查 Prompt 54 的 `empty slot` / `broadcast too late`，不能只用“加长 slot”解释。给 TopoStake block production 增加阶段耗时日志，并用 16-node BA 复现。
+
+代码改动：
+- `ethereum-topostake/lighthouse/validator_client/validator_services/src/block_service.rs`
+  - 记录 `randao_ms`
+  - 记录 VC 请求 unsigned block 的 `unsigned_block_ms`
+  - 记录 signing + publish 的 `sign_publish_ms`
+  - 记录整次 proposer duty 的 `total_duty_ms`
+  - 记录各阶段发生时的 `slot_elapsed_ms`
+- `ethereum-topostake/lighthouse/beacon_node/beacon_chain/src/beacon_chain.rs`
+  - 记录 block body 中 TopoStake evidence root / records 转换耗时：
+    - `root_ms`
+    - `records_ms`
+    - `total_ms`
+    - `evidence_records`
+    - `slot_elapsed_ms`
+
+验证：
+
+```bash
+cd ethereum-topostake/lighthouse
+cargo check -p validator_services -p beacon_chain
+cargo build --release --bin lighthouse --features spec-minimal
+LIGHTHOUSE_BINARY=/home/wujian/pog-rs/ethereum-topostake/lighthouse/target/release/lighthouse \
+  scripts/lighthouse_image.sh package-local
+```
+
+备注：
+- 本轮启动 devnet 时，`/tmp/ethereum-package` 顶层 import 了未使用的 MEV launcher，导致 Kurtosis 试图拉远端 `redis-package` / `postgres-package`；
+- 已在 `/tmp/ethereum-package` 临时副本中把 unused flashbots/helix MEV remote dependency stub 掉；
+- 这个 patch 只影响 `/tmp` 本地 package，不影响仓库代码。
+
+短跑 sanity：
+- run id：`prompt55_timing_topostake_ba_n16_txslot16`
+- topology：`BA(m=2), seed=0`
+- nodes：`16`
+- workload：warmup `128 tx`，measurement `256 tx`
+- fee mutation：关闭
+- 结果：
+  - `tx_success = 256 / 256`
+  - `missed_slots = 0`
+  - inclusion delay p95：`4.85s`
+  - `Block was broadcast too late = 0`
+  - `Producing block at incorrect slot = 0`
+
+短跑 timing：
+
+| Metric | count | p50 | p95 | max |
+| --- | ---: | ---: | ---: | ---: |
+| `unsigned_block_ms` | `56` | `16ms` | `30ms` | `158ms` |
+| `total_duty_ms` | `52` | `73ms` | `91ms` | `205ms` |
+| `sign_publish_ms` | `52` | `54ms` | `68ms` | `72ms` |
+| `evidence_total_ms` | `76` | `0ms` | `0ms` | `0ms` |
+
+长跑复现：
+- run id：`prompt55_timing_long_topostake_ba_n16_txslot16`
+- topology：沿用同一 16-node BA devnet，`--skip-apply-topology`
+- workload：warmup `1280 tx`，measurement `640 tx`
+- fee mutation：关闭
+- 结果：
+  - `tx_success = 640 / 640`
+  - finalized：`finalized_epoch = 28`
+  - `missed_slots = 11`
+  - missed slot list：`196, 197, 201, 207, 216, 219, 220, 222, 224, 235, 237`
+  - inclusion delay p50：`4.12s`
+  - inclusion delay p95：`36.62s`
+  - inclusion delay max：`130.89s`
+
+长跑 timing：
+
+| Metric | count | p50 | p95 | p99 | max |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `unsigned_block_ms` | `255` | `18ms` | `57ms` | `1064ms` | `3118ms` |
+| `total_duty_ms` | `239` | `79ms` | `161ms` | `3062ms` | `3168ms` |
+| `sign_publish_ms` | `239` | `55ms` | `98ms` | `181ms` | `3071ms` |
+| `evidence_total_ms` | `331` | `0ms` | `0ms` | `1ms` | `10ms` |
+| `evidence_records` | `332` | `12` | `39` | `76` | `609` |
+
+关键原始日志：
+
+```text
+slot 135: cl-03 Producing block at incorrect slot current_slot=136
+slot 135: vc-03 unsigned_block_ms=3016, total_duty_ms=3062
+slot 135: cl-03 Block was broadcast too late delay_ms=3047
+
+slot 206: cl-03 Producing block at incorrect slot current_slot=207
+slot 206: vc-03 unsigned_block_ms=3118, total_duty_ms=3168
+slot 206: cl-03 Block was broadcast too late delay_ms=3135
+
+slot 222: vc-16 sign_publish_ms=3071, total_duty_ms=3093
+slot 222: cl-16 Block was broadcast too late delay_ms=3054
+
+slot 201: vc-09 unsigned_block_ms=1064, total_duty_ms=1124
+slot 201: cl-09 Block was broadcast too late delay_ms=1093
+```
+
+结论：
+- 这轮把原因进一步缩小了：TopoStake block evidence packing 不是 missed slot 的主瓶颈；
+  - 即使 `evidence_records=609`，`evidence_total_ms` 也只有 `7ms`；
+  - p95 为 `0ms`，max 为 `10ms`。
+- EL payload build/import 也不是主瓶颈；
+  - geth 日志里 payload update/import 多数仍是微秒到数毫秒级。
+- 真正导致 late 的 outlier 在 VC/BN proposal chain：
+  - 一类是 `unsigned_block_ms` 直接接近或超过 `3s`，说明 VC 向 BN 请求 unsigned block 时，BN 没能在 slot budget 内返回；
+  - 另一类是 `sign_publish_ms` 接近 `3s`，说明签名后 publish signed block 到 BN / BN publish to gossip 的链路卡住；
+  - 这些 outlier 与 `Block was broadcast too late` 的 `delay_ms` 对齐。
+- 因此“missed slot”不是交易负载太高，也不是 path evidence 解析太慢，而是 3s slot 下偶发的 block proposal HTTP/publish/fork-choice 链路 outlier。
+- `Proposer duties re-org` 和 `ForkChoiceSignalOutOfOrder` 仍然非常多：
+  - 长跑 `VC proposer duties re-org = 3179`
+  - `CL ForkChoiceSignalOutOfOrder = 336`
+  - 这说明 fork-choice/dependent-root 仍在频繁抖动，可能压缩了 proposer production 的稳定窗口。
+
+下一步：
+1. 继续细化 CL 侧 timing：在 BN HTTP block production handler 中记录：
+   - request received slot elapsed；
+   - wait fork-choice time；
+   - load state time；
+   - prepare/get payload time；
+   - complete block time；
+   - HTTP response write time。
+2. 在 publish signed block handler 中记录：
+   - BN 收到 signed block 的 slot elapsed；
+   - local validation time；
+   - gossip publish time；
+   - late logging delay。
+3. 跑同配置的 `PoS+PathObs` 对照；如果也出现同类 `unsigned_block_ms/sign_publish_ms` outlier，则这是 16-node/3s local devnet timing 问题；如果 TopoStake 独有，再继续查 TopoStake selection/fork-choice runtime 是否放大 head churn。
+
+补充判断：
+- 由于 `PoS-Beacon` 同类实验基本稳定，后续不能只按“slot 太短”解释；
+- 必须优先查 TopoStake 相比 PoS 独有或半独有的链路：
+  - `PoS+PathObs` 与 `TopoStake` 共有：EL 交易传播 path metadata、block-inline path evidence、CL block processing 里的 inline evidence verification；
+  - `TopoStake` 独有：`ETA_SCALED > 0` 后 proposer-score adjustment 和 proposer selection metrics；
+  - `TopoStake` 可选独有：fee settlement / balance mutation / settlement records，当前 timing 复现时已临时关闭，避免把 fee mutation 和 proposer timing 混在一起。
+- 因此下一轮应该跑同配置 `PathObs` 和 `TopoStake`，并比较：
+  - `load_state_ms`
+  - `partial_block_ms`
+  - `payload_wait_ms`
+  - `complete_block_ms`
+  - `gossip_verify_ms`
+  - `sidecar_wait_ms`
+  - `process_block_ms`
+  - `publish_api_elapsed_ms`
+- 如果 `PathObs` 无 outlier、`TopoStake` 有 outlier，重点查 proposer-score selection 是否造成 duty/head/fork-choice 抖动；
+- 如果两者都有 outlier，重点查 path metadata / inline evidence 这条 shared path；
+- 如果只有 fee settlement 打开时出现 outlier，再回到 settlement records / state mutation。
+
+### Prompt 56：TopoStake 10-node BA miss/latency sanity
+
+目的：
+- 单独跑 `TopoStake`，把节点数降到 `10`，检查 `BA` 网络、`32 tx/slot` 下是否仍出现明显 missed slot / late broadcast / 高延迟；
+- fee mutation 暂时关闭，避免 settlement state mutation 干扰 proposer timing 判断。
+
+配置：
+- mode：`topostake`
+- topology：`BA(m=2), seed=0`
+- nodes：`10`
+- validator：`1 validator / node`
+- sender/origin：`round_robin`，覆盖全部 `10` 个 EL 节点
+- slot/epoch：`3s slot`，minimal `8 slots/epoch`
+- workload：
+  - warmup：`10 epochs = 2560 tx`
+  - measurement：`5 epochs = 1280 tx`
+  - load：`32 tx/slot = 10.67 TPS`
+- fee settlement：关闭
+- additional services：关闭 `Prometheus/Grafana/ethereum-metrics-exporter`
+- run id：`prompt56_timing_topostake_ba_n10_txslot32`
+
+结果：
+
+| Metric | Value |
+| --- | ---: |
+| tx success | `1280 / 1280` |
+| finalized epoch | `13` |
+| actual send TPS | `10.67` |
+| inclusion throughput | `10.91 TPS` |
+| inclusion delay p50 | `3.31s` |
+| inclusion delay p95 | `6.78s` |
+| inclusion delay max | `10.02s` |
+| inclusion delay p50 slots | `2` |
+| inclusion delay p95 slots | `3` |
+| missed slots | `5` |
+| missed slot list | `94, 95, 106, 122, 124` |
+| path records | `1362` |
+| nonzero fee records | `1362` |
+| avg path len | `2.41` |
+| path len p95 | `4` |
+
+Timing 结果：
+
+| Metric | count | p50 | p95 | p99 | max |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `unsigned_block_ms` | `159` | `20ms` | `34ms` | `39ms` | `45ms` |
+| `total_duty_ms` | `146` | `85ms` | `117ms` | `137ms` | `145ms` |
+| `sign_publish_ms` | `146` | `63ms` | `83ms` | `98ms` | `109ms` |
+| `payload_wait_ms` | `211` | `5ms` | `9ms` | `11ms` | `13ms` |
+| `complete_block_ms` | `159` | `11ms` | `22ms` | `29ms` | `36ms` |
+| `process_block_ms` | `146` | `31ms` | `50ms` | `65ms` | `72ms` |
+| `publish_api_elapsed_ms` | `730` | `1ms` | `36ms` | `52ms` | `74ms` |
+| `evidence_records` | `211` | `30` | `58` | `75` | `86` |
+| `evidence_records_ms` | `211` | `0ms` | `0ms` | `0ms` | `4ms` |
+
+日志计数：
+- `Block was broadcast too late = 0`
+- `Block broadcast was delayed = 0`
+- `Producing block at incorrect slot = 0`
+- `ForkChoiceSignalOutOfOrder = 130`
+- `Proposer duties re-org = 1320`
+
+结论：
+- 这轮 `10-node BA + 32 tx/slot` 没有复现 16-node 长跑里的 `~3s` proposer/publish outlier；
+- TopoStake 独有的 path evidence / block processing 在本轮仍是低开销：
+  - `evidence_records_ms p95 = 0ms, max = 4ms`
+  - `process_block_ms p95 = 50ms, max = 72ms`
+  - `total_duty_ms max = 145ms`
+- 因此本轮的 `missed_slots=5` 更像是 canonical block collection window / fork-choice head churn / proposer-duty reorg 造成的空槽或统计口径问题，而不是 TopoStake block production 超时：
+  - `canonical block collection window`：runner 只按 measurement window 附近扫描 canonical head 链上的 block；如果某个 slot 的 block 被短暂生产但之后没有进入最终 canonical chain，统计上会表现为 missed/empty；
+  - `fork-choice/head churn`：CL 在短时间内切换 head/dependent root，可能导致 proposer duty 重新计算或已生产 block 被 orphan；
+  - `proposer-duty reorg`：VC 观察到 dependent root 变化后重新拉 proposer duties；如果 reorg 频繁，即使没有 block production 慢，也会让某些 slot 在最终 canonical view 中看起来是空槽。
+- 但 `Proposer duties re-org` 与 `ForkChoiceSignalOutOfOrder` 仍然偏多，后续仍应把重点放在 TopoStake 独有的 proposer-score/selection 是否放大 fork-choice/dependent-root 抖动。
+
+信号解释：
+- `Proposer duties re-org`：validator client 发现当前 head/dependent root 改变，之前缓存的 proposer duties 不再对应新的链视图，于是重新查询/更新 duties。少量出现是正常的，频繁出现说明 head view 在抖动，可能压缩 proposer 出块准备窗口。
+- `ForkChoiceSignalOutOfOrder`：CL 收到或处理 fork-choice/engine 信号时，信号顺序落后于当前已处理的 slot/head 状态，旧信号被忽略或降级处理。它通常表示 fork-choice / Engine API / slot progression 存在时序交错，不等价于分叉 bug，但大量出现说明本机 devnet 的 head/fork-choice pipeline 不够平稳。
+
+Score/selection 结果侧审计：
+- 本轮默认关闭 Prometheus/Grafana，因此不能直接读取每个 CL 的 runtime `score` / `proposer_weight` gauge；
+- 只能从 canonical block records 做结果侧判断：哪些 proposer 实际出块、这些 proposer 打包交易的平均 path 是否更短。
+
+| Validator | selected slots | records | avg path len | relay intermediate count |
+| ---: | ---: | ---: | ---: | ---: |
+| `0` | `2` | `58` | `2.500` | `22` |
+| `1` | `7` | `223` | `2.076` | `309` |
+| `2` | `8` | `286` | `2.168` | `159` |
+| `3` | `1` | `29` | `2.655` | `0` |
+| `4` | `5` | `235` | `2.477` | `68` |
+| `5` | `4` | `156` | `2.353` | `83` |
+| `6` | `3` | `111` | `2.712` | `0` |
+| `7` | `2` | `60` | `2.550` | `52` |
+| `8` | `3` | `87` | `2.862` | `20` |
+| `9` | `2` | `117` | `2.761` | `0` |
+
+观察：
+- canonical produced slots 中，validator `2` 和 `1` 被选中最多，分别是 `8` 和 `7` 个 slot；
+- 它们的平均 path length 也是最低的两组：`2.168` 和 `2.076`；
+- selected slot count 与 avg path length 的 Pearson 相关约为 `-0.804`，Spearman 相关约为 `-0.671`；
+- 也就是从最终结果看，短 path proposer 的选中率确实更高；
+- validator `1` 的 relay intermediate count 最高，说明它在 BA 图中承担 hub/relay 角色，也符合 TopoStake score 应该提高其 proposer weight 的方向。
+
+限制：
+- 这不是完整 score 正确性证明，因为没有 Prometheus runtime score/weight；
+- 只能说明本轮 canonical 结果和 TopoStake 设计方向一致：高 relay/path advantage 节点被更多选中，且打包 path 更短；
+- 若要证明“score 和 election 每个 epoch 都按论文公式正常生效”，需要开启 Prometheus 或新增 canonical score replay，从 finalized block records 重放每个 epoch 的 score/weight。

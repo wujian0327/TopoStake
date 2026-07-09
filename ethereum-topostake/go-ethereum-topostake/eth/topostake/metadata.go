@@ -4,6 +4,7 @@
 package topostake
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
@@ -656,12 +657,18 @@ func (s *Store) SubmitSettlement(payload SettlementPayload) (int, error) {
 	payload.Records = records
 	s.lock.Lock()
 	defer s.lock.Unlock()
+	if s.executedSettlements[key] {
+		settlementSkippedMeter.Mark(1)
+		return 0, nil
+	}
 	if _, exists := s.settlements[key]; !exists {
 		s.settlementOrder = append(s.settlementOrder, key)
+	} else if oldRoot := s.settlementRootByKey[key]; oldRoot != (common.Hash{}) {
+		delete(s.settlementsByRoot, oldRoot)
 	}
 	clone := payload
 	clone.Records = append([]SettlementRecord(nil), payload.Records...)
-	root := settlementPayloadRoot(clone)
+	root := settlementPayloadCommitment(settlementPayloadRoot(clone))
 	s.settlements[key] = &clone
 	s.settlementsByRoot[root] = &clone
 	s.settlementRootByKey[key] = root
@@ -759,19 +766,19 @@ func (s *Store) applyCommittedSettlement(root common.Hash, blockRecords []types.
 		if err != nil {
 			return 0, err
 		}
-		computed := settlementPayloadRoot(converted)
+		computed := settlementPayloadCommitment(settlementPayloadRoot(converted))
 		if computed != root {
 			return 0, fmt.Errorf("topostake settlement root mismatch: committed %s computed %s", root, computed)
 		}
 		payload = &converted
 	} else {
+		if SettlementMutationEnabled() {
+			return 0, fmt.Errorf("missing block-carried topostake settlement records for committed root %s", root)
+		}
 		s.lock.RLock()
 		payload = s.settlementsByRoot[root]
 		s.lock.RUnlock()
 		if payload == nil {
-			if SettlementMutationEnabled() {
-				return 0, fmt.Errorf("missing topostake settlement records for committed root %s", root)
-			}
 			if markExecuted {
 				settlementSkippedMeter.Mark(1)
 			}
@@ -803,17 +810,14 @@ func (s *Store) applyCommittedSettlement(root common.Hash, blockRecords []types.
 		amounts[i] = *amount
 		total.Add(total, amount)
 	}
-	if !ok || total.IsZero() {
-		if markExecuted {
-			settlementSkippedMeter.Mark(1)
-		}
-		return 0, nil
+	if !ok {
+		return 0, fmt.Errorf("invalid topostake settlement amount for root %s", root)
+	}
+	if total.IsZero() {
+		return 0, fmt.Errorf("zero topostake settlement total for root %s", root)
 	}
 	if statedb.GetBalance(FeeEscrowAddress).Cmp(total) < 0 {
-		if markExecuted {
-			settlementSkippedMeter.Mark(1)
-		}
-		return 0, nil
+		return 0, fmt.Errorf("insufficient topostake escrow balance for root %s: have %s need %s", root, statedb.GetBalance(FeeEscrowAddress), total)
 	}
 	statedb.SubBalance(FeeEscrowAddress, total, tracing.BalanceDecreaseGasBuy)
 	for i, record := range payload.Records {
@@ -831,6 +835,9 @@ func (s *Store) applyCommittedSettlement(root common.Hash, blockRecords []types.
 
 func SettlementRootFromExtra(extra []byte) common.Hash {
 	if len(extra) != common.HashLength {
+		return common.Hash{}
+	}
+	if !bytes.Equal(extra[:len(topostakeSettlementExtraPrefix)], topostakeSettlementExtraPrefix) {
 		return common.Hash{}
 	}
 	return common.BytesToHash(extra)
@@ -874,7 +881,10 @@ func settlementPayloadFromBlockRecords(records []types.TopoStakeSettlementRecord
 }
 
 func settlementPayloadKey(finalizedEpoch, epoch uint64) string {
-	return fmt.Sprintf("%d:%d", finalizedEpoch, epoch)
+	// The settlement pays rewards for an evidence epoch. Multiple CL nodes can
+	// first observe and submit that same evidence epoch at different finalized
+	// epochs, so finalizedEpoch must not create another pending payout.
+	return fmt.Sprintf("%d", epoch)
 }
 
 func settlementRecordID(record SettlementRecord) string {
@@ -908,6 +918,15 @@ func settlementPayloadRoot(payload SettlementPayload) common.Hash {
 		hasher.Write([]byte(strings.TrimSpace(record.AmountWei)))
 	}
 	return common.BytesToHash(hasher.Sum(nil))
+}
+
+var topostakeSettlementExtraPrefix = []byte{'T', 'S', 'S', '1'}
+
+func settlementPayloadCommitment(root common.Hash) common.Hash {
+	var out [common.HashLength]byte
+	copy(out[:], topostakeSettlementExtraPrefix)
+	copy(out[len(topostakeSettlementExtraPrefix):], root[:common.HashLength-len(topostakeSettlementExtraPrefix)])
+	return common.BytesToHash(out[:])
 }
 
 func amountFromDecimal(input string) (*uint256.Int, bool) {
@@ -1266,15 +1285,14 @@ func (s *Store) loadPrivateRelayRegistryFromEnv() {
 			address = relay.PayoutAddress
 		}
 		s.registerRelayIdentity(relay.ValidatorIndex, address, pubkey)
-		serviceName := relay.ServiceName
-		if serviceName == "" {
-			serviceName = serviceNameForNodeIndex(relay.NodeIndex)
-		}
 		identity := relayIdentity{
 			ValidatorIndex: relay.ValidatorIndex,
 			Address:        s.addressForValidator(relay.ValidatorIndex),
 		}
-		resolved := s.registerServiceAddress(serviceName, identity)
+		resolved := make([]string, 0)
+		for _, serviceName := range serviceNamesForRelay(relay.ServiceName, relay.NodeIndex) {
+			resolved = append(resolved, s.registerServiceAddress(serviceName, identity)...)
+		}
 		isLocal := hasExplicitNodeIndex && explicitNodeIndex == relay.NodeIndex
 		if !isLocal {
 			isLocal = hasLocalAddress(localAddrs, resolved)
@@ -1666,6 +1684,30 @@ func normalizeAddr(addr string) string {
 
 func serviceNameForNodeIndex(index uint64) string {
 	return fmt.Sprintf("el-%d-geth-lighthouse", index+1)
+}
+
+func paddedServiceNameForNodeIndex(index uint64) string {
+	return fmt.Sprintf("el-%02d-geth-lighthouse", index+1)
+}
+
+func serviceNamesForRelay(serviceName string, index uint64) []string {
+	seen := make(map[string]struct{})
+	names := make([]string, 0, 3)
+	add := func(name string) {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			return
+		}
+		if _, ok := seen[name]; ok {
+			return
+		}
+		seen[name] = struct{}{}
+		names = append(names, name)
+	}
+	add(serviceName)
+	add(serviceNameForNodeIndex(index))
+	add(paddedServiceNameForNodeIndex(index))
+	return names
 }
 
 func localIPSet() map[string]struct{} {

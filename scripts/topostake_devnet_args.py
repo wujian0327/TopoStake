@@ -47,7 +47,7 @@ def participant_service_number(index: int, count: int) -> str:
 def write_args(args: argparse.Namespace) -> None:
     lines: List[str] = []
     topostake_features = args.mode in ("pathobs", "topostake")
-    fee_escrow_enabled = args.mode == "topostake"
+    fee_escrow_enabled = args.mode == "topostake" and not args.disable_fee_settlement
 
     lines.extend(
         [
@@ -139,18 +139,31 @@ def write_args(args: argparse.Namespace) -> None:
                 '        MAX_PATHS_PER_BLOCK: "1024"',
             ]
         )
+    if args.enable_observability:
+        lines.extend(
+            [
+                "",
+                "additional_services:",
+                "  - prometheus",
+                "  - grafana",
+                "",
+                "prometheus_params:",
+                '  storage_tsdb_retention_time: "1d"',
+                '  storage_tsdb_retention_size: "512MB"',
+                "",
+                "ethereum_metrics_exporter_enabled: true",
+            ]
+        )
+    else:
+        lines.extend(
+            [
+                "",
+                "additional_services: []",
+                "ethereum_metrics_exporter_enabled: false",
+            ]
+        )
     lines.extend(
         [
-            "",
-            "additional_services:",
-            "  - prometheus",
-            "  - grafana",
-            "",
-            "prometheus_params:",
-            '  storage_tsdb_retention_time: "1d"',
-            '  storage_tsdb_retention_size: "512MB"',
-            "",
-            "ethereum_metrics_exporter_enabled: true",
             "global_log_level: info",
             "",
         ]
@@ -168,6 +181,8 @@ def main() -> None:
     parser.add_argument("--chain-id", type=int, default=7_032_030)
     parser.add_argument("--maxpeers", type=int, default=8)
     parser.add_argument("--eta-scaled", type=int, default=1_000_000_000)
+    parser.add_argument("--disable-fee-settlement", action="store_true")
+    parser.add_argument("--enable-observability", action="store_true")
     parser.add_argument("--label", default="topostake-devnet-8node-overhead")
     parser.add_argument("--public-registry", type=Path, default=DEFAULT_PUBLIC_REGISTRY)
     parser.add_argument("--private-registry", type=Path, default=DEFAULT_PRIVATE_REGISTRY)

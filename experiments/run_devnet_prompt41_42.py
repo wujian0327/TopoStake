@@ -21,8 +21,7 @@ OUTPUT_ROOT = ROOT / "results" / "raw" / "devnet_prompt41_42"
 PROCESSED = ROOT / "results" / "processed" / "devnet_prompt41_42_summary.csv"
 ARGS_DIR = ROOT / "results" / "raw" / "devnet_args"
 SECONDS_PER_SLOT = 3
-SLOTS_PER_EPOCH = 16
-WARMUP_EPOCHS = 5
+SLOTS_PER_EPOCH = 8
 MODES = ("baseline", "pathobs", "topostake")
 MODE_LABELS = {
     "baseline": "PoS-Beacon",
@@ -31,8 +30,17 @@ MODE_LABELS = {
 }
 
 MEASUREMENT_EPOCHS_BY_PROMPT = {
+    "prompt41": 5,
     "prompt43": 5,
     "prompt44": 5,
+}
+
+WARMUP_EPOCHS_BY_PROMPT = {
+    "prompt41": {
+        "baseline": 3,
+        "pathobs": 3,
+        "topostake": 5,
+    },
 }
 
 
@@ -68,7 +76,15 @@ class RunSpec:
 
     @property
     def warmup_tx_count(self) -> int:
-        return self.offered_tx_per_slot * SLOTS_PER_EPOCH * WARMUP_EPOCHS
+        epochs = self.warmup_epochs
+        return self.offered_tx_per_slot * SLOTS_PER_EPOCH * epochs
+
+    @property
+    def warmup_epochs(self) -> int:
+        prompt_value = WARMUP_EPOCHS_BY_PROMPT.get(self.prompt, 5)
+        if isinstance(prompt_value, dict):
+            return int(prompt_value.get(self.mode, 5))
+        return int(prompt_value)
 
     @property
     def tx_interval_seconds(self) -> float:
@@ -78,6 +94,8 @@ class RunSpec:
 def command_env() -> dict[str, str]:
     env = dict(os.environ)
     env["XDG_DATA_HOME"] = "/tmp/kurtosis-data"
+    env["NO_PROXY"] = "127.0.0.1,localhost"
+    env["no_proxy"] = "127.0.0.1,localhost"
     return env
 
 
@@ -109,8 +127,8 @@ def specs_for_prompt41() -> list[RunSpec]:
                     figure="topology",
                     mode=mode,
                     topology=topology,
-                    nodes=8,
-                    offered_tx_per_slot=180,
+                    nodes=10,
+                    offered_tx_per_slot=32,
                     suite_order=order,
                 )
             )
@@ -262,6 +280,8 @@ def ensure_args_file(spec: RunSpec) -> Path:
         "--out",
         str(out),
     ]
+    if os.environ.get("TOPOSTAKE_DISABLE_FEE_SETTLEMENT") == "1":
+        cmd.append("--disable-fee-settlement")
     run_cmd(cmd)
     return out
 
@@ -279,7 +299,6 @@ def start_devnet(spec: RunSpec) -> None:
 
 
 def run_workload(spec: RunSpec) -> None:
-    concurrency = 96 if spec.offered_tx_per_slot <= 180 else 160
     receipt_timeout = 1200 if spec.offered_tx_per_slot <= 180 else 1800
     finality_timeout = 1200 if spec.offered_tx_per_slot <= 180 else 1800
     run_cmd(
@@ -312,18 +331,18 @@ def run_workload(spec: RunSpec) -> None:
             "--origin-mode",
             "round_robin",
             "--sender-count",
-            str(min(spec.nodes, 16)),
+            "0",
             "--send-concurrency",
-            str(concurrency),
+            "0",
             "--receipt-concurrency",
-            str(concurrency),
+            "0",
             "--receipt-timeout",
             str(receipt_timeout),
             "--wait-receipts-after-send",
             "--seconds-per-slot",
             str(SECONDS_PER_SLOT),
             "--warmup-finality-epochs",
-            str(WARMUP_EPOCHS),
+            str(spec.warmup_epochs),
             "--wait-finality",
             "--wait-finality-epochs",
             "1",
@@ -426,6 +445,11 @@ def summarize(spec: RunSpec, status: str = "ok", error: str = "") -> dict[str, A
             "tx_success": success_count,
             "tx_success_ratio": success_count / float(spec.tx_count),
             "actual_send_tps": float(workload.get("actual_send_tps", 0.0)),
+            "origin_mode": workload.get("origin_mode", ""),
+            "origin_node_count": int(workload.get("origin_node_count", 0)),
+            "origin_count_min": int(workload.get("origin_count_min", 0)),
+            "origin_count_max": int(workload.get("origin_count_max", 0)),
+            "origin_counts_json": json.dumps(workload.get("origin_counts", {}), sort_keys=True),
             "inclusion_tps": inclusion_tps,
             "achieved_tx_per_slot": achieved_tx_per_slot,
             "achieved_ratio": achieved_ratio,
@@ -469,6 +493,11 @@ def write_rows(rows: list[dict[str, Any]]) -> None:
         "tx_success",
         "tx_success_ratio",
         "actual_send_tps",
+        "origin_mode",
+        "origin_node_count",
+        "origin_count_min",
+        "origin_count_max",
+        "origin_counts_json",
         "inclusion_tps",
         "achieved_tx_per_slot",
         "achieved_ratio",

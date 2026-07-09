@@ -344,7 +344,7 @@ fn verify_topostake_inline_block_aggregate<E: EthSpec>(
 fn topostake_inline_record_requires_signature<E: EthSpec>(
     record: &TopoStakeInlineEvidenceRecord<E>,
 ) -> bool {
-    record.relay_path.len() >= 2
+    !record.relay_path.is_empty()
 }
 
 fn topostake_inline_aggregate_signature<E: EthSpec>(
@@ -360,7 +360,7 @@ fn topostake_inline_signature_records<E: EthSpec>(
 ) -> Option<Vec<TopoStakeSignatureRecord>> {
     let tx_hash = *record.tx_hash.as_ref();
     let path = record.relay_path.iter().copied().collect::<Vec<_>>();
-    if path.len() < 2 {
+    if path.is_empty() {
         return None;
     }
     let addresses = path
@@ -380,6 +380,10 @@ fn topostake_inline_signature_records<E: EthSpec>(
         statement: origin_statement,
         signature: [0; 48],
     }];
+
+    if path.len() == 1 {
+        return Some(signature_records);
+    }
 
     for edge_index in 0..addresses.len().saturating_sub(1) {
         let prefix = chain_value(&tx_hash, chain_id, record.epoch, &addresses, edge_index);
@@ -1440,11 +1444,14 @@ mod topostake_tx_gossip_tests {
             cl_http_urls: HashMap::new(),
         };
         let addresses = vec![origin_address.clone(), receiver_address.clone()];
-        let origin_statement = origin_statement(chain_id, epoch, &tx_hash, &origin_address);
+        let origin_statement_bytes = origin_statement(chain_id, epoch, &tx_hash, &origin_address);
         let edge_prefix = chain_value(&tx_hash, chain_id, epoch, &addresses, 0);
         let edge_statement = edge_statement(&edge_prefix, &origin_address, &receiver_address);
-        let origin_signature =
-            origin.sign(&origin_statement, TOPOSTAKE_TX_PATH_DOMAIN.as_bytes(), &[]);
+        let origin_signature = origin.sign(
+            &origin_statement_bytes,
+            TOPOSTAKE_TX_PATH_DOMAIN.as_bytes(),
+            &[],
+        );
         let sender_signature =
             origin.sign(&edge_statement, TOPOSTAKE_TX_PATH_DOMAIN.as_bytes(), &[]);
         let receiver_signature =
@@ -1461,6 +1468,33 @@ mod topostake_tx_gossip_tests {
         let record = inline_record(tx_hash, epoch, vec![0, 1], aggregate);
         assert!(verify_topostake_inline_block_aggregate(
             &[record.clone()],
+            &registry,
+            &spec
+        ));
+
+        let origin_only_tx_hash = [0x52; 32];
+        let origin_only_statement =
+            origin_statement(chain_id, epoch, &origin_only_tx_hash, &origin_address);
+        let origin_only_signature = origin.sign(
+            &origin_only_statement,
+            TOPOSTAKE_TX_PATH_DOMAIN.as_bytes(),
+            &[],
+        );
+        let mixed_sig_refs = [
+            &origin_signature,
+            &sender_signature,
+            &receiver_signature,
+            &origin_only_signature,
+        ];
+        let mixed_aggregate = blst::min_sig::AggregateSignature::aggregate(&mixed_sig_refs, true)
+            .expect("mixed aggregate signature should build")
+            .to_signature()
+            .to_bytes();
+        let relayed_record = inline_record(tx_hash, epoch, vec![0, 1], mixed_aggregate);
+        let origin_only_record =
+            inline_record(origin_only_tx_hash, epoch, vec![0], mixed_aggregate);
+        assert!(verify_topostake_inline_block_aggregate(
+            &[relayed_record, origin_only_record],
             &registry,
             &spec
         ));

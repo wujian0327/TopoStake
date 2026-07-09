@@ -517,11 +517,12 @@ func NewBlockWithHeader(header *Header) *Block {
 // the sealed one.
 func (b *Block) WithSeal(header *Header) *Block {
 	return &Block{
-		header:       CopyHeader(header),
-		transactions: b.transactions,
-		uncles:       b.uncles,
-		withdrawals:  b.withdrawals,
-		witness:      b.witness,
+		header:                     CopyHeader(header),
+		transactions:               b.transactions,
+		uncles:                     b.uncles,
+		withdrawals:                b.withdrawals,
+		topostakeSettlementRecords: b.topostakeSettlementRecords,
+		witness:                    b.witness,
 	}
 }
 
@@ -544,11 +545,12 @@ func (b *Block) WithBody(body Body) *Block {
 
 func (b *Block) WithWitness(witness *ExecutionWitness) *Block {
 	return &Block{
-		header:       b.header,
-		transactions: b.transactions,
-		uncles:       b.uncles,
-		withdrawals:  b.withdrawals,
-		witness:      witness,
+		header:                     b.header,
+		transactions:               b.transactions,
+		uncles:                     b.uncles,
+		withdrawals:                b.withdrawals,
+		topostakeSettlementRecords: b.topostakeSettlementRecords,
+		witness:                    witness,
 	}
 }
 

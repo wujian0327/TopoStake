@@ -42,6 +42,7 @@ kzg = { workspace = true }
 maplit = { workspace = true }
 merkle_proof = { workspace = true }
 metastruct = "0.1.0"
+metrics = { workspace = true }
 milhouse = { workspace = true }
 parking_lot = { workspace = true }
 paste = { workspace = true }

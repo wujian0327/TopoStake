@@ -23,7 +23,7 @@ use slot_clock::SlotClock;
 use std::marker::PhantomData;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc::UnboundedSender;
 use tracing::{Span, debug, error, field, info, instrument, warn};
 use tree_hash::TreeHash;
@@ -89,6 +89,7 @@ pub async fn publish_block<T: BeaconChainTypes, B: IntoGossipVerifiedBlock<T>>(
     validation_level: BroadcastValidation,
     duplicate_status_code: StatusCode,
 ) -> Result<Response, Rejection> {
+    let api_started = Instant::now();
     let seen_timestamp = chain.slot_clock.now_duration().unwrap_or_default();
     let block_publishing_delay_for_testing = chain.config.block_publishing_delay;
     let data_column_publishing_delay_for_testing = chain.config.data_column_publishing_delay;
@@ -133,6 +134,11 @@ pub async fn publish_block<T: BeaconChainTypes, B: IntoGossipVerifiedBlock<T>>(
         info!(
             slot = %block.slot(),
             publish_delay_ms = publish_delay.as_millis(),
+            publish_api_elapsed_ms = api_started.elapsed().as_millis(),
+            slot_elapsed_ms = publish_chain
+                .slot_clock
+                .millis_from_current_slot_start()
+                .map(|d| d.as_millis()),
             "Signed block published to network via HTTP API"
         );
 
@@ -148,11 +154,34 @@ pub async fn publish_block<T: BeaconChainTypes, B: IntoGossipVerifiedBlock<T>>(
     let slot = block.message().slot();
     let sender_clone = network_tx.clone();
 
+    let sidecar_spawn_started = Instant::now();
     let build_sidecar_task_handle =
         spawn_build_data_sidecar_task(chain.clone(), block.clone(), unverified_blobs)?;
+    info!(
+        slot = slot.as_u64(),
+        sidecar_spawn_ms = sidecar_spawn_started.elapsed().as_millis(),
+        publish_api_elapsed_ms = api_started.elapsed().as_millis(),
+        slot_elapsed_ms = chain
+            .slot_clock
+            .millis_from_current_slot_start()
+            .map(|d| d.as_millis()),
+        "Block publish sidecar task spawned"
+    );
 
     // Gossip verify the block and blobs/data columns separately.
+    let gossip_verify_started = Instant::now();
     let gossip_verified_block_result = unverified_block.into_gossip_verified_block(&chain);
+    info!(
+        slot = slot.as_u64(),
+        gossip_verify_ms = gossip_verify_started.elapsed().as_millis(),
+        gossip_verified = gossip_verified_block_result.is_ok(),
+        publish_api_elapsed_ms = api_started.elapsed().as_millis(),
+        slot_elapsed_ms = chain
+            .slot_clock
+            .millis_from_current_slot_start()
+            .map(|d| d.as_millis()),
+        "Signed block gossip verification completed"
+    );
 
     let should_publish_block = gossip_verified_block_result.is_ok();
     if BroadcastValidation::Gossip == validation_level && should_publish_block {
@@ -194,7 +223,19 @@ pub async fn publish_block<T: BeaconChainTypes, B: IntoGossipVerifiedBlock<T>>(
     };
 
     // Wait for columns to get gossip verified before proceeding further as we need them for import.
+    let sidecar_wait_started = Instant::now();
     let gossip_verified_columns = build_sidecar_task_handle.await?;
+    info!(
+        slot = slot.as_u64(),
+        sidecar_wait_ms = sidecar_wait_started.elapsed().as_millis(),
+        data_columns = gossip_verified_columns.len(),
+        publish_api_elapsed_ms = api_started.elapsed().as_millis(),
+        slot_elapsed_ms = chain
+            .slot_clock
+            .millis_from_current_slot_start()
+            .map(|d| d.as_millis()),
+        "Block publish sidecar task completed"
+    );
 
     if !gossip_verified_columns.is_empty() {
         if let Some(data_column_publishing_delay) = data_column_publishing_delay_for_testing {
@@ -245,6 +286,7 @@ pub async fn publish_block<T: BeaconChainTypes, B: IntoGossipVerifiedBlock<T>>(
 
     match gossip_verified_block_result {
         Ok(gossip_verified_block) => {
+            let process_block_started = Instant::now();
             let import_result = Box::pin(chain.process_block(
                 block_root,
                 gossip_verified_block,
@@ -253,6 +295,16 @@ pub async fn publish_block<T: BeaconChainTypes, B: IntoGossipVerifiedBlock<T>>(
                 publish_fn,
             ))
             .await;
+            info!(
+                slot = slot.as_u64(),
+                process_block_ms = process_block_started.elapsed().as_millis(),
+                publish_api_elapsed_ms = api_started.elapsed().as_millis(),
+                slot_elapsed_ms = chain
+                    .slot_clock
+                    .millis_from_current_slot_start()
+                    .map(|d| d.as_millis()),
+                "HTTP signed block process_block completed"
+            );
             post_block_import_logging_and_response(
                 import_result,
                 validation_level,
@@ -296,6 +348,7 @@ pub async fn publish_block<T: BeaconChainTypes, B: IntoGossipVerifiedBlock<T>>(
             );
             // try to reprocess as a lookup (single) block and let sync take care of missing components
             let lookup_block = LookupBlock::new(block.clone());
+            let process_block_started = Instant::now();
             let import_result = Box::pin(chain.process_block(
                 block_root,
                 lookup_block,
@@ -304,6 +357,16 @@ pub async fn publish_block<T: BeaconChainTypes, B: IntoGossipVerifiedBlock<T>>(
                 publish_fn,
             ))
             .await;
+            info!(
+                slot = slot.as_u64(),
+                process_block_ms = process_block_started.elapsed().as_millis(),
+                publish_api_elapsed_ms = api_started.elapsed().as_millis(),
+                slot_elapsed_ms = chain
+                    .slot_clock
+                    .millis_from_current_slot_start()
+                    .map(|d| d.as_millis()),
+                "HTTP duplicate signed block process_block completed"
+            );
             post_block_import_logging_and_response(
                 import_result,
                 validation_level,

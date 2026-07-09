@@ -55,7 +55,10 @@ TOPOSTAKE_METRICS = [
     "topostake_epoch_saturated_contribution_scaled",
     "topostake_epoch_score_scaled",
     "topostake_epoch_score_share_scaled",
+    "topostake_selection_score_epoch",
+    "topostake_proposer_score_scaled",
     "topostake_proposer_weight_scaled",
+    "topostake_selected_proposer",
     "topostake_fee_settlement_records_total",
     "topostake_fee_settlement_amount_wei",
     "topostake_fee_validator_amount_wei",
@@ -88,9 +91,18 @@ def rpc(url: str, method: str, params: Sequence[Any] | None = None) -> Any:
 
 
 def get_json(url: str) -> Dict[str, Any]:
-    response = requests.get(url, timeout=10)
-    response.raise_for_status()
-    return response.json()
+    last_error: Exception | None = None
+    for attempt in range(3):
+        try:
+            response = requests.get(url, timeout=30)
+            response.raise_for_status()
+            return response.json()
+        except requests.RequestException as exc:
+            last_error = exc
+            if attempt < 2:
+                time.sleep(2 * (attempt + 1))
+    assert last_error is not None
+    raise last_error
 
 
 def normalize_edges(edges: Iterable[Edge]) -> List[Edge]:
@@ -361,6 +373,8 @@ def beacon_genesis(cl_api: str) -> Dict[str, int]:
 
 
 def selected_private_keys(args: argparse.Namespace) -> List[str]:
+    if args.sender_count < 1:
+        raise ValueError("--sender-count must be resolved to at least one sender before workload starts")
     if args.private_keys:
         private_keys = [part.strip() for part in args.private_keys.split(",") if part.strip()]
     elif args.sender_count == 1 and args.private_key != DEFAULT_PRIVATE_KEY:
@@ -396,8 +410,8 @@ def run_workload(
     chain_id = nonce_w3.eth.chain_id
     first_schedule_monotonic = time.monotonic()
     last_receipt_monotonic = None
-    send_workers = max(1, args.send_concurrency)
-    receipt_workers = max(1, args.receipt_concurrency)
+    send_workers = max(1, args.send_concurrency or len(endpoints.el_rpcs))
+    receipt_workers = max(1, args.receipt_concurrency or len(endpoints.el_rpcs))
 
     def send_one(tx_record: Dict[str, Any]) -> Dict[str, Any]:
         account = accounts[tx_record["sender_index"]]
@@ -515,10 +529,24 @@ def run_workload(
         else 0.0
     )
     success_count = sum(1 for tx in txs if tx.get("status") == 1)
+    origin_counts = {str(index): 0 for index in range(len(endpoints.el_rpcs))}
+    success_origin_counts = {str(index): 0 for index in range(len(endpoints.el_rpcs))}
+    for tx in txs:
+        origin_key = str(tx["origin"])
+        origin_counts[origin_key] = origin_counts.get(origin_key, 0) + 1
+        if tx.get("status") == 1:
+            success_origin_counts[origin_key] = success_origin_counts.get(origin_key, 0) + 1
+    origin_values = list(origin_counts.values())
     return {
         "sender": accounts[0].address,
         "senders": [account.address for account in accounts],
         "sender_count": len(accounts),
+        "origin_mode": args.origin_mode,
+        "origin_node_count": len(endpoints.el_rpcs),
+        "origin_counts": origin_counts,
+        "success_origin_counts": success_origin_counts,
+        "origin_count_min": min(origin_values) if origin_values else 0,
+        "origin_count_max": max(origin_values) if origin_values else 0,
         "chain_id": chain_id,
         "genesis_time": genesis_time,
         "seconds_per_slot": seconds_per_slot,
@@ -665,11 +693,11 @@ def choose_origin(index: int, n: int, mode: str, seed: int) -> int:
 
 def collect_blocks(cl_api: str, start_slot: int, end_slot: int) -> Dict[str, Any]:
     records = []
-    missed = 0
+    missed_slots = []
     for slot in range(start_slot, end_slot + 1):
         response = requests.get(f"{cl_api}/eth/v2/beacon/blocks/{slot}", timeout=10)
         if response.status_code == 404:
-            missed += 1
+            missed_slots.append(slot)
             continue
         response.raise_for_status()
         message = response.json()["data"]["message"]
@@ -698,7 +726,8 @@ def collect_blocks(cl_api: str, start_slot: int, end_slot: int) -> Dict[str, Any
     return {
         "start_slot": start_slot,
         "end_slot": end_slot,
-        "missed_slots": missed,
+        "missed_slots": len(missed_slots),
+        "missed_slot_list": missed_slots,
         "record_count": len(records),
         "nonzero_fee_records": sum(1 for record in records if record["priority_fee_wei"] > 0),
         "priority_fee_sum_wei": sum(record["priority_fee_wei"] for record in records),
@@ -783,6 +812,12 @@ def command_run(args: argparse.Namespace) -> Dict[str, Any]:
 
     endpoints.el_rpcs = endpoints.el_rpcs[: args.n]
     endpoints.cl_apis = endpoints.cl_apis[: args.n]
+    if args.sender_count == 0:
+        args.sender_count = args.n
+    if args.send_concurrency == 0:
+        args.send_concurrency = args.n
+    if args.receipt_concurrency == 0:
+        args.receipt_concurrency = args.n
     before = beacon_head(endpoints.cl_apis[0])
     if args.skip_apply_topology:
         node_infos = [rpc(url, "admin_nodeInfo") for url in endpoints.el_rpcs]
@@ -924,12 +959,12 @@ def main() -> None:
     run.add_argument("--skip-apply-topology", action="store_true")
     run.add_argument("--tx-count", type=int, default=16)
     run.add_argument("--tx-interval-seconds", type=float, default=3.0)
-    run.add_argument("--origin-mode", choices=["single", "round_robin", "random"], default="single")
+    run.add_argument("--origin-mode", choices=["single", "round_robin", "random"], default="round_robin")
     run.add_argument("--private-key", default=DEFAULT_PRIVATE_KEY)
     run.add_argument("--private-keys", help="Comma-separated sender private keys; overrides --private-key/--sender-count defaults")
-    run.add_argument("--sender-count", type=int, default=1)
-    run.add_argument("--send-concurrency", type=int, default=1)
-    run.add_argument("--receipt-concurrency", type=int, default=1)
+    run.add_argument("--sender-count", type=int, default=0, help="Number of funded sender accounts; 0 means one sender per EL node")
+    run.add_argument("--send-concurrency", type=int, default=0, help="Concurrent transaction senders; 0 means one worker per EL node")
+    run.add_argument("--receipt-concurrency", type=int, default=0, help="Concurrent receipt waiters; 0 means one worker per EL node")
     run.add_argument("--recipient", default=DEFAULT_RECIPIENT)
     run.add_argument("--value-wei", type=int, default=1)
     run.add_argument("--priority-fee-gwei", type=float, default=2.0)
@@ -954,6 +989,8 @@ def main() -> None:
             "matches_target": result["peer_graph"]["matches_target"],
             "tx_success": result["workload"]["success_count"],
             "sender_count": result["workload"]["sender_count"],
+            "origin_mode": result["workload"]["origin_mode"],
+            "origin_counts": result["workload"]["origin_counts"],
             "actual_send_tps": result["workload"]["actual_send_tps"],
             "observed_receipt_throughput_tps": result["workload"]["observed_receipt_throughput_tps"],
             "observed_receipt_latency_seconds": result["workload"]["observed_receipt_latency_seconds"],

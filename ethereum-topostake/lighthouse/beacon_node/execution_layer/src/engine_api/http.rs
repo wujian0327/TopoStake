@@ -1909,6 +1909,7 @@ mod test {
                                 base_fee_per_gas: Uint256::from(1),
                                 block_hash: ExecutionBlockHash::repeat_byte(1),
                                 transactions: vec![].try_into().unwrap(),
+                                topostake_settlement_records: Default::default(),
                             },
                         ))
                         .await;
@@ -1956,6 +1957,7 @@ mod test {
                             base_fee_per_gas: Uint256::from(1),
                             block_hash: ExecutionBlockHash::repeat_byte(1),
                             transactions: vec![].try_into().unwrap(),
+                            topostake_settlement_records: Default::default(),
                         },
                     ))
                     .await
@@ -2163,10 +2165,11 @@ mod test {
                             gas_used: 0,
                             timestamp: 5,
                             extra_data: vec![].try_into().unwrap(),
-                            base_fee_per_gas: Uint256::from(7),
-                            block_hash: ExecutionBlockHash::from_str("0x6359b8381a370e2f54072a5784ddd78b6ed024991558c511d4452eb4f6ac898c").unwrap(),
-                            transactions: vec![].try_into().unwrap(),
-                        });
+	                            base_fee_per_gas: Uint256::from(7),
+	                            block_hash: ExecutionBlockHash::from_str("0x6359b8381a370e2f54072a5784ddd78b6ed024991558c511d4452eb4f6ac898c").unwrap(),
+	                            transactions: vec![].try_into().unwrap(),
+	                            topostake_settlement_records: Default::default(),
+	                        });
 
                     assert_eq!(payload, expected);
                 },
@@ -2188,10 +2191,11 @@ mod test {
                             gas_used: 0,
                             timestamp: 5,
                             extra_data: vec![].try_into().unwrap(),
-                            base_fee_per_gas: Uint256::from(7),
-                            block_hash: ExecutionBlockHash::from_str("0x3559e851470f6e7bbed1db474980683e8c315bfce99b2a6ef47c057c04de7858").unwrap(),
-                            transactions: vec![].try_into().unwrap(),
-                        }))
+	                            base_fee_per_gas: Uint256::from(7),
+	                            block_hash: ExecutionBlockHash::from_str("0x3559e851470f6e7bbed1db474980683e8c315bfce99b2a6ef47c057c04de7858").unwrap(),
+	                            transactions: vec![].try_into().unwrap(),
+	                            topostake_settlement_records: Default::default(),
+	                        }))
                         .await;
                 },
                 json!({

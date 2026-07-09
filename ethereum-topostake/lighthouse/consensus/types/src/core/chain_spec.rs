@@ -2971,11 +2971,37 @@ pub fn topostake_evidence_scores_for_epoch(
     let Ok(runtime) = topostake_evidence_runtime().read() else {
         return HashMap::new();
     };
-    runtime
+    if let Some(scores) = runtime
         .epochs
         .get(&eligible_epoch)
+        .filter(|epoch| epoch.score_settled && !epoch.scores.is_empty())
         .map(|epoch| epoch.scores.clone())
-        .unwrap_or_default()
+    {
+        return scores;
+    }
+
+    let latest_eligible_epoch = runtime
+        .epochs
+        .iter()
+        .filter(|(epoch, epoch_runtime)| {
+            **epoch <= eligible_epoch
+                && epoch_runtime.score_settled
+                && !epoch_runtime.scores.is_empty()
+        })
+        .map(|(epoch, epoch_runtime)| (*epoch, epoch_runtime.scores.clone()))
+        .max_by_key(|(epoch, _)| *epoch);
+
+    if let Some((epoch, scores)) = latest_eligible_epoch {
+        if runtime
+            .latest_settled_epoch
+            .is_some_and(|latest_epoch| latest_epoch == epoch)
+        {
+            return runtime.latest_scores.clone();
+        }
+        return scores;
+    }
+
+    HashMap::new()
 }
 
 pub fn topostake_evidence_epoch_summary(
@@ -5374,6 +5400,50 @@ mod yaml_tests {
                 .updates
                 .iter()
                 .any(|update| update.validator_index == 1 && update.score_scaled > 0)
+        );
+        reset_topostake_evidence_runtime();
+    }
+
+    #[test]
+    fn topostake_selection_uses_latest_settled_score_before_next_scored_epoch() {
+        let _guard = TOPOSTAKE_TEST_LOCK.lock().unwrap();
+        reset_topostake_evidence_runtime();
+        let spec = topostake_enabled_spec_for_tests();
+        let outcomes = record_topostake_tx_gossip_metadata_evidence(
+            Epoch::new(0),
+            2,
+            vec![TopoStakePathEvidence {
+                tx_hash: "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+                    .into(),
+                path: vec![0, 1, 2],
+                fee_budget_wei: TOPOSTAKE_FIXED_POINT_SCALE,
+            }],
+            &spec,
+        );
+        assert!(matches!(
+            outcomes.as_slice(),
+            [TopoStakeEvidenceRecordOutcome::Valid { .. }]
+        ));
+
+        let settled = topostake_settle_scores_through_epoch(
+            Epoch::new(1),
+            &[
+                (0, 32_000_000_000),
+                (1, 32_000_000_000),
+                (2, 32_000_000_000),
+            ],
+            96_000_000_000,
+            &spec,
+        );
+        assert_eq!(settled.len(), 1);
+
+        assert!(
+            topostake_evidence_score_for_epoch(Epoch::new(2), 1, 1) > 0,
+            "settled score should affect the first eligible proposer epoch"
+        );
+        assert!(
+            topostake_evidence_score_for_epoch(Epoch::new(3), 1, 1) > 0,
+            "latest settled score should remain usable when the exact score epoch has no records"
         );
         reset_topostake_evidence_runtime();
     }

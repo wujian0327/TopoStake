@@ -1,6 +1,7 @@
 package topostake
 
 import (
+	"bytes"
 	"encoding/hex"
 	"encoding/json"
 	"math/big"
@@ -459,7 +460,15 @@ func TestStoreAppliesSubmittedSettlementOnce(t *testing.T) {
 	if got := SettlementRootFromExtra(extra); got != root {
 		t.Fatalf("extra roundtrip mismatch %s want %s", got, root)
 	}
-	if applied := store.ApplyCommittedSettlement(root, stateDB); applied != 1 {
+	if got := SettlementRootFromExtra(bytes.Repeat([]byte{0x42}, common.HashLength)); got != (common.Hash{}) {
+		t.Fatalf("plain 32-byte extra data should not parse as settlement root: %s", got)
+	}
+	blockRecords := store.SettlementRecordsForRoot(root)
+	applied, err := store.ApplyCommittedSettlementRecords(root, blockRecords, stateDB, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if applied != 1 {
 		t.Fatalf("expected one applied settlement, got %d", applied)
 	}
 	if got, want := stateDB.GetBalance(FeeEscrowAddress), uint256.NewInt(1_000); !got.Eq(want) {
@@ -468,23 +477,13 @@ func TestStoreAppliesSubmittedSettlementOnce(t *testing.T) {
 	if got, want := stateDB.GetBalance(payout), uint256.NewInt(700); !got.Eq(want) {
 		t.Fatalf("unexpected payout balance %s want %s", got, want)
 	}
-	if applied := store.ApplyCommittedSettlement(root, stateDB); applied != 0 {
-		t.Fatalf("settlement should be idempotent, applied again: %d", applied)
-	}
-	if got, want := stateDB.GetBalance(FeeEscrowAddress), uint256.NewInt(1_000); !got.Eq(want) {
-		t.Fatalf("unexpected escrow balance after duplicate apply %s want %s", got, want)
-	}
-	if got, want := stateDB.GetBalance(payout), uint256.NewInt(700); !got.Eq(want) {
-		t.Fatalf("unexpected payout balance after duplicate apply %s want %s", got, want)
-	}
 
-	blockRecords := store.SettlementRecordsForRoot(root)
 	replayStateDB, err := state.New(types.EmptyRootHash, state.NewDatabase(triedb.NewDatabase(rawdb.NewMemoryDatabase(), nil), nil))
 	if err != nil {
 		t.Fatal(err)
 	}
 	replayStateDB.AddBalance(FeeEscrowAddress, uint256.NewInt(2_000), tracing.BalanceChangeUnspecified)
-	applied, err := store.ApplyCommittedSettlementRecords(root, blockRecords, replayStateDB, true)
+	applied, err = store.ApplyCommittedSettlementRecords(root, blockRecords, replayStateDB, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -496,6 +495,83 @@ func TestStoreAppliesSubmittedSettlementOnce(t *testing.T) {
 	}
 	if got, want := replayStateDB.GetBalance(payout), uint256.NewInt(700); !got.Eq(want) {
 		t.Fatalf("unexpected replay payout balance %s want %s", got, want)
+	}
+}
+
+func TestStoreDeduplicatesSettlementByEvidenceEpoch(t *testing.T) {
+	t.Setenv("TOPOSTAKE_FEE_ESCROW", "1")
+	t.Setenv("TOPOSTAKE_SETTLEMENT_MUTATION", "1")
+	store := testStore(0, blst.KeyGen([]byte("topostake duplicate finalized settlement key")))
+	payout := common.HexToAddress("0x000000000000000000000000000000000000d00d")
+	payload := SettlementPayload{
+		Domain:         "TOPOSTAKE_FEE_SETTLEMENT_V1",
+		FinalizedEpoch: 3,
+		Epoch:          1,
+		Records: []SettlementRecord{
+			{
+				Epoch:          1,
+				Role:           "proposer",
+				ValidatorIndex: 2,
+				PayoutAddress:  payout.Hex(),
+				AmountWei:      "900",
+			},
+			{
+				Epoch:     1,
+				Role:      "burned",
+				AmountWei: "100",
+			},
+		},
+	}
+	if _, err := store.SubmitSettlement(payload); err != nil {
+		t.Fatal(err)
+	}
+	firstRoot := store.PendingSettlementRoot()
+	if firstRoot == (common.Hash{}) {
+		t.Fatal("expected first pending settlement root")
+	}
+	payload.FinalizedEpoch = 4
+	if _, err := store.SubmitSettlement(payload); err != nil {
+		t.Fatal(err)
+	}
+	secondRoot := store.PendingSettlementRoot()
+	if secondRoot == (common.Hash{}) {
+		t.Fatal("expected replacement pending settlement root")
+	}
+	if secondRoot == firstRoot {
+		t.Fatal("test expects finalized epoch to change the committed root")
+	}
+	if records := store.SettlementRecordsForRoot(firstRoot); len(records) != 0 {
+		t.Fatalf("old root should no longer be pending, got %d records", len(records))
+	}
+
+	memoryDB := rawdb.NewMemoryDatabase()
+	stateDB, err := state.New(types.EmptyRootHash, state.NewDatabase(triedb.NewDatabase(memoryDB, nil), nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stateDB.AddBalance(FeeEscrowAddress, uint256.NewInt(1_000), tracing.BalanceChangeUnspecified)
+	blockRecords := store.SettlementRecordsForRoot(secondRoot)
+	applied, err := store.ApplyCommittedSettlementRecords(secondRoot, blockRecords, stateDB, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if applied != 1 {
+		t.Fatalf("expected one applied settlement, got %d", applied)
+	}
+	if got, want := stateDB.GetBalance(FeeEscrowAddress), uint256.NewInt(0); !got.Eq(want) {
+		t.Fatalf("unexpected escrow balance %s want %s", got, want)
+	}
+
+	payload.FinalizedEpoch = 5
+	records, err := store.SubmitSettlement(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if records != 0 {
+		t.Fatalf("executed evidence epoch should skip duplicate submission, got %d records", records)
+	}
+	if root := store.PendingSettlementRoot(); root != (common.Hash{}) {
+		t.Fatalf("executed duplicate should not become pending: %s", root)
 	}
 }
 
@@ -541,10 +617,10 @@ func TestStoreSettlementMutationDefaultsToNoop(t *testing.T) {
 	}
 }
 
-func TestApplyCommittedSettlementRecordsFallsBackToLocalStore(t *testing.T) {
+func TestApplyCommittedSettlementRecordsRequiresBlockRecordsWhenMutating(t *testing.T) {
 	t.Setenv("TOPOSTAKE_FEE_ESCROW", "1")
 	t.Setenv("TOPOSTAKE_SETTLEMENT_MUTATION", "1")
-	store := testStore(0, blst.KeyGen([]byte("topostake prompt43 local settlement fallback key")))
+	store := testStore(0, blst.KeyGen([]byte("topostake prompt43 settlement records required key")))
 	payout := common.HexToAddress("0x000000000000000000000000000000000000cafe")
 	_, err := store.SubmitSettlement(SettlementPayload{
 		Domain:         "TOPOSTAKE_FEE_SETTLEMENT_V1",
@@ -574,16 +650,16 @@ func TestApplyCommittedSettlementRecordsFallsBackToLocalStore(t *testing.T) {
 		t.Fatal("expected pending settlement root")
 	}
 	applied, err := store.ApplyCommittedSettlementRecords(root, nil, stateDB, true)
-	if err != nil {
-		t.Fatal(err)
+	if err == nil {
+		t.Fatal("expected missing block-carried settlement records error")
 	}
-	if applied != 1 {
-		t.Fatalf("expected fallback settlement apply, got %d", applied)
+	if applied != 0 {
+		t.Fatalf("missing block records should not apply settlement, got %d", applied)
 	}
-	if got, want := stateDB.GetBalance(FeeEscrowAddress), uint256.NewInt(100); !got.Eq(want) {
+	if got, want := stateDB.GetBalance(FeeEscrowAddress), uint256.NewInt(1_000); !got.Eq(want) {
 		t.Fatalf("unexpected escrow balance %s want %s", got, want)
 	}
-	if got, want := stateDB.GetBalance(payout), uint256.NewInt(900); !got.Eq(want) {
+	if got, want := stateDB.GetBalance(payout), uint256.NewInt(0); !got.Eq(want) {
 		t.Fatalf("unexpected payout balance %s want %s", got, want)
 	}
 }
@@ -600,6 +676,54 @@ func TestApplyCommittedSettlementRecordsErrorsWhenMissingEverywhere(t *testing.T
 	_, err = store.ApplyCommittedSettlementRecords(common.HexToHash("0x1234"), nil, stateDB, true)
 	if err == nil {
 		t.Fatal("expected missing settlement records error")
+	}
+}
+
+func TestApplyCommittedSettlementRecordsErrorsWhenEscrowInsufficient(t *testing.T) {
+	t.Setenv("TOPOSTAKE_FEE_ESCROW", "1")
+	t.Setenv("TOPOSTAKE_SETTLEMENT_MUTATION", "1")
+	store := testStore(0, blst.KeyGen([]byte("topostake prompt43 insufficient escrow key")))
+	payout := common.HexToAddress("0x000000000000000000000000000000000000feed")
+	_, err := store.SubmitSettlement(SettlementPayload{
+		Domain:         "TOPOSTAKE_FEE_SETTLEMENT_V1",
+		FinalizedEpoch: 3,
+		Epoch:          1,
+		Records: []SettlementRecord{
+			{
+				Epoch:          1,
+				Role:           "proposer",
+				ValidatorIndex: 2,
+				PayoutAddress:  payout.Hex(),
+				AmountWei:      "900",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	memoryDB := rawdb.NewMemoryDatabase()
+	stateDB, err := state.New(types.EmptyRootHash, state.NewDatabase(triedb.NewDatabase(memoryDB, nil), nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stateDB.AddBalance(FeeEscrowAddress, uint256.NewInt(100), tracing.BalanceChangeUnspecified)
+	root := store.PendingSettlementRoot()
+	if root == (common.Hash{}) {
+		t.Fatal("expected pending settlement root")
+	}
+	blockRecords := store.SettlementRecordsForRoot(root)
+	applied, err := store.ApplyCommittedSettlementRecords(root, blockRecords, stateDB, true)
+	if err == nil {
+		t.Fatal("expected insufficient escrow error")
+	}
+	if applied != 0 {
+		t.Fatalf("insufficient escrow should not apply settlement, got %d", applied)
+	}
+	if got, want := stateDB.GetBalance(FeeEscrowAddress), uint256.NewInt(100); !got.Eq(want) {
+		t.Fatalf("unexpected escrow balance %s want %s", got, want)
+	}
+	if got, want := stateDB.GetBalance(payout), uint256.NewInt(0); !got.Eq(want) {
+		t.Fatalf("unexpected payout balance %s want %s", got, want)
 	}
 }
 

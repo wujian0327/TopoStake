@@ -138,6 +138,9 @@ func (miner *Miner) generateWork(genParam *generateParams, witness bool) *newPay
 	settlementRoot := topostake.SettlementRootFromExtra(work.header.Extra)
 	if settlementRoot != (common.Hash{}) {
 		body.TopoStakeSettlementRecords = topostake.DefaultStore().SettlementRecordsForRoot(settlementRoot)
+		if topostake.SettlementMutationEnabled() && len(body.TopoStakeSettlementRecords) == 0 {
+			return &newPayloadResult{err: fmt.Errorf("missing block-carried topostake settlement records for pending root %s", settlementRoot)}
+		}
 	}
 
 	allLogs := make([]*types.Log, 0)

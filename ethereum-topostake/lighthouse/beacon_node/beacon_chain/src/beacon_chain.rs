@@ -139,7 +139,7 @@ use std::collections::HashSet;
 use std::io::prelude::*;
 use std::marker::PhantomData;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use store::iter::{BlockRootsIterator, ParentRootBlockIterator, StateRootsIterator};
 use store::{
     BlobSidecarListFromRoot, DBColumn, DatabaseBlock, Error as DBError, HotColdDB, HotStateSummary,
@@ -4883,12 +4883,14 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
         builder_boost_factor: Option<u64>,
         block_production_version: BlockProductionVersion,
     ) -> Result<BeaconBlockResponseWrapper<T::EthSpec>, BlockProductionError> {
+        let timing_started = Instant::now();
         metrics::inc_counter(&metrics::BLOCK_PRODUCTION_REQUESTS);
         let _complete_timer = metrics::start_timer(&metrics::BLOCK_PRODUCTION_TIMES);
         // Part 1/2 (blocking)
         //
         // Load the parent state from disk.
         let chain = self.clone();
+        let load_state_started = Instant::now();
         let block_production_state = self
             .task_executor
             .spawn_blocking_handle(
@@ -4898,6 +4900,16 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
             .ok_or(BlockProductionError::ShuttingDown)?
             .await
             .map_err(BlockProductionError::TokioJoin)??;
+        info!(
+            slot = slot.as_u64(),
+            load_state_ms = load_state_started.elapsed().as_millis(),
+            total_ms = timing_started.elapsed().as_millis(),
+            slot_elapsed_ms = self
+                .slot_clock
+                .millis_from_current_slot_start()
+                .map(|d| d.as_millis()),
+            "Block production state loaded"
+        );
         let (state, state_root_opt) = (
             block_production_state.state,
             block_production_state.state_root,
@@ -4917,6 +4929,18 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
             block_production_version,
         )
         .await
+        .map(|response| {
+            info!(
+                slot = slot.as_u64(),
+                total_ms = timing_started.elapsed().as_millis(),
+                slot_elapsed_ms = self
+                    .slot_clock
+                    .millis_from_current_slot_start()
+                    .map(|d| d.as_millis()),
+                "Block production completed"
+            );
+            response
+        })
     }
 
     /// Get the proposer index and `prev_randao` value for a proposal at slot `proposal_slot`.
@@ -5374,14 +5398,18 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
         builder_boost_factor: Option<u64>,
         block_production_version: BlockProductionVersion,
     ) -> Result<BeaconBlockResponseWrapper<T::EthSpec>, BlockProductionError> {
+        let timing_started = Instant::now();
         // Part 1/3 (blocking)
         //
         // Perform the state advance and block-packing functions.
         let chain = self.clone();
+        let graffiti_started = Instant::now();
         let graffiti = self
             .graffiti_calculator
             .get_graffiti(graffiti_settings)
             .await;
+        let graffiti_ms = graffiti_started.elapsed().as_millis();
+        let partial_started = Instant::now();
         let mut partial_beacon_block = self
             .task_executor
             .spawn_blocking_handle(
@@ -5401,10 +5429,22 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
             .ok_or(BlockProductionError::ShuttingDown)?
             .await
             .map_err(BlockProductionError::TokioJoin)??;
+        info!(
+            slot = produce_at_slot.as_u64(),
+            graffiti_ms = graffiti_ms,
+            partial_block_ms = partial_started.elapsed().as_millis(),
+            total_ms = timing_started.elapsed().as_millis(),
+            slot_elapsed_ms = self
+                .slot_clock
+                .millis_from_current_slot_start()
+                .map(|d| d.as_millis()),
+            "Partial beacon block produced"
+        );
         // Part 2/3 (async)
         //
         // Wait for the execution layer to return an execution payload (if one is required).
         let prepare_payload_handle = partial_beacon_block.prepare_payload_handle.take();
+        let payload_started = Instant::now();
         let block_contents_type_option =
             if let Some(prepare_payload_handle) = prepare_payload_handle {
                 Some(
@@ -5416,11 +5456,23 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
             } else {
                 None
             };
+        info!(
+            slot = produce_at_slot.as_u64(),
+            payload_wait_ms = payload_started.elapsed().as_millis(),
+            has_payload = block_contents_type_option.is_some(),
+            total_ms = timing_started.elapsed().as_millis(),
+            slot_elapsed_ms = self
+                .slot_clock
+                .millis_from_current_slot_start()
+                .map(|d| d.as_millis()),
+            "Execution payload ready for block production"
+        );
         // Part 3/3 (blocking)
         if let Some(block_contents_type) = block_contents_type_option {
             match block_contents_type {
                 BlockProposalContentsType::Full(block_contents) => {
                     let chain = self.clone();
+                    let complete_started = Instant::now();
                     let beacon_block_response = self
                         .task_executor
                         .spawn_blocking_handle(
@@ -5436,11 +5488,22 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
                         .ok_or(BlockProductionError::ShuttingDown)?
                         .await
                         .map_err(BlockProductionError::TokioJoin)??;
+                    info!(
+                        slot = produce_at_slot.as_u64(),
+                        complete_block_ms = complete_started.elapsed().as_millis(),
+                        total_ms = timing_started.elapsed().as_millis(),
+                        slot_elapsed_ms = self
+                            .slot_clock
+                            .millis_from_current_slot_start()
+                            .map(|d| d.as_millis()),
+                        "Full beacon block completed"
+                    );
 
                     Ok(BeaconBlockResponseWrapper::Full(beacon_block_response))
                 }
                 BlockProposalContentsType::Blinded(block_contents) => {
                     let chain = self.clone();
+                    let complete_started = Instant::now();
                     let beacon_block_response = self
                         .task_executor
                         .spawn_blocking_handle(
@@ -5456,12 +5519,23 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
                         .ok_or(BlockProductionError::ShuttingDown)?
                         .await
                         .map_err(BlockProductionError::TokioJoin)??;
+                    info!(
+                        slot = produce_at_slot.as_u64(),
+                        complete_block_ms = complete_started.elapsed().as_millis(),
+                        total_ms = timing_started.elapsed().as_millis(),
+                        slot_elapsed_ms = self
+                            .slot_clock
+                            .millis_from_current_slot_start()
+                            .map(|d| d.as_millis()),
+                        "Blinded beacon block completed"
+                    );
 
                     Ok(BeaconBlockResponseWrapper::Blinded(beacon_block_response))
                 }
             }
         } else {
             let chain = self.clone();
+            let complete_started = Instant::now();
             let beacon_block_response = self
                 .task_executor
                 .spawn_blocking_handle(
@@ -5477,6 +5551,16 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
                 .ok_or(BlockProductionError::ShuttingDown)?
                 .await
                 .map_err(BlockProductionError::TokioJoin)??;
+            info!(
+                slot = produce_at_slot.as_u64(),
+                complete_block_ms = complete_started.elapsed().as_millis(),
+                total_ms = timing_started.elapsed().as_millis(),
+                slot_elapsed_ms = self
+                    .slot_clock
+                    .millis_from_current_slot_start()
+                    .map(|d| d.as_millis()),
+                "Beacon block completed without execution payload"
+            );
 
             Ok(BeaconBlockResponseWrapper::Full(beacon_block_response))
         }
@@ -5777,15 +5861,36 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
                 (base, electra)
             },
         );
+        let topostake_timing_started = Instant::now();
         let topostake_block_evidence = block_contents
             .as_ref()
             .and_then(|contents| contents.topostake_block_evidence());
+        let topostake_has_evidence = topostake_block_evidence.is_some();
+        let topostake_root_started = Instant::now();
         let topostake_evidence_root =
             topostake_tx_evidence_root_from_json(topostake_block_evidence.clone())
                 .unwrap_or_else(Hash256::zero);
+        let topostake_root_ms = topostake_root_started.elapsed().as_millis();
+        let topostake_records_started = Instant::now();
         let topostake_evidence_records = topostake_tx_evidence_records_from_json::<T::EthSpec>(
             topostake_block_evidence,
             &self.spec,
+        );
+        let topostake_records_ms = topostake_records_started.elapsed().as_millis();
+        info!(
+            slot = slot.as_u64(),
+            proposer_index = proposer_index,
+            has_evidence = topostake_has_evidence,
+            evidence_records = topostake_evidence_records.len(),
+            evidence_root = %topostake_evidence_root,
+            root_ms = topostake_root_ms,
+            records_ms = topostake_records_ms,
+            total_ms = topostake_timing_started.elapsed().as_millis(),
+            slot_elapsed_ms = self
+                .slot_clock
+                .millis_from_current_slot_start()
+                .map(|d| d.as_millis()),
+            "TopoStake block evidence packed"
         );
 
         let (inner_block, maybe_blobs_and_proofs, execution_payload_value) = match &state {

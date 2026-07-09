@@ -1,3 +1,4 @@
+use std::sync::LazyLock;
 use std::{fmt, hash::Hash, mem, sync::Arc};
 
 use bls::{AggregatePublicKey, PublicKeyBytes, Signature};
@@ -21,6 +22,42 @@ use tracing::instrument;
 use tree_hash::TreeHash;
 use tree_hash_derive::TreeHash;
 use typenum::Unsigned;
+
+static TOPOSTAKE_SELECTION_SCORE_EPOCH: LazyLock<metrics::Result<metrics::IntGaugeVec>> =
+    LazyLock::new(|| {
+        metrics::try_create_int_gauge_vec(
+            "topostake_selection_score_epoch",
+            "TopoStake evidence epoch used for proposer selection by proposer epoch",
+            &["slot", "proposer_epoch"],
+        )
+    });
+
+static TOPOSTAKE_PROPOSER_WEIGHT_SCALED: LazyLock<metrics::Result<metrics::GaugeVec>> =
+    LazyLock::new(|| {
+        metrics::try_create_float_gauge_vec(
+            "topostake_proposer_weight_scaled",
+            "Scaled TopoStake proposer weight used during proposer selection",
+            &["slot", "proposer_epoch", "score_epoch", "validator_index"],
+        )
+    });
+
+static TOPOSTAKE_PROPOSER_SCORE_SCALED: LazyLock<metrics::Result<metrics::IntGaugeVec>> =
+    LazyLock::new(|| {
+        metrics::try_create_int_gauge_vec(
+            "topostake_proposer_score_scaled",
+            "Scaled TopoStake score used during proposer selection",
+            &["slot", "proposer_epoch", "score_epoch", "validator_index"],
+        )
+    });
+
+static TOPOSTAKE_SELECTED_PROPOSER: LazyLock<metrics::Result<metrics::IntGaugeVec>> =
+    LazyLock::new(|| {
+        metrics::try_create_int_gauge_vec(
+            "topostake_selected_proposer",
+            "TopoStake selected proposer by proposer epoch and evidence score epoch",
+            &["slot", "proposer_epoch", "score_epoch", "validator_index"],
+        )
+    });
 
 use crate::{
     Address, ExecutionBlockHash, ExecutionPayloadBid, ProposerPreferences, Withdrawal,
@@ -1108,6 +1145,7 @@ impl<E: EthSpec> BeaconState<E> {
 
     fn compute_beacon_proposer_index_for_epoch(
         &self,
+        slot: Slot,
         epoch: Epoch,
         indices: &[usize],
         seed: &[u8],
@@ -1116,7 +1154,7 @@ impl<E: EthSpec> BeaconState<E> {
         if spec.is_topostake_enabled_at_epoch(epoch)
             && !spec.fork_name_at_epoch(epoch).gloas_enabled()
         {
-            self.compute_topostake_proposer_index(epoch, indices, seed, spec)
+            self.compute_topostake_proposer_index(slot, epoch, indices, seed, spec)
         } else {
             self.compute_proposer_index(indices, seed, spec)
         }
@@ -1124,6 +1162,7 @@ impl<E: EthSpec> BeaconState<E> {
 
     fn compute_topostake_proposer_index(
         &self,
+        slot: Slot,
         epoch: Epoch,
         indices: &[usize],
         seed: &[u8],
@@ -1141,6 +1180,66 @@ impl<E: EthSpec> BeaconState<E> {
         let mut total_active_balance = 0u64;
         for &validator_index in indices {
             total_active_balance.safe_add_assign(self.get_effective_balance(validator_index)?)?;
+        }
+        let slot_label = slot.as_u64().to_string();
+        let proposer_epoch_label = epoch.as_u64().to_string();
+        let score_epoch = epoch.as_u64().checked_sub(
+            spec.topostake_config
+                .evidence_finality_depth()
+                .saturating_add(1),
+        );
+        let score_epoch_label = score_epoch
+            .map(|epoch| epoch.to_string())
+            .unwrap_or_else(|| "none".to_string());
+        if let Some(score_epoch) = score_epoch {
+            metrics::set_gauge_vec(
+                &TOPOSTAKE_SELECTION_SCORE_EPOCH,
+                &[&slot_label, &proposer_epoch_label],
+                score_epoch.min(i64::MAX as u64) as i64,
+            );
+        }
+        for &validator_index in indices {
+            let effective_balance = self.get_effective_balance(validator_index)?;
+            let score = spec
+                .topostake_config
+                .score_for_validator_at_epoch(epoch, validator_index);
+            let weight = spec.topostake_config.proposer_weight_scaled_at_epoch(
+                epoch,
+                effective_balance,
+                total_active_balance,
+                validator_index,
+            );
+            let validator_label = validator_index.to_string();
+            metrics::set_gauge_vec(
+                &TOPOSTAKE_PROPOSER_SCORE_SCALED,
+                &[
+                    &slot_label,
+                    &proposer_epoch_label,
+                    &score_epoch_label,
+                    &validator_label,
+                ],
+                score.min(i64::MAX as u64) as i64,
+            );
+            metrics::set_float_gauge_vec(
+                &TOPOSTAKE_PROPOSER_WEIGHT_SCALED,
+                &[
+                    &slot_label,
+                    &proposer_epoch_label,
+                    &score_epoch_label,
+                    &validator_label,
+                ],
+                weight as f64,
+            );
+            metrics::set_gauge_vec(
+                &TOPOSTAKE_SELECTED_PROPOSER,
+                &[
+                    &slot_label,
+                    &proposer_epoch_label,
+                    &score_epoch_label,
+                    &validator_label,
+                ],
+                0,
+            );
         }
         let max_proposer_weight = indices
             .iter()
@@ -1181,6 +1280,17 @@ impl<E: EthSpec> BeaconState<E> {
             if candidate_weight.saturating_mul(u128::from(max_random_value))
                 >= max_proposer_weight.saturating_mul(u128::from(random_value))
             {
+                let validator_label = candidate_index.to_string();
+                metrics::set_gauge_vec(
+                    &TOPOSTAKE_SELECTED_PROPOSER,
+                    &[
+                        &slot_label,
+                        &proposer_epoch_label,
+                        &score_epoch_label,
+                        &validator_label,
+                    ],
+                    1,
+                );
                 return Ok(candidate_index);
             }
             i.safe_add_assign(1)?;
@@ -1262,7 +1372,7 @@ impl<E: EthSpec> BeaconState<E> {
                         .copied()
                         .ok_or(BeaconStateError::InsufficientValidators)
                 } else {
-                    self.compute_beacon_proposer_index_for_epoch(epoch, indices, &seed, spec)
+                    self.compute_beacon_proposer_index_for_epoch(slot, epoch, indices, &seed, spec)
                 }
             })
             .collect()
@@ -1418,7 +1528,7 @@ impl<E: EthSpec> BeaconState<E> {
             let seed = self.get_beacon_proposer_seed(slot, spec)?;
             let indices = self.get_active_validator_indices(epoch, spec)?;
 
-            self.compute_beacon_proposer_index_for_epoch(epoch, &indices, &seed, spec)
+            self.compute_beacon_proposer_index_for_epoch(slot, epoch, &indices, &seed, spec)
         }
     }
 

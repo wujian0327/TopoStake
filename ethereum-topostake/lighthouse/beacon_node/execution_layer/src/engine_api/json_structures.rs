@@ -178,7 +178,7 @@ pub struct JsonExecutionPayload<E: EthSpec> {
     pub block_hash: ExecutionBlockHash,
     #[serde(with = "ssz_types::serde_utils::list_of_hex_var_list")]
     pub transactions: Transactions<E>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "VariableList::is_empty")]
     pub topostake_settlement_records:
         VariableList<JsonTopoStakeSettlementRecord, E::MaxValidatorsPerCommittee>,
     #[superstruct(only(Capella, Deneb, Electra, Fulu, Gloas))]
@@ -1185,12 +1185,12 @@ impl From<ForkchoiceUpdatedResponse> for JsonForkchoiceUpdatedV1Response {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(bound = "E: EthSpec")]
+#[serde(bound = "E: EthSpec", rename_all = "camelCase")]
 pub struct JsonExecutionPayloadBodyV1<E: EthSpec> {
     #[serde(with = "ssz_types::serde_utils::list_of_hex_var_list")]
     pub transactions: Transactions<E>,
     pub withdrawals: Option<VariableList<JsonWithdrawal, E::MaxWithdrawalsPerPayload>>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "VariableList::is_empty")]
     pub topostake_settlement_records:
         VariableList<JsonTopoStakeSettlementRecord, E::MaxValidatorsPerCommittee>,
 }
@@ -1304,7 +1304,8 @@ mod tests {
     use bls::{PublicKeyBytes, SignatureBytes};
     use ssz::Encode;
     use types::{
-        ConsolidationRequest, DepositRequest, MainnetEthSpec, RequestType, WithdrawalRequest,
+        ConsolidationRequest, DepositRequest, ExecutionPayloadElectra, MainnetEthSpec, RequestType,
+        TopoStakeSettlementRecord, WithdrawalRequest,
     };
 
     use super::*;
@@ -1315,6 +1316,46 @@ mod tests {
             prefix,
             hex::encode(request_bytes.as_ssz_bytes())
         )
+    }
+
+    #[test]
+    fn topostake_settlement_records_roundtrip_in_execution_payload_json() {
+        let settlement = TopoStakeSettlementRecord {
+            finalized_epoch: 3,
+            epoch: 1,
+            role: 1,
+            validator_index: 7,
+            payout_address: Address::random(),
+            amount_wei: Uint256::from(900u64),
+        };
+        let mut payload = ExecutionPayloadElectra::<MainnetEthSpec>::default();
+        payload.topostake_settlement_records =
+            VariableList::new(vec![settlement.clone()]).expect("valid settlement list");
+
+        let json_payload =
+            JsonExecutionPayload::<MainnetEthSpec>::try_from(ExecutionPayload::Electra(payload))
+                .expect("payload should convert to json");
+        let value = serde_json::to_value(&json_payload).expect("payload should serialize");
+        let records = value
+            .get("topostakeSettlementRecords")
+            .and_then(|value| value.as_array())
+            .expect("topostake settlement records should use Engine API camelCase");
+        assert_eq!(records.len(), 1);
+
+        let decoded_json: JsonExecutionPayload<MainnetEthSpec> =
+            serde_json::from_value(value).expect("payload should deserialize");
+        let decoded_payload =
+            ExecutionPayload::<MainnetEthSpec>::try_from(decoded_json).expect("valid payload");
+        let decoded_records = match decoded_payload {
+            ExecutionPayload::Bellatrix(payload) => payload.topostake_settlement_records,
+            ExecutionPayload::Capella(payload) => payload.topostake_settlement_records,
+            ExecutionPayload::Deneb(payload) => payload.topostake_settlement_records,
+            ExecutionPayload::Electra(payload) => payload.topostake_settlement_records,
+            ExecutionPayload::Fulu(payload) => payload.topostake_settlement_records,
+            ExecutionPayload::Gloas(payload) => payload.topostake_settlement_records,
+        };
+        assert_eq!(decoded_records.len(), 1);
+        assert_eq!(decoded_records[0], settlement);
     }
 
     /// Tests all error conditions except ssz decoding errors

@@ -174,15 +174,6 @@ pub static TOPOSTAKE_EPOCH_SCORE_SHARE_SCALED: LazyLock<Result<IntGaugeVec>> =
         )
     });
 
-#[allow(dead_code)]
-pub static TOPOSTAKE_PROPOSER_WEIGHT_SCALED: LazyLock<Result<GaugeVec>> = LazyLock::new(|| {
-    try_create_float_gauge_vec(
-        "topostake_proposer_weight_scaled",
-        "Scaled TopoStake proposer weight for the proposer epoch affected by evidence",
-        &["proposer_epoch", "validator_index"],
-    )
-});
-
 pub static TOPOSTAKE_CREDIT_EPOCH_RECORDS: LazyLock<Result<IntGaugeVec>> = LazyLock::new(|| {
     try_create_int_gauge_vec(
         "topostake_credit_epoch_records",

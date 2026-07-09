@@ -9524,6 +9524,7 @@ dependencies = [
  "maplit",
  "merkle_proof",
  "metastruct",
+ "metrics",
  "milhouse",
  "parking_lot",
  "paste",

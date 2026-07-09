@@ -255,8 +255,12 @@ impl<'a, E: EthSpec> TryFrom<ExecutionPayloadRef<'a, E>> for NewPayloadRequest<'
 mod test {
     use crate::versioned_hashes::Error as VersionedHashError;
     use crate::{Error, NewPayloadRequest};
+    use ssz_types::VariableList;
     use state_processing::per_block_processing::deneb::kzg_commitment_to_versioned_hash;
-    use types::{BeaconBlock, ExecPayload, ExecutionBlockHash, Hash256, MainnetEthSpec};
+    use types::{
+        Address, BeaconBlock, ExecPayload, ExecutionBlockHash, Hash256, MainnetEthSpec,
+        TopoStakeSettlementRecord, Uint256,
+    };
 
     #[test]
     fn test_optimistic_sync_verifications_valid_block() {
@@ -270,6 +274,39 @@ mod test {
                 .is_ok(),
             "validations should pass"
         );
+    }
+
+    #[test]
+    fn test_new_payload_request_preserves_topostake_settlement_records() {
+        let mut beacon_block = get_valid_beacon_block();
+        let settlement = TopoStakeSettlementRecord {
+            finalized_epoch: 3,
+            epoch: 1,
+            role: 1,
+            validator_index: 7,
+            payout_address: Address::repeat_byte(0x42),
+            amount_wei: Uint256::from(900u64),
+        };
+
+        beacon_block
+            .body_mut()
+            .execution_payload_deneb_mut()
+            .expect("should get payload")
+            .execution_payload
+            .topostake_settlement_records =
+            VariableList::new(vec![settlement.clone()]).expect("valid settlement list");
+
+        let new_payload_request = NewPayloadRequest::try_from(beacon_block.to_ref())
+            .expect("should create new payload request");
+        let records = match new_payload_request {
+            NewPayloadRequest::Deneb(request) => {
+                &request.execution_payload.topostake_settlement_records
+            }
+            _ => panic!("expected deneb payload request"),
+        };
+
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0], settlement);
     }
 
     #[test]
@@ -363,6 +400,8 @@ mod test {
               "block_hash": "0x010671bdfbfce6b0071984a06a7ded6deef13b4f8fdbae402c606a7a0c8780d1"
             },
             "graffiti": "0x6c6f6465737461722f6765746800000000000000000000000000000000000000",
+            "topostake_evidence_root": "0x0000000000000000000000000000000000000000000000000000000000000000",
+            "topostake_evidence_records": [],
             "proposer_slashings": [],
             "attester_slashings": [],
             "attestations": [],
