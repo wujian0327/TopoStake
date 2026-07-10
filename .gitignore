@@ -15,5 +15,28 @@ back/*
 !/python/icon/*
 !/python2/icon/*
 *.pdf
+!figures/devnet_tps_load.pdf
+!figures/devnet_delay_load.pdf
 .codex
 .DS_Store
+*.svg
+/tmp
+/clients/
+*.patch
+results
+result
+
+# Vendored Ethereum client forks should be tracked as source, including their
+# JSON fixtures, SVG assets, patches, and GitHub metadata.
+!/ethereum-topostake/
+!/ethereum-topostake/**
+ethereum-topostake/lighthouse/target/
+ethereum-topostake/go-ethereum-topostake/build/bin/
+ethereum-topostake/go-ethereum-topostake/geth
+ethereum-topostake/**/.ai/
+ethereum-topostake/**/.claude/
+ethereum-topostake/**/.config/
+ethereum-topostake/**/.githooks/
+ethereum-topostake/**/.gitea/
+/bin/
+/geth

@@ -3,12 +3,14 @@ use petgraph::graph::NodeIndex;
 use petgraph::prelude::EdgeRef;
 use petgraph::Graph;
 use rand::Rng;
+use rand::SeedableRng;
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::fmt::{Display, Formatter};
 use std::fs::File;
 
-#[derive(ValueEnum, Debug, Clone, Copy)]
+#[derive(ValueEnum, Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum TopologyType {
     ER,
     BA,
@@ -120,9 +122,13 @@ impl BANetwork {
 }
 
 //Erdős–Rényi(ER)拓扑
-pub fn random_er_graph(nodes_address: Vec<String>, probability: f64) -> Graph<String, ()> {
+pub fn random_er_graph(
+    nodes_address: Vec<String>,
+    probability: f64,
+    seed: u64,
+) -> Graph<String, ()> {
     let mut graph = Graph::<String, ()>::new();
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
 
     let nodes: Vec<NodeIndex> = nodes_address
         .iter()
@@ -202,7 +208,9 @@ pub fn random_ws_graph(
 
     // 2. 随机重连边
     let mut final_edges = HashSet::new();
-    for &(u, v) in &edges {
+    let mut ordered_edges: Vec<(usize, usize)> = edges.iter().copied().collect();
+    ordered_edges.sort_unstable();
+    for &(u, v) in &ordered_edges {
         if rng.gen::<f64>() < p {
             // 以概率 p 重连这条边
             let mut new_v = rng.gen_range(0..n);
@@ -221,7 +229,9 @@ pub fn random_ws_graph(
     }
 
     // 将最终的边添加到图中
-    for (u, v) in final_edges {
+    let mut ordered_final_edges: Vec<(usize, usize)> = final_edges.into_iter().collect();
+    ordered_final_edges.sort_unstable();
+    for (u, v) in ordered_final_edges {
         graph.add_edge(node_indices[u], node_indices[v], ());
     }
 
@@ -230,6 +240,19 @@ pub fn random_ws_graph(
 }
 
 pub fn print_graph(graph: &Graph<String, ()>) {
+    let vec = graph_edges(graph);
+    let path = "graph.json";
+    let mut file = File::create(path).unwrap();
+    serde_json::to_writer_pretty(&mut file, &vec).unwrap();
+}
+
+pub fn write_graph_json(graph: &Graph<String, ()>, path: impl AsRef<std::path::Path>) {
+    let vec = graph_edges(graph);
+    let mut file = File::create(path).unwrap();
+    serde_json::to_writer_pretty(&mut file, &vec).unwrap();
+}
+
+pub fn graph_edges(graph: &Graph<String, ()>) -> Vec<(String, String)> {
     let mut vec: Vec<(String, String)> = vec![];
     for edge_ref in graph.edge_references() {
         let src = edge_ref.source();
@@ -241,10 +264,8 @@ pub fn print_graph(graph: &Graph<String, ()>) {
         }
         vec.push((from, to));
     }
-
-    let path = "graph.json";
-    let mut file = File::create(path).unwrap();
-    serde_json::to_writer_pretty(&mut file, &vec).unwrap();
+    vec.sort();
+    vec
 }
 
 #[cfg(test)]
@@ -257,10 +278,8 @@ mod tests {
     use petgraph::prelude::EdgeRef;
     use petgraph::Graph;
     use rand::Rng;
+    use rand::SeedableRng;
     use std::collections::HashMap;
-    use std::fs::File;
-    use std::io::Write;
-    use std::process::Command;
 
     #[test]
     fn ba_network() {
@@ -355,7 +374,7 @@ mod tests {
     #[test]
     fn random_graph() {
         let mut graph = Graph::<String, ()>::new();
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rngs::StdRng::seed_from_u64(7);
 
         // 随机生成 5 个节点
         let nodes: Vec<NodeIndex> = (0..10)

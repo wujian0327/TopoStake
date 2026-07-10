@@ -1,0 +1,1112 @@
+use crate::engine_api::{
+    ExecutionBlock, PayloadAttributes, PayloadId, PayloadStatusV1, PayloadStatusV1Status,
+    json_structures::{
+        BlobAndProof, BlobAndProofV1, BlobAndProofV2, JsonForkchoiceUpdatedV1Response,
+        JsonPayloadStatusV1, JsonPayloadStatusV1Status,
+    },
+};
+use crate::engines::ForkchoiceState;
+use alloy_consensus::TxEnvelope;
+use alloy_rpc_types_eth::Transaction as AlloyTransaction;
+use eth2::types::BlobsBundle;
+use fixed_bytes::FixedBytesExtended;
+use kzg::{Kzg, KzgCommitment, KzgProof};
+use parking_lot::Mutex;
+use rand::{Rng, SeedableRng, rngs::StdRng};
+use serde::{Deserialize, Serialize};
+use ssz::Decode;
+use ssz_types::VariableList;
+use state_processing::per_block_processing::deneb::kzg_commitment_to_versioned_hash;
+use std::cmp::max;
+use std::collections::HashMap;
+use std::sync::Arc;
+use tracing::warn;
+use tree_hash::TreeHash;
+use tree_hash_derive::TreeHash;
+use types::{
+    Blob, ChainSpec, EthSpec, ExecutionBlockHash, ExecutionPayload, ExecutionPayloadBellatrix,
+    ExecutionPayloadCapella, ExecutionPayloadDeneb, ExecutionPayloadElectra, ExecutionPayloadFulu,
+    ExecutionPayloadGloas, ExecutionPayloadHeader, ExecutionRequests, ForkName, Hash256, KzgProofs,
+    Transaction, Transactions, Uint256,
+};
+
+const TEST_BLOB_BUNDLE: &[u8] = include_bytes!("fixtures/mainnet/test_blobs_bundle.ssz");
+const TEST_BLOB_BUNDLE_V2: &[u8] = include_bytes!("fixtures/mainnet/test_blobs_bundle_v2.ssz");
+
+pub const DEFAULT_GAS_LIMIT: u64 = 60_000_000;
+const GAS_USED: u64 = DEFAULT_GAS_LIMIT - 1;
+
+#[derive(Clone, Debug, PartialEq)]
+#[allow(clippy::large_enum_variant)] // This struct is only for testing.
+pub enum Block<E: EthSpec> {
+    PoW(PoWBlock),
+    PoS(ExecutionPayload<E>),
+}
+
+pub fn mock_el_extra_data<E: EthSpec>() -> VariableList<u8, E::MaxExtraDataBytes> {
+    "block gen was here".as_bytes().to_vec().try_into().unwrap()
+}
+
+impl<E: EthSpec> Block<E> {
+    pub fn block_number(&self) -> u64 {
+        match self {
+            Block::PoW(block) => block.block_number,
+            Block::PoS(payload) => payload.block_number(),
+        }
+    }
+
+    pub fn parent_hash(&self) -> ExecutionBlockHash {
+        match self {
+            Block::PoW(block) => block.parent_hash,
+            Block::PoS(payload) => payload.parent_hash(),
+        }
+    }
+
+    pub fn block_hash(&self) -> ExecutionBlockHash {
+        match self {
+            Block::PoW(block) => block.block_hash,
+            Block::PoS(payload) => payload.block_hash(),
+        }
+    }
+
+    pub fn timestamp(&self) -> u64 {
+        match self {
+            Block::PoW(block) => block.timestamp,
+            Block::PoS(payload) => payload.timestamp(),
+        }
+    }
+
+    pub fn total_difficulty(&self) -> Option<Uint256> {
+        match self {
+            Block::PoW(block) => Some(block.total_difficulty),
+            Block::PoS(_) => None,
+        }
+    }
+
+    pub fn gas_limit(&self) -> u64 {
+        match self {
+            Block::PoW(_) => DEFAULT_GAS_LIMIT,
+            Block::PoS(payload) => payload.gas_limit(),
+        }
+    }
+
+    pub fn as_execution_block(&self, total_difficulty: Uint256) -> ExecutionBlock {
+        match self {
+            Block::PoW(block) => ExecutionBlock {
+                block_hash: block.block_hash,
+                block_number: block.block_number,
+                parent_hash: block.parent_hash,
+                total_difficulty: Some(block.total_difficulty),
+                timestamp: block.timestamp,
+            },
+            Block::PoS(payload) => ExecutionBlock {
+                block_hash: payload.block_hash(),
+                block_number: payload.block_number(),
+                parent_hash: payload.parent_hash(),
+                total_difficulty: Some(total_difficulty),
+                timestamp: payload.timestamp(),
+            },
+        }
+    }
+
+    pub fn as_execution_payload(&self) -> Option<ExecutionPayload<E>> {
+        match self {
+            Block::PoS(payload) => Some(payload.clone()),
+            Block::PoW(block) => Some(ExecutionPayload::Bellatrix(ExecutionPayloadBellatrix {
+                block_hash: block.block_hash,
+                ..Default::default()
+            })),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, TreeHash)]
+#[serde(rename_all = "camelCase")]
+pub struct PoWBlock {
+    pub block_number: u64,
+
+    pub block_hash: ExecutionBlockHash,
+
+    pub parent_hash: ExecutionBlockHash,
+    pub total_difficulty: Uint256,
+    pub timestamp: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct ExecutionBlockGenerator<E: EthSpec> {
+    /*
+     * Common database
+     */
+    head_block: Option<Block<E>>,
+    finalized_block_hash: Option<ExecutionBlockHash>,
+    blocks: HashMap<ExecutionBlockHash, Block<E>>,
+    block_hashes: HashMap<u64, Vec<ExecutionBlockHash>>,
+    /*
+     * PoW block parameters
+     */
+    pub terminal_total_difficulty: Uint256,
+    pub terminal_block_number: u64,
+    pub terminal_block_hash: ExecutionBlockHash,
+    /*
+     * PoS block parameters
+     */
+    pub pending_payloads: HashMap<ExecutionBlockHash, ExecutionPayload<E>>,
+    pub next_payload_id: u64,
+    pub payload_ids: HashMap<PayloadId, ExecutionPayload<E>>,
+    min_blobs_count: usize,
+    /*
+     * Post-merge fork triggers
+     */
+    pub shanghai_time: Option<u64>,  // capella
+    pub cancun_time: Option<u64>,    // deneb
+    pub prague_time: Option<u64>,    // electra
+    pub osaka_time: Option<u64>,     // fulu
+    pub amsterdam_time: Option<u64>, // gloas
+    /*
+     * deneb stuff
+     */
+    pub blobs_bundles: HashMap<PayloadId, BlobsBundle<E>>,
+    pub kzg: Option<Arc<Kzg>>,
+    rng: Arc<Mutex<StdRng>>,
+    /*
+     * Execution requests (electra+)
+     */
+    /// Per-payload execution requests returned by `getPayload`.
+    execution_requests: HashMap<PayloadId, ExecutionRequests<E>>,
+    /// If set, the next call to `build_new_execution_payload` will associate these
+    /// execution requests with the generated payload ID.
+    next_execution_requests: Option<ExecutionRequests<E>>,
+}
+
+fn make_rng() -> Arc<Mutex<StdRng>> {
+    // Nondeterminism in tests is a highly undesirable thing.  Seed the RNG to some arbitrary
+    // but fixed value for reproducibility.
+    Arc::new(Mutex::new(StdRng::seed_from_u64(0xDEADBEEF0BAD5EEDu64)))
+}
+
+impl<E: EthSpec> ExecutionBlockGenerator<E> {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        shanghai_time: Option<u64>,
+        cancun_time: Option<u64>,
+        prague_time: Option<u64>,
+        osaka_time: Option<u64>,
+        amsterdam_time: Option<u64>,
+        kzg: Option<Arc<Kzg>>,
+    ) -> Self {
+        let mut generator = Self {
+            head_block: <_>::default(),
+            finalized_block_hash: <_>::default(),
+            blocks: <_>::default(),
+            block_hashes: <_>::default(),
+            terminal_total_difficulty: Default::default(),
+            terminal_block_number: 0,
+            terminal_block_hash: Default::default(),
+            pending_payloads: <_>::default(),
+            next_payload_id: 0,
+            payload_ids: <_>::default(),
+            min_blobs_count: 0,
+            shanghai_time,
+            cancun_time,
+            prague_time,
+            osaka_time,
+            amsterdam_time,
+            blobs_bundles: <_>::default(),
+            kzg,
+            rng: make_rng(),
+            execution_requests: <_>::default(),
+            next_execution_requests: None,
+        };
+
+        generator.insert_pow_block(0).unwrap();
+
+        generator
+    }
+
+    pub fn latest_block(&self) -> Option<Block<E>> {
+        self.head_block.clone()
+    }
+
+    pub fn latest_execution_block(&self) -> Option<ExecutionBlock> {
+        self.latest_block()
+            .map(|block| block.as_execution_block(self.terminal_total_difficulty))
+    }
+
+    pub fn genesis_block(&self) -> Option<Block<E>> {
+        if let Some(genesis_block_hash) = self.block_hashes.get(&0) {
+            self.blocks.get(genesis_block_hash.first()?).cloned()
+        } else {
+            None
+        }
+    }
+
+    pub fn genesis_execution_block(&self) -> Option<ExecutionBlock> {
+        self.genesis_block()
+            .map(|block| block.as_execution_block(self.terminal_total_difficulty))
+    }
+
+    pub fn block_by_number(&self, number: u64) -> Option<Block<E>> {
+        // Get the latest canonical head block
+        let mut latest_block = self.latest_block()?;
+        loop {
+            let block_number = latest_block.block_number();
+            if block_number < number {
+                return None;
+            }
+            if block_number == number {
+                return Some(latest_block);
+            }
+            latest_block = self.block_by_hash(latest_block.parent_hash())?;
+        }
+    }
+
+    pub fn get_fork_at_timestamp(&self, timestamp: u64) -> ForkName {
+        let forks = [
+            (self.amsterdam_time, ForkName::Gloas),
+            (self.osaka_time, ForkName::Fulu),
+            (self.prague_time, ForkName::Electra),
+            (self.cancun_time, ForkName::Deneb),
+            (self.shanghai_time, ForkName::Capella),
+        ];
+
+        for (fork_time, fork_name) in forks {
+            if let Some(time) = fork_time
+                && timestamp >= time
+            {
+                return fork_name;
+            }
+        }
+
+        ForkName::Bellatrix
+    }
+
+    pub fn execution_block_by_number(&self, number: u64) -> Option<ExecutionBlock> {
+        self.block_by_number(number)
+            .map(|block| block.as_execution_block(self.terminal_total_difficulty))
+    }
+
+    pub fn block_by_hash(&self, hash: ExecutionBlockHash) -> Option<Block<E>> {
+        self.blocks.get(&hash).cloned()
+    }
+
+    pub fn execution_block_by_hash(&self, hash: ExecutionBlockHash) -> Option<ExecutionBlock> {
+        self.block_by_hash(hash)
+            .map(|block| block.as_execution_block(self.terminal_total_difficulty))
+    }
+
+    pub fn execution_payload_by_hash(
+        &self,
+        hash: ExecutionBlockHash,
+    ) -> Option<ExecutionPayload<E>> {
+        self.block_by_hash(hash)
+            .and_then(|block| block.as_execution_payload())
+    }
+
+    pub fn execution_payload_by_number(&self, number: u64) -> Option<ExecutionPayload<E>> {
+        self.block_by_number(number)
+            .and_then(|block| block.as_execution_payload())
+    }
+
+    pub fn drop_all_blocks(&mut self) {
+        self.blocks = <_>::default();
+        self.block_hashes = <_>::default();
+    }
+
+    pub fn insert_pow_blocks(
+        &mut self,
+        block_numbers: impl Iterator<Item = u64>,
+    ) -> Result<(), String> {
+        for i in block_numbers {
+            self.insert_pow_block(i)?;
+        }
+
+        Ok(())
+    }
+
+    pub fn set_min_blob_count(&mut self, count: usize) {
+        self.min_blobs_count = count;
+    }
+
+    pub fn insert_pow_block(&mut self, block_number: u64) -> Result<(), String> {
+        if let Some(finalized_block_hash) = self.finalized_block_hash {
+            return Err(format!(
+                "terminal block {} has been finalized. PoW chain has stopped building",
+                finalized_block_hash
+            ));
+        }
+        let block = if block_number == 0 {
+            generate_genesis_block(self.terminal_total_difficulty, self.terminal_block_number)?
+        } else if let Some(block) = self.block_by_number(block_number - 1) {
+            generate_pow_block(
+                self.terminal_total_difficulty,
+                self.terminal_block_number,
+                block_number,
+                block.block_hash(),
+            )?
+        } else {
+            return Err(format!(
+                "parent with block number {} not found",
+                block_number - 1
+            ));
+        };
+
+        // Insert block into block tree
+        self.insert_block(Block::PoW(block))?;
+
+        // Set head
+        if let Some(head_total_difficulty) =
+            self.head_block.as_ref().and_then(|b| b.total_difficulty())
+        {
+            if block.total_difficulty >= head_total_difficulty {
+                self.head_block = Some(Block::PoW(block));
+            }
+        } else {
+            self.head_block = Some(Block::PoW(block));
+        }
+        Ok(())
+    }
+
+    /// Insert a PoW block given the parent hash.
+    ///
+    /// Returns `Ok(hash)` of the inserted block.
+    /// Returns an error if the `parent_hash` does not exist in the block tree or
+    /// if the parent block is the terminal block.
+    pub fn insert_pow_block_by_hash(
+        &mut self,
+        parent_hash: ExecutionBlockHash,
+        unique_id: u64,
+    ) -> Result<ExecutionBlockHash, String> {
+        let parent_block = self.block_by_hash(parent_hash).ok_or_else(|| {
+            format!(
+                "Block corresponding to parent hash does not exist: {}",
+                parent_hash
+            )
+        })?;
+
+        let mut block = generate_pow_block(
+            self.terminal_total_difficulty,
+            self.terminal_block_number,
+            parent_block.block_number() + 1,
+            parent_hash,
+        )?;
+
+        // Hack the block hash to make this block distinct from any other block with a different
+        // `unique_id` (the default is 0).
+        block.block_hash = ExecutionBlockHash::from_root(Hash256::from_low_u64_be(unique_id));
+        block.block_hash = ExecutionBlockHash::from_root(block.tree_hash_root());
+
+        let hash = self.insert_block(Block::PoW(block))?;
+
+        // Set head
+        if let Some(head_total_difficulty) =
+            self.head_block.as_ref().and_then(|b| b.total_difficulty())
+        {
+            if block.total_difficulty >= head_total_difficulty {
+                self.head_block = Some(Block::PoW(block));
+            }
+        } else {
+            self.head_block = Some(Block::PoW(block));
+        }
+        Ok(hash)
+    }
+
+    // This does not reject duplicate blocks inserted. This lets us re-use the same execution
+    // block generator for multiple beacon chains which is useful in testing.
+    pub fn insert_block(&mut self, block: Block<E>) -> Result<ExecutionBlockHash, String> {
+        if block.parent_hash() != ExecutionBlockHash::zero()
+            && !self.blocks.contains_key(&block.parent_hash())
+        {
+            return Err(format!("parent block {:?} is unknown", block.parent_hash()));
+        }
+
+        Ok(self.insert_block_without_checks(block))
+    }
+
+    pub fn insert_block_without_checks(&mut self, block: Block<E>) -> ExecutionBlockHash {
+        let block_hash = block.block_hash();
+        self.block_hashes
+            .entry(block.block_number())
+            .or_default()
+            .push(block_hash);
+        self.blocks.insert(block_hash, block);
+
+        block_hash
+    }
+
+    pub fn modify_last_block(&mut self, block_modifier: impl FnOnce(&mut Block<E>)) {
+        if let Some(last_block_hash) = self
+            .block_hashes
+            .iter_mut()
+            .max_by_key(|(block_number, _)| *block_number)
+            .and_then(|(_, block_hashes)| {
+                // Remove block hash, we will re-insert with the new block hash after modifying it.
+                block_hashes.pop()
+            })
+        {
+            let mut block = self.blocks.remove(&last_block_hash).unwrap();
+            block_modifier(&mut block);
+
+            // Update the block hash after modifying the block
+            match &mut block {
+                Block::PoW(b) => b.block_hash = ExecutionBlockHash::from_root(b.tree_hash_root()),
+                Block::PoS(b) => {
+                    *b.block_hash_mut() = ExecutionBlockHash::from_root(b.tree_hash_root())
+                }
+            }
+
+            // Update head.
+            if self
+                .head_block
+                .as_ref()
+                .is_none_or(|head| head.block_hash() == last_block_hash)
+            {
+                self.head_block = Some(block.clone());
+            }
+
+            self.insert_block_without_checks(block);
+        }
+    }
+
+    pub fn get_payload(&mut self, id: &PayloadId) -> Option<ExecutionPayload<E>> {
+        self.payload_ids.get(id).cloned()
+    }
+
+    pub fn get_blobs_bundle(&mut self, id: &PayloadId) -> Option<BlobsBundle<E>> {
+        self.blobs_bundles.get(id).cloned()
+    }
+
+    pub fn get_execution_requests(&self, id: &PayloadId) -> Option<ExecutionRequests<E>> {
+        self.execution_requests.get(id).cloned()
+    }
+
+    /// Set execution requests to be returned alongside the next generated payload.
+    pub fn set_next_execution_requests(&mut self, requests: ExecutionRequests<E>) {
+        self.next_execution_requests = Some(requests);
+    }
+
+    /// Look up a blob and proof by versioned hash across all stored bundles.
+    pub fn get_blob_and_proof(&self, versioned_hash: &Hash256) -> Option<BlobAndProof<E>> {
+        self.blobs_bundles
+            .iter()
+            .find_map(|(payload_id, blobs_bundle)| {
+                let (blob_idx, _) =
+                    blobs_bundle
+                        .commitments
+                        .iter()
+                        .enumerate()
+                        .find(|(_, commitment)| {
+                            &kzg_commitment_to_versioned_hash(commitment) == versioned_hash
+                        })?;
+                let is_fulu = self.payload_ids.get(payload_id)?.fork_name().fulu_enabled();
+                let blob = blobs_bundle.blobs.get(blob_idx)?.clone();
+                if is_fulu {
+                    let start = blob_idx * E::cells_per_ext_blob();
+                    let end = start + E::cells_per_ext_blob();
+                    let proofs = blobs_bundle
+                        .proofs
+                        .get(start..end)?
+                        .to_vec()
+                        .try_into()
+                        .ok()?;
+                    Some(BlobAndProof::V2(BlobAndProofV2 { blob, proofs }))
+                } else {
+                    Some(BlobAndProof::V1(BlobAndProofV1 {
+                        blob,
+                        proof: *blobs_bundle.proofs.get(blob_idx)?,
+                    }))
+                }
+            })
+    }
+
+    pub fn new_payload(&mut self, payload: ExecutionPayload<E>) -> PayloadStatusV1 {
+        let Some(parent) = self.blocks.get(&payload.parent_hash()) else {
+            return PayloadStatusV1 {
+                status: PayloadStatusV1Status::Syncing,
+                latest_valid_hash: None,
+                validation_error: None,
+            };
+        };
+
+        if payload.block_number() != parent.block_number() + 1 {
+            return PayloadStatusV1 {
+                status: PayloadStatusV1Status::Invalid,
+                latest_valid_hash: Some(parent.block_hash()),
+                validation_error: Some("invalid block number".to_string()),
+            };
+        }
+
+        let valid_hash = payload.block_hash();
+        self.pending_payloads.insert(payload.block_hash(), payload);
+
+        PayloadStatusV1 {
+            status: PayloadStatusV1Status::Valid,
+            latest_valid_hash: Some(valid_hash),
+            validation_error: None,
+        }
+    }
+
+    // This function expects payload_attributes to already be validated with respect to
+    // the current fork [obtained by self.get_fork_at_timestamp(payload_attributes.timestamp)]
+    pub fn forkchoice_updated(
+        &mut self,
+        forkchoice_state: ForkchoiceState,
+        payload_attributes: Option<PayloadAttributes>,
+    ) -> Result<JsonForkchoiceUpdatedV1Response, String> {
+        // This is meant to cover starting post-merge transition at genesis. Useful for
+        // testing Capella forks and later.
+        let head_block_hash = forkchoice_state.head_block_hash;
+        if let Some(genesis_pow_block) = self.block_by_number(0)
+            && genesis_pow_block.block_hash() == head_block_hash
+        {
+            self.terminal_block_hash = head_block_hash;
+        }
+
+        if let Some(payload) = self.pending_payloads.remove(&head_block_hash) {
+            self.insert_block(Block::PoS(payload))?;
+        }
+
+        // If Gloas was enabled from genesis, the justified and finalized block hashes must be
+        // non-zero, since the CL always has a known parent_block_hash to reference.
+        if self.get_fork_at_timestamp(0).gloas_enabled() {
+            assert!(
+                forkchoice_state.safe_block_hash != ExecutionBlockHash::zero(),
+                "for Gloas genesis safe_block_hash must not be zero"
+            );
+            assert!(
+                forkchoice_state.finalized_block_hash != ExecutionBlockHash::zero(),
+                "for Gloas genesis finalized_block_hash must not be zero"
+            );
+        }
+
+        let unknown_head_block_hash = !self.blocks.contains_key(&head_block_hash);
+        let unknown_safe_block_hash = forkchoice_state.safe_block_hash
+            != ExecutionBlockHash::zero()
+            && !self.blocks.contains_key(&forkchoice_state.safe_block_hash);
+        let unknown_finalized_block_hash = forkchoice_state.finalized_block_hash
+            != ExecutionBlockHash::zero()
+            && !self
+                .blocks
+                .contains_key(&forkchoice_state.finalized_block_hash);
+
+        if unknown_head_block_hash || unknown_safe_block_hash || unknown_finalized_block_hash {
+            if unknown_head_block_hash {
+                warn!(?head_block_hash, "Received unknown head block hash");
+            }
+            if unknown_safe_block_hash {
+                warn!(
+                    safe_block_hash = ?forkchoice_state.safe_block_hash,
+                    "Received unknown safe block hash"
+                );
+            }
+            if unknown_finalized_block_hash {
+                warn!(
+                    finalized_block_hash = ?forkchoice_state.finalized_block_hash,
+                    "Received unknown finalized block hash"
+                )
+            }
+            return Ok(JsonForkchoiceUpdatedV1Response {
+                payload_status: JsonPayloadStatusV1 {
+                    status: JsonPayloadStatusV1Status::Syncing,
+                    latest_valid_hash: None,
+                    validation_error: None,
+                },
+                payload_id: None,
+            });
+        }
+
+        let id = match payload_attributes {
+            None => None,
+            Some(attributes) => {
+                let parent = self
+                    .blocks
+                    .get(&head_block_hash)
+                    .cloned()
+                    .ok_or_else(|| format!("unknown parent block {head_block_hash:?}"))?;
+
+                let id = payload_id_from_u64(self.next_payload_id);
+                self.next_payload_id += 1;
+
+                let execution_payload =
+                    self.build_new_execution_payload(head_block_hash, &parent, id, &attributes)?;
+
+                self.payload_ids.insert(id, execution_payload);
+
+                Some(id)
+            }
+        };
+
+        self.head_block = Some(
+            self.blocks
+                .get(&forkchoice_state.head_block_hash)
+                .unwrap()
+                .clone(),
+        );
+
+        if forkchoice_state.finalized_block_hash != ExecutionBlockHash::zero() {
+            self.finalized_block_hash = Some(forkchoice_state.finalized_block_hash);
+        }
+
+        Ok(JsonForkchoiceUpdatedV1Response {
+            payload_status: JsonPayloadStatusV1 {
+                status: JsonPayloadStatusV1Status::Valid,
+                latest_valid_hash: Some(forkchoice_state.head_block_hash),
+                validation_error: None,
+            },
+            payload_id: id.map(Into::into),
+        })
+    }
+
+    pub fn build_new_execution_payload(
+        &mut self,
+        head_block_hash: ExecutionBlockHash,
+        parent: &Block<E>,
+        id: PayloadId,
+        attributes: &PayloadAttributes,
+    ) -> Result<ExecutionPayload<E>, String> {
+        let mut execution_payload = match attributes {
+            PayloadAttributes::V1(pa) => ExecutionPayload::Bellatrix(ExecutionPayloadBellatrix {
+                parent_hash: head_block_hash,
+                fee_recipient: pa.suggested_fee_recipient,
+                receipts_root: Hash256::repeat_byte(42),
+                state_root: Hash256::repeat_byte(43),
+                logs_bloom: vec![0; 256].try_into().unwrap(),
+                prev_randao: pa.prev_randao,
+                block_number: parent.block_number() + 1,
+                gas_limit: DEFAULT_GAS_LIMIT,
+                gas_used: GAS_USED,
+                timestamp: pa.timestamp,
+                extra_data: mock_el_extra_data::<E>(),
+                base_fee_per_gas: Uint256::from(1u64),
+                block_hash: ExecutionBlockHash::zero(),
+                transactions: vec![].try_into().unwrap(),
+                topostake_settlement_records: Default::default(),
+            }),
+            PayloadAttributes::V2(pa) => match self.get_fork_at_timestamp(pa.timestamp) {
+                ForkName::Bellatrix => ExecutionPayload::Bellatrix(ExecutionPayloadBellatrix {
+                    parent_hash: head_block_hash,
+                    fee_recipient: pa.suggested_fee_recipient,
+                    receipts_root: Hash256::repeat_byte(42),
+                    state_root: Hash256::repeat_byte(43),
+                    logs_bloom: vec![0; 256].try_into().unwrap(),
+                    prev_randao: pa.prev_randao,
+                    block_number: parent.block_number() + 1,
+                    gas_limit: DEFAULT_GAS_LIMIT,
+                    gas_used: GAS_USED,
+                    timestamp: pa.timestamp,
+                    extra_data: mock_el_extra_data::<E>(),
+                    base_fee_per_gas: Uint256::from(1u64),
+                    block_hash: ExecutionBlockHash::zero(),
+                    transactions: vec![].try_into().unwrap(),
+                    topostake_settlement_records: Default::default(),
+                }),
+                ForkName::Capella => ExecutionPayload::Capella(ExecutionPayloadCapella {
+                    parent_hash: head_block_hash,
+                    fee_recipient: pa.suggested_fee_recipient,
+                    receipts_root: Hash256::repeat_byte(42),
+                    state_root: Hash256::repeat_byte(43),
+                    logs_bloom: vec![0; 256].try_into().unwrap(),
+                    prev_randao: pa.prev_randao,
+                    block_number: parent.block_number() + 1,
+                    gas_limit: DEFAULT_GAS_LIMIT,
+                    gas_used: GAS_USED,
+                    timestamp: pa.timestamp,
+                    extra_data: mock_el_extra_data::<E>(),
+                    base_fee_per_gas: Uint256::from(1u64),
+                    block_hash: ExecutionBlockHash::zero(),
+                    transactions: vec![].try_into().unwrap(),
+                    topostake_settlement_records: Default::default(),
+                    withdrawals: pa.withdrawals.clone().try_into().unwrap(),
+                }),
+                _ => unreachable!(),
+            },
+            PayloadAttributes::V3(pa) => match self.get_fork_at_timestamp(pa.timestamp) {
+                ForkName::Deneb => ExecutionPayload::Deneb(ExecutionPayloadDeneb {
+                    parent_hash: head_block_hash,
+                    fee_recipient: pa.suggested_fee_recipient,
+                    receipts_root: Hash256::repeat_byte(42),
+                    state_root: Hash256::repeat_byte(43),
+                    logs_bloom: vec![0; 256].try_into().unwrap(),
+                    prev_randao: pa.prev_randao,
+                    block_number: parent.block_number() + 1,
+                    gas_limit: DEFAULT_GAS_LIMIT,
+                    gas_used: GAS_USED,
+                    timestamp: pa.timestamp,
+                    extra_data: mock_el_extra_data::<E>(),
+                    base_fee_per_gas: Uint256::from(1u64),
+                    block_hash: ExecutionBlockHash::zero(),
+                    transactions: vec![].try_into().unwrap(),
+                    topostake_settlement_records: Default::default(),
+                    withdrawals: pa.withdrawals.clone().try_into().unwrap(),
+                    blob_gas_used: 0,
+                    excess_blob_gas: 0,
+                }),
+                ForkName::Electra => ExecutionPayload::Electra(ExecutionPayloadElectra {
+                    parent_hash: head_block_hash,
+                    fee_recipient: pa.suggested_fee_recipient,
+                    receipts_root: Hash256::repeat_byte(42),
+                    state_root: Hash256::repeat_byte(43),
+                    logs_bloom: vec![0; 256].try_into().unwrap(),
+                    prev_randao: pa.prev_randao,
+                    block_number: parent.block_number() + 1,
+                    gas_limit: DEFAULT_GAS_LIMIT,
+                    gas_used: GAS_USED,
+                    timestamp: pa.timestamp,
+                    extra_data: mock_el_extra_data::<E>(),
+                    base_fee_per_gas: Uint256::from(1u64),
+                    block_hash: ExecutionBlockHash::zero(),
+                    transactions: vec![].try_into().unwrap(),
+                    topostake_settlement_records: Default::default(),
+                    withdrawals: pa.withdrawals.clone().try_into().unwrap(),
+                    blob_gas_used: 0,
+                    excess_blob_gas: 0,
+                }),
+                ForkName::Fulu => ExecutionPayload::Fulu(ExecutionPayloadFulu {
+                    parent_hash: head_block_hash,
+                    fee_recipient: pa.suggested_fee_recipient,
+                    receipts_root: Hash256::repeat_byte(42),
+                    state_root: Hash256::repeat_byte(43),
+                    logs_bloom: vec![0; 256].try_into().unwrap(),
+                    prev_randao: pa.prev_randao,
+                    block_number: parent.block_number() + 1,
+                    gas_limit: DEFAULT_GAS_LIMIT,
+                    gas_used: GAS_USED,
+                    timestamp: pa.timestamp,
+                    extra_data: "block gen was here".as_bytes().to_vec().try_into().unwrap(),
+                    base_fee_per_gas: Uint256::from(1u64),
+                    block_hash: ExecutionBlockHash::zero(),
+                    transactions: vec![].try_into().unwrap(),
+                    topostake_settlement_records: Default::default(),
+                    withdrawals: pa.withdrawals.clone().try_into().unwrap(),
+                    blob_gas_used: 0,
+                    excess_blob_gas: 0,
+                }),
+                _ => unreachable!(),
+            },
+            PayloadAttributes::V4(pa) => match self.get_fork_at_timestamp(pa.timestamp) {
+                ForkName::Gloas => ExecutionPayload::Gloas(ExecutionPayloadGloas {
+                    parent_hash: head_block_hash,
+                    fee_recipient: pa.suggested_fee_recipient,
+                    receipts_root: Hash256::repeat_byte(42),
+                    state_root: Hash256::repeat_byte(43),
+                    logs_bloom: vec![0; 256].try_into().unwrap(),
+                    prev_randao: pa.prev_randao,
+                    block_number: parent.block_number() + 1,
+                    gas_limit: DEFAULT_GAS_LIMIT,
+                    gas_used: GAS_USED,
+                    timestamp: pa.timestamp,
+                    extra_data: "block gen was here".as_bytes().to_vec().try_into().unwrap(),
+                    base_fee_per_gas: Uint256::from(1u64),
+                    block_hash: ExecutionBlockHash::zero(),
+                    transactions: vec![].try_into().unwrap(),
+                    topostake_settlement_records: Default::default(),
+                    withdrawals: pa.withdrawals.clone().try_into().unwrap(),
+                    blob_gas_used: 0,
+                    excess_blob_gas: 0,
+                    block_access_list: VariableList::empty(),
+                    slot_number: pa.slot_number.into(),
+                }),
+                _ => unreachable!(),
+            },
+        };
+
+        // Store execution requests for this payload if configured.
+        if let Some(requests) = self.next_execution_requests.take() {
+            self.execution_requests.insert(id, requests);
+        }
+
+        let fork_name = execution_payload.fork_name();
+        if fork_name.deneb_enabled() {
+            // get random number between 0 and 1 blobs by default
+            // For tests that need higher blob count, consider adding a `set_max_blob_count` method
+            let mut rng = self.rng.lock();
+            let max_blobs = max(1, self.min_blobs_count);
+            let num_blobs = rng.random_range(self.min_blobs_count..=max_blobs);
+            let (bundle, transactions) = generate_blobs(num_blobs, fork_name)?;
+            for tx in Vec::from(transactions) {
+                execution_payload
+                    .transactions_mut()
+                    .push(tx)
+                    .map_err(|_| "transactions are full".to_string())?;
+            }
+            self.blobs_bundles.insert(id, bundle);
+        }
+
+        *execution_payload.block_hash_mut() =
+            ExecutionBlockHash::from_root(execution_payload.tree_hash_root());
+        Ok(execution_payload)
+    }
+}
+
+pub fn load_test_blobs_bundle_v1<E: EthSpec>() -> Result<(KzgCommitment, KzgProof, Blob<E>), String>
+{
+    let BlobsBundle::<E> {
+        commitments,
+        proofs,
+        blobs,
+    } = BlobsBundle::from_ssz_bytes(TEST_BLOB_BUNDLE)
+        .map_err(|e| format!("Unable to decode ssz: {:?}", e))?;
+
+    Ok((
+        commitments
+            .first()
+            .cloned()
+            .ok_or("commitment missing in test bundle")?,
+        proofs
+            .first()
+            .cloned()
+            .ok_or("proof missing in test bundle")?,
+        blobs
+            .first()
+            .cloned()
+            .ok_or("blob missing in test bundle")?,
+    ))
+}
+
+pub fn load_test_blobs_bundle_v2<E: EthSpec>()
+-> Result<(KzgCommitment, KzgProofs<E>, Blob<E>), String> {
+    let BlobsBundle::<E> {
+        commitments,
+        proofs,
+        blobs,
+    } = BlobsBundle::from_ssz_bytes(TEST_BLOB_BUNDLE_V2)
+        .map_err(|e| format!("Unable to decode ssz: {:?}", e))?;
+
+    Ok((
+        commitments
+            .first()
+            .cloned()
+            .ok_or("commitment missing in test bundle")?,
+        // there's only one blob in the test bundle, hence we take all the cell proofs here.
+        proofs,
+        blobs
+            .first()
+            .cloned()
+            .ok_or("blob missing in test bundle")?,
+    ))
+}
+
+pub fn generate_blobs<E: EthSpec>(
+    n_blobs: usize,
+    fork_name: ForkName,
+) -> Result<(BlobsBundle<E>, Transactions<E>), String> {
+    let tx = static_valid_tx::<E>()
+        .map_err(|e| format!("error creating valid tx SSZ bytes: {:?}", e))?;
+    let transactions = vec![tx; n_blobs];
+
+    let bundle = if fork_name.fulu_enabled() {
+        let (kzg_commitment, kzg_proofs, blob) = load_test_blobs_bundle_v2::<E>()?;
+        BlobsBundle {
+            commitments: vec![kzg_commitment; n_blobs].try_into().unwrap(),
+            proofs: vec![kzg_proofs.to_vec(); n_blobs]
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>()
+                .try_into()
+                .unwrap(),
+            blobs: vec![blob; n_blobs].try_into().unwrap(),
+        }
+    } else {
+        let (kzg_commitment, kzg_proof, blob) = load_test_blobs_bundle_v1::<E>()?;
+        BlobsBundle {
+            commitments: vec![kzg_commitment; n_blobs].try_into().unwrap(),
+            proofs: vec![kzg_proof; n_blobs].try_into().unwrap(),
+            blobs: vec![blob; n_blobs].try_into().unwrap(),
+        }
+    };
+
+    Ok((bundle, transactions.try_into().unwrap()))
+}
+
+pub fn static_valid_tx<E: EthSpec>() -> Result<Transaction<E::MaxBytesPerTransaction>, String> {
+    // This is a real transaction hex encoded, but we don't care about the contents of the transaction.
+    let transaction: AlloyTransaction = serde_json::from_str(
+        r#"{
+            "blockHash":"0x1d59ff54b1eb26b013ce3cb5fc9dab3705b415a67127a003c3e61eb445bb8df2",
+            "blockNumber":"0x5daf3b",
+            "from":"0xa7d9ddbe1f17865597fbd27ec712455208b6b76d",
+            "gas":"0xc350",
+            "gasPrice":"0x4a817c800",
+            "hash":"0x88df016429689c079f3b2f6ad39fa052532c56795b733da78a91ebe6a713944b",
+            "input":"0x68656c6c6f21",
+            "nonce":"0x15",
+            "to":"0xf02c1c8e6114b1dbe8937a39260b5b0a374432bb",
+            "transactionIndex":"0x41",
+            "value":"0xf3dbb76162000",
+            "v":"0x25",
+            "r":"0x1b5e176d927f8e9ab405058b2d2457392da3e20f328b16ddabcebc33eaac5fea",
+            "s":"0x4ba69724e8f69de52f0125ad8b3c5c2cef33019bac3249e2c0a2192766d1721c"
+         }"#,
+    )
+    .unwrap();
+
+    VariableList::new(alloy_rlp::encode::<TxEnvelope>(transaction.into()).to_vec())
+        .map_err(|e| format!("Failed to convert transaction to SSZ: {:?}", e))
+}
+
+fn payload_id_from_u64(n: u64) -> PayloadId {
+    n.to_le_bytes()
+}
+
+pub fn generate_genesis_header<E: EthSpec>(spec: &ChainSpec) -> Option<ExecutionPayloadHeader<E>> {
+    let genesis_fork = spec.fork_name_at_slot::<E>(spec.genesis_slot);
+    let genesis_block_hash = generate_genesis_block(Default::default(), 0)
+        .ok()
+        .map(|block| block.block_hash);
+    let empty_transactions_root = Transactions::<E>::empty().tree_hash_root();
+    match genesis_fork {
+        ForkName::Base | ForkName::Altair => {
+            // Pre-Bellatrix forks have no execution payload
+            None
+        }
+        ForkName::Bellatrix => {
+            let mut header = ExecutionPayloadHeader::Bellatrix(<_>::default());
+            *header.block_hash_mut() = genesis_block_hash.unwrap_or_default();
+            *header.transactions_root_mut() = empty_transactions_root;
+            Some(header)
+        }
+        ForkName::Capella => {
+            let mut header = ExecutionPayloadHeader::Capella(<_>::default());
+            *header.block_hash_mut() = genesis_block_hash.unwrap_or_default();
+            *header.transactions_root_mut() = empty_transactions_root;
+            Some(header)
+        }
+        ForkName::Deneb => {
+            let mut header = ExecutionPayloadHeader::Deneb(<_>::default());
+            *header.block_hash_mut() = genesis_block_hash.unwrap_or_default();
+            *header.transactions_root_mut() = empty_transactions_root;
+            Some(header)
+        }
+        ForkName::Electra => {
+            let mut header = ExecutionPayloadHeader::Electra(<_>::default());
+            *header.block_hash_mut() = genesis_block_hash.unwrap_or_default();
+            *header.transactions_root_mut() = empty_transactions_root;
+            Some(header)
+        }
+        ForkName::Fulu => {
+            let mut header = ExecutionPayloadHeader::Fulu(<_>::default());
+            *header.block_hash_mut() = genesis_block_hash.unwrap_or_default();
+            *header.transactions_root_mut() = empty_transactions_root;
+            Some(header)
+        }
+        ForkName::Gloas => {
+            // TODO(gloas): we are using a Fulu header for now, but this gets fixed up by the
+            // genesis builder anyway which translates it to bid/latest_block_hash.
+            let mut header = ExecutionPayloadHeader::Fulu(<_>::default());
+            *header.block_hash_mut() = genesis_block_hash.unwrap_or_default();
+            *header.transactions_root_mut() = empty_transactions_root;
+            Some(header)
+        }
+    }
+}
+
+pub fn generate_genesis_block(
+    terminal_total_difficulty: Uint256,
+    terminal_block_number: u64,
+) -> Result<PoWBlock, String> {
+    generate_pow_block(
+        terminal_total_difficulty,
+        terminal_block_number,
+        0,
+        ExecutionBlockHash::zero(),
+    )
+}
+
+pub fn generate_pow_block(
+    terminal_total_difficulty: Uint256,
+    terminal_block_number: u64,
+    block_number: u64,
+    parent_hash: ExecutionBlockHash,
+) -> Result<PoWBlock, String> {
+    if block_number > terminal_block_number {
+        return Err(format!(
+            "{} is beyond terminal pow block {}",
+            block_number, terminal_block_number
+        ));
+    }
+
+    let total_difficulty = if block_number == terminal_block_number {
+        terminal_total_difficulty
+    } else {
+        let increment = terminal_total_difficulty
+            .checked_div(Uint256::from(terminal_block_number))
+            .expect("terminal block number must be non-zero");
+        increment
+            .checked_mul(Uint256::from(block_number))
+            .expect("overflow computing total difficulty")
+    };
+
+    let mut block = PoWBlock {
+        block_number,
+        block_hash: ExecutionBlockHash::zero(),
+        parent_hash,
+        total_difficulty,
+        timestamp: block_number,
+    };
+
+    block.block_hash = ExecutionBlockHash::from_root(block.tree_hash_root());
+
+    Ok(block)
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use kzg::{CellRef, KzgBlobRef, trusted_setup::get_trusted_setup};
+    use types::{MainnetEthSpec, MinimalEthSpec};
+
+    #[test]
+    fn valid_test_blobs_bundle_v1() {
+        assert!(
+            validate_blob_bundle_v1::<MainnetEthSpec>().is_ok(),
+            "Mainnet preset test blobs bundle should contain valid proofs"
+        );
+        assert!(
+            validate_blob_bundle_v1::<MinimalEthSpec>().is_ok(),
+            "Minimal preset test blobs bundle should contain valid proofs"
+        );
+    }
+
+    #[test]
+    fn valid_test_blobs_bundle_v2() {
+        validate_blob_bundle_v2::<MainnetEthSpec>()
+            .expect("Mainnet preset test blobs bundle v2 should contain valid proofs");
+        validate_blob_bundle_v2::<MinimalEthSpec>()
+            .expect("Minimal preset test blobs bundle v2 should contain valid proofs");
+    }
+
+    fn validate_blob_bundle_v1<E: EthSpec>() -> Result<(), String> {
+        let kzg = load_kzg()?;
+        let (kzg_commitment, kzg_proof, blob) = load_test_blobs_bundle_v1::<E>()?;
+        let kzg_blob: KzgBlobRef = blob
+            .as_ref()
+            .try_into()
+            .map_err(|e| format!("Error converting blob to kzg blob ref: {e:?}"))?;
+        kzg.verify_blob_kzg_proof(kzg_blob, kzg_commitment, kzg_proof)
+            .map_err(|e| format!("Invalid blobs bundle: {e:?}"))
+    }
+
+    fn validate_blob_bundle_v2<E: EthSpec>() -> Result<(), String> {
+        let kzg = load_kzg()?;
+        let (kzg_commitments, kzg_proofs, cells) =
+            load_test_blobs_bundle_v2::<E>().map(|(commitment, proofs, blob)| {
+                let kzg_blob: KzgBlobRef = blob.as_ref().try_into().unwrap();
+                (
+                    vec![commitment.0; proofs.len()],
+                    proofs.into_iter().map(|p| p.0).collect::<Vec<_>>(),
+                    kzg.compute_cells(kzg_blob).unwrap(),
+                )
+            })?;
+        let (cell_indices, cell_refs): (Vec<u64>, Vec<CellRef>) = cells
+            .iter()
+            .enumerate()
+            .map(|(cell_idx, cell)| (cell_idx as u64, CellRef::try_from(cell.as_ref()).unwrap()))
+            .unzip();
+        kzg.verify_cell_proof_batch(&cell_refs, &kzg_proofs, cell_indices, &kzg_commitments)
+            .map_err(|e| format!("Invalid blobs bundle: {e:?}"))
+    }
+
+    fn load_kzg() -> Result<Kzg, String> {
+        Kzg::new_from_trusted_setup(&get_trusted_setup())
+            .map_err(|e| format!("Failed to load trusted setup: {e:?}"))
+    }
+}

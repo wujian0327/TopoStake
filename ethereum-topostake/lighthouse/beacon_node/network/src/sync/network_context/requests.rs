@@ -1,0 +1,264 @@
+use std::time::Instant;
+use std::{collections::hash_map::Entry, hash::Hash};
+
+use fnv::FnvHashMap;
+use lighthouse_network::PeerId;
+use slot_clock::timestamp_now;
+use strum::IntoStaticStr;
+use tracing::{Span, debug};
+use types::{Hash256, Slot};
+
+pub use blobs_by_range::BlobsByRangeRequestItems;
+pub use blocks_by_range::BlocksByRangeRequestItems;
+pub use blocks_by_root::{BlocksByRootRequestItems, BlocksByRootSingleRequest};
+pub use data_columns_by_range::DataColumnsByRangeRequestItems;
+pub use data_columns_by_root::{
+    DataColumnsByRootRequestItems, DataColumnsByRootSingleBlockRequest,
+};
+pub use payload_envelopes_by_range::PayloadEnvelopesByRangeRequestItems;
+pub use payload_envelopes_by_root::{
+    PayloadEnvelopesByRootRequestItems, PayloadEnvelopesByRootSingleRequest,
+};
+
+use crate::metrics;
+
+use super::{RpcEvent, RpcResponseError, RpcResponseResult};
+
+mod blobs_by_range;
+mod blocks_by_range;
+mod blocks_by_root;
+mod data_columns_by_range;
+mod data_columns_by_root;
+mod payload_envelopes_by_range;
+mod payload_envelopes_by_root;
+
+#[derive(Debug, PartialEq, Eq, IntoStaticStr)]
+pub enum LookupVerifyError {
+    NotEnoughResponsesReturned { actual: usize },
+    TooManyResponses,
+    UnrequestedBlockRoot(Hash256),
+    UnrequestedIndex(u64),
+    UnrequestedSlot(Slot),
+    InvalidInclusionProof,
+    DuplicatedData(Slot, u64),
+    InternalError(String),
+}
+
+/// Collection of active requests of a single ReqResp method, i.e. `blocks_by_root`
+pub struct ActiveRequests<K: Eq + Hash, T: ActiveRequestItems> {
+    requests: FnvHashMap<K, ActiveRequest<T>>,
+    name: &'static str,
+}
+
+/// Stateful container for a single active ReqResp request
+struct ActiveRequest<T: ActiveRequestItems> {
+    state: State<T>,
+    peer_id: PeerId,
+    // Error if the request terminates before receiving max expected responses
+    expect_max_responses: bool,
+    start_instant: Instant,
+    span: Span,
+}
+
+enum State<T> {
+    Active(T),
+    CompletedEarly,
+    Errored,
+}
+
+impl<K: Copy + Eq + Hash + std::fmt::Display, T: ActiveRequestItems> ActiveRequests<K, T> {
+    pub fn new(name: &'static str) -> Self {
+        Self {
+            requests: <_>::default(),
+            name,
+        }
+    }
+
+    pub fn insert(
+        &mut self,
+        id: K,
+        peer_id: PeerId,
+        expect_max_responses: bool,
+        items: T,
+        span: Span,
+    ) {
+        let _guard = span.clone().entered();
+        self.requests.insert(
+            id,
+            ActiveRequest {
+                state: State::Active(items),
+                peer_id,
+                expect_max_responses,
+                start_instant: Instant::now(),
+                span,
+            },
+        );
+    }
+
+    /// Handle an `RpcEvent` for a specific request index by `id`.
+    ///
+    /// Lighthouse ReqResp protocol API promises to send 0 or more `RpcEvent::Response` chunks,
+    /// and EITHER a single `RpcEvent::RPCError` or RpcEvent::StreamTermination.
+    ///
+    /// Downstream code expects to receive a single `Result` value per request ID. However,
+    /// `add_item` may convert ReqResp success chunks into errors. This function handles the
+    /// multiple errors / stream termination internally ensuring that a single `Some<Result>` is
+    /// returned.
+    ///
+    /// ## Returns
+    /// - `Some` if the request has either completed or errored, and needs to be actioned by the
+    ///   caller.
+    /// - `None` if no further action is currently needed.
+    pub fn on_response(
+        &mut self,
+        id: K,
+        rpc_event: RpcEvent<T::Item>,
+    ) -> Option<RpcResponseResult<Vec<T::Item>>> {
+        let Entry::Occupied(mut entry) = self.requests.entry(id) else {
+            metrics::inc_counter_vec(&metrics::SYNC_UNKNOWN_NETWORK_REQUESTS, &[self.name]);
+            return None;
+        };
+
+        let result = match rpc_event {
+            // Handler of a success ReqResp chunk. Adds the item to the request accumulator.
+            // `ActiveRequestItems` validates the item before appending to its internal state.
+            RpcEvent::Response(item, seen_timestamp) => {
+                let request = &mut entry.get_mut();
+                let _guard = request.span.clone().entered();
+                match &mut request.state {
+                    State::Active(items) => {
+                        match items.add(item) {
+                            // Received all items we are expecting for, return early, but keep the request
+                            // struct to handle the stream termination gracefully.
+                            Ok(true) => {
+                                let items = items.consume();
+                                request.state = State::CompletedEarly;
+                                Some(Ok((items, seen_timestamp, request.start_instant.elapsed())))
+                            }
+                            // Received item, but we are still expecting more
+                            Ok(false) => None,
+                            // Received an invalid item
+                            Err(e) => {
+                                request.state = State::Errored;
+                                Some(Err(e.into()))
+                            }
+                        }
+                    }
+                    // Should never happen, ReqResp network behaviour enforces a max count of chunks
+                    // When `max_remaining_chunks <= 1` a the inbound stream in terminated in
+                    // `rpc/handler.rs`. Handling this case adds complexity for no gain. Even if an
+                    // attacker could abuse this, there's no gain in sending garbage chunks that
+                    // will be ignored anyway.
+                    State::CompletedEarly => None,
+                    // Ignore items after errors. We may want to penalize repeated invalid chunks
+                    // for the same response. But that's an optimization to ban peers sending
+                    // invalid data faster that we choose to not adopt for now.
+                    State::Errored => None,
+                }
+            }
+            RpcEvent::StreamTermination => {
+                // After stream termination we must forget about this request, there will be no more
+                // messages coming from the network
+                let request = entry.remove();
+                let _guard = request.span.clone().entered();
+                match request.state {
+                    // Received a stream termination in a valid sequence, consume items
+                    State::Active(mut items) => {
+                        if request.expect_max_responses {
+                            Some(Err(LookupVerifyError::NotEnoughResponsesReturned {
+                                actual: items.consume().len(),
+                            }
+                            .into()))
+                        } else {
+                            Some(Ok((
+                                items.consume(),
+                                timestamp_now(),
+                                request.start_instant.elapsed(),
+                            )))
+                        }
+                    }
+                    // Items already returned, ignore stream termination
+                    State::CompletedEarly => None,
+                    // Returned an error earlier, ignore stream termination
+                    State::Errored => None,
+                }
+            }
+            RpcEvent::RPCError(e) => {
+                // After an Error event from the network we must forget about this request as this
+                // may be the last message for this request.
+                let request = entry.remove();
+                let _guard = request.span.clone().entered();
+                match request.state {
+                    // Received error while request is still active, propagate error.
+                    State::Active(_) => Some(Err(e.into())),
+                    // Received error after completing the request, ignore the error. This is okay
+                    // because the network has already registered a downscore event if necessary for
+                    // this message.
+                    State::CompletedEarly => None,
+                    // Received a network error after a validity error. Okay to ignore, see above
+                    State::Errored => None,
+                }
+            }
+        };
+
+        result.map(|result| match result {
+            Ok((items, seen_timestamp, duration)) => {
+                metrics::inc_counter_vec(&metrics::SYNC_RPC_REQUEST_SUCCESSES, &[self.name]);
+                metrics::observe_timer_vec(&metrics::SYNC_RPC_REQUEST_TIME, &[self.name], duration);
+                debug!(
+                    %id,
+                    method = self.name,
+                    count = items.len(),
+                    "Sync RPC request completed"
+                );
+
+                Ok((items, seen_timestamp))
+            }
+            Err(e) => {
+                let err_str: &'static str = match &e {
+                    RpcResponseError::RpcError(e) => e.into(),
+                    RpcResponseError::VerifyError(e) => e.into(),
+                    RpcResponseError::CustodyRequestError(_) => "CustodyRequestError",
+                    RpcResponseError::BlockComponentCouplingError(_) => {
+                        "BlockComponentCouplingError"
+                    }
+                };
+                metrics::inc_counter_vec(&metrics::SYNC_RPC_REQUEST_ERRORS, &[self.name, err_str]);
+                debug!(
+                    %id,
+                    method = self.name,
+                    error = ?e,
+                    "Sync RPC request error"
+                );
+
+                Err(e)
+            }
+        })
+    }
+
+    pub fn active_requests_of_peer(&self, peer_id: &PeerId) -> Vec<&K> {
+        self.requests
+            .iter()
+            .filter(|(_, request)| &request.peer_id == peer_id)
+            .map(|(id, _)| id)
+            .collect()
+    }
+
+    pub fn iter_request_peers(&self) -> impl Iterator<Item = PeerId> + '_ {
+        self.requests.values().map(|request| request.peer_id)
+    }
+
+    pub fn len(&self) -> usize {
+        self.requests.len()
+    }
+}
+
+pub trait ActiveRequestItems {
+    type Item;
+
+    /// Add a new item into the accumulator. Returns true if all expected items have been received.
+    fn add(&mut self, item: Self::Item) -> Result<bool, LookupVerifyError>;
+
+    /// Return all accumulated items consuming them.
+    fn consume(&mut self) -> Vec<Self::Item>;
+}

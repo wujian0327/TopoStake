@@ -1,8 +1,10 @@
 use crate::blockchain::block::Block;
 use crate::blockchain::Blockchain;
-use crate::consensus::{Consensus, Validator, ValidatorError};
+use crate::consensus::{BalanceDelta, Consensus, Validator, ValidatorError};
 use log::{info, warn};
+use rand::prelude::StdRng;
 use rand::Rng;
+use rand::SeedableRng;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -304,7 +306,7 @@ impl Consensus for PowConsensus {
             }
             None => {
                 // 如果在规定时间内没有找到获胜者，随机选择一个验证者并降低难度
-                let mut rng = rand::thread_rng();
+                let mut rng = StdRng::from_seed(combines_seed);
                 let index = rng.gen_range(0..validators.len());
                 self.difficulty = self.difficulty.saturating_sub(1);
                 warn!(
@@ -316,7 +318,7 @@ impl Consensus for PowConsensus {
         }
     }
 
-    fn on_epoch_end(&mut self, blocks: &[Block]) {
+    fn on_epoch_end(&mut self, blocks: &[Block], _validators: &[Validator]) {
         // 在 epoch 结束时调整难度
         self.adjust_difficulty(blocks);
     }
@@ -330,25 +332,23 @@ impl Consensus for PowConsensus {
     }
 
     fn distribute_rewards(
-        &self,
+        &mut self,
         block: &Block,
-        validators: &mut [Validator],
+        validators: &[Validator],
         _nodes_index: HashMap<String, u32>,
-    ) {
+    ) -> Vec<BalanceDelta> {
         // PoW: 固定奖励 + 交易费用
-        if let Some(validator) = validators
-            .iter_mut()
-            .find(|v| v.address == block.header.miner)
-        {
+        if let Some(validator) = validators.iter().find(|v| v.address == block.header.miner) {
             let base_reward = self.base_reward;
             let tx_fees: f64 = block.body.transactions.iter().map(|tx| tx.fee).sum();
             let total_reward = base_reward + tx_fees;
-            validator.stake += total_reward;
             info!(
-                "PoW: Miner {} received reward: base={:.6} + fees={:.6} = {:.6}, new stake: {:.6}",
-                validator.address, base_reward, tx_fees, total_reward, validator.stake
+                "PoW: Miner {} received balance reward: base={:.6} + fees={:.6} = {:.6}",
+                validator.address, base_reward, tx_fees, total_reward
             );
+            return vec![BalanceDelta::new(validator.address.clone(), total_reward)];
         }
+        Vec::new()
     }
 }
 

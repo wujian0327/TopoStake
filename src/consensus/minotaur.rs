@@ -1,6 +1,6 @@
 use crate::blockchain::block::Block;
 use crate::blockchain::Blockchain;
-use crate::consensus::{Consensus, Validator, ValidatorError};
+use crate::consensus::{BalanceDelta, Consensus, Validator, ValidatorError};
 use log::{debug, info, warn};
 use rand::prelude::StdRng;
 use rand::{Rng, RngCore, SeedableRng};
@@ -196,32 +196,30 @@ impl Consensus for MinotaurConsensus {
         Ok(validators[0].clone())
     }
 
-    fn on_epoch_end(&mut self, _blocks: &[Block]) {}
+    fn on_epoch_end(&mut self, _blocks: &[Block], _validators: &[Validator]) {}
 
     fn state_summary(&self) -> String {
         format!("minotaur(pow_w:{:.2})", self.pow_weight)
     }
 
     fn distribute_rewards(
-        &self,
+        &mut self,
         block: &Block,
-        validators: &mut [Validator],
+        validators: &[Validator],
         _nodes_index: HashMap<String, u32>,
-    ) {
+    ) -> Vec<BalanceDelta> {
         // Minotaur: 基础奖励 + 交易费用
-        if let Some(validator) = validators
-            .iter_mut()
-            .find(|v| v.address == block.header.miner)
-        {
+        if let Some(validator) = validators.iter().find(|v| v.address == block.header.miner) {
             let base_reward = self.base_reward;
             let tx_fees: f64 = block.body.transactions.iter().map(|tx| tx.fee).sum();
             let total_reward = base_reward + tx_fees;
-            validator.stake += total_reward;
             info!(
-                "Minotaur: Miner {} received reward: base={:.6} + fees={:.6} = {:.6}, new stake: {:.6}",
-                validator.address, base_reward, tx_fees, total_reward, validator.stake
+                "Minotaur: Miner {} received balance reward: base={:.6} + fees={:.6} = {:.6}",
+                validator.address, base_reward, tx_fees, total_reward
             );
+            return vec![BalanceDelta::new(validator.address.clone(), total_reward)];
         }
+        Vec::new()
     }
 
     fn next_slot(&mut self, validators: &[Validator], block_index: u64) {

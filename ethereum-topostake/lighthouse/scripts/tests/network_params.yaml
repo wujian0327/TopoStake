@@ -1,0 +1,17 @@
+# Full configuration reference [here](https://github.com/ethpandaops/ethereum-package?tab=readme-ov-file#configuration).
+participants:
+  - el_type: geth
+    el_image: ethereum/client-go:latest
+    cl_type: lighthouse
+    cl_image: lighthouse:local
+    cl_extra_params:
+      - --target-peers=3
+    supernode: true
+    count: 4
+network_params:
+  fulu_fork_epoch: 0
+  slot_duration_ms: 3000
+  num_validator_keys_per_node: 20
+global_log_level: debug
+snooper_enabled: false
+additional_services: []

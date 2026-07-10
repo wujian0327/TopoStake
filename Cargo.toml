@@ -11,6 +11,10 @@ path = "src/lib.rs"
 name = "topostake"
 path = "src/main.rs"
 
+[[bench]]
+name = "bls_path"
+harness = false
+
 
 [dependencies]
 rand = "0.8.5"

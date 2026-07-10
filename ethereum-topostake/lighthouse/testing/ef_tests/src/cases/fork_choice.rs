@@ -1,0 +1,1469 @@
+use super::*;
+use crate::decode::{ssz_decode_file, ssz_decode_file_with, ssz_decode_state, yaml_decode_file};
+use ::fork_choice::{AttestationFromBlock, PayloadVerificationStatus, ProposerHeadError};
+use beacon_chain::beacon_proposer_cache::compute_proposer_duties_from_head;
+use beacon_chain::block_verification_types::LookupBlock;
+use beacon_chain::data_column_verification::GossipVerifiedDataColumn;
+use beacon_chain::slot_clock::SlotClock;
+use beacon_chain::{
+    AvailabilityProcessingStatus, BeaconChainTypes, CachedHead, ChainConfig, NotifyExecutionLayer,
+    attestation_verification::{
+        VerifiedAttestation, obtain_indexed_attestation_and_committees_per_slot,
+    },
+    blob_verification::KzgVerifiedBlob,
+    custody_context::NodeCustodyType,
+    test_utils::{BeaconChainHarness, EphemeralHarnessType},
+};
+use bls::AggregateSignature;
+use execution_layer::{
+    PayloadStatusV1, PayloadStatusV1Status, json_structures::JsonPayloadStatusV1Status,
+};
+use proto_array::ReOrgThreshold;
+use serde::Deserialize;
+use ssz_derive::Decode;
+use ssz_types::VariableList;
+use state_processing::VerifySignatures;
+use state_processing::envelope_processing::verify_execution_payload_envelope;
+use state_processing::per_block_processing::is_valid_indexed_payload_attestation;
+use state_processing::state_advance::complete_state_advance;
+use std::future::Future;
+use std::sync::Arc;
+use std::time::Duration;
+use types::{
+    Attestation, AttestationRef, AttesterSlashing, AttesterSlashingRef, BeaconBlock, BeaconState,
+    BlobSidecar, BlobsList, BlockImportSource, Checkpoint, DataColumnSidecar,
+    DataColumnSidecarList, DataColumnSubnetId, Epoch, ExecutionBlockHash, Hash256,
+    IndexedAttestation, IndexedPayloadAttestation, KzgProof, PayloadAttestationMessage,
+    ProposerPreparationData, SignedBeaconBlock, SignedExecutionPayloadEnvelope, Slot, Uint256,
+};
+
+// When set to true, cache any states fetched from the db.
+pub const CACHE_STATE_IN_TESTS: bool = true;
+
+#[derive(Default, Debug, PartialEq, Clone, Deserialize, Decode)]
+#[serde(deny_unknown_fields)]
+pub struct PowBlock {
+    pub block_hash: ExecutionBlockHash,
+    pub parent_hash: ExecutionBlockHash,
+    pub total_difficulty: Uint256,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Head {
+    slot: Slot,
+    root: Hash256,
+    // Post-gloas, the head check also asserts the payload status of the head block
+    #[serde(default)]
+    payload_status: Option<u8>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ShouldOverrideFcu {
+    validator_is_connected: bool,
+    result: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PayloadVoteCheck {
+    block_root: Hash256,
+    votes: Vec<Option<bool>>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Checks {
+    head: Option<Head>,
+    time: Option<u64>,
+    genesis_time: Option<u64>,
+    justified_checkpoint: Option<Checkpoint>,
+    justified_checkpoint_root: Option<Hash256>,
+    finalized_checkpoint: Option<Checkpoint>,
+    u_justified_checkpoint: Option<Checkpoint>,
+    u_finalized_checkpoint: Option<Checkpoint>,
+    proposer_boost_root: Option<Hash256>,
+    get_proposer_head: Option<Hash256>,
+    should_override_forkchoice_update: Option<ShouldOverrideFcu>,
+    head_payload_status: Option<u8>,
+    payload_timeliness_vote: Option<PayloadVoteCheck>,
+    payload_data_availability_vote: Option<PayloadVoteCheck>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PayloadStatus {
+    status: JsonPayloadStatusV1Status,
+    latest_valid_hash: Option<ExecutionBlockHash>,
+    validation_error: Option<String>,
+}
+
+impl From<PayloadStatus> for PayloadStatusV1 {
+    fn from(status: PayloadStatus) -> Self {
+        PayloadStatusV1 {
+            status: status.status.into(),
+            latest_valid_hash: status.latest_valid_hash,
+            validation_error: status.validation_error,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged, deny_unknown_fields)]
+pub enum Step<
+    TBlock,
+    TBlobs,
+    TColumns,
+    TAttestation,
+    TAttesterSlashing,
+    TPowBlock,
+    TExecutionPayload = String,
+    TPayloadAttestationMessage = String,
+> {
+    Tick {
+        tick: u64,
+    },
+    ValidBlock {
+        block: TBlock,
+    },
+    MaybeValidBlockAndBlobs {
+        block: TBlock,
+        blobs: Option<TBlobs>,
+        proofs: Option<Vec<KzgProof>>,
+        valid: bool,
+    },
+    Attestation {
+        attestation: TAttestation,
+        // Post-Gloas `on_attestation` tests can assert that an attestation is rejected (e.g. an
+        // invalid payload-present index). Defaults to `true` for the pre-Gloas tests that omit it.
+        #[serde(default = "default_true")]
+        valid: bool,
+    },
+    AttesterSlashing {
+        attester_slashing: TAttesterSlashing,
+    },
+    PowBlock {
+        pow_block: TPowBlock,
+    },
+    OnPayloadInfo {
+        block_hash: ExecutionBlockHash,
+        payload_status: PayloadStatus,
+    },
+    Checks {
+        checks: Box<Checks>,
+    },
+    MaybeValidBlockAndColumns {
+        block: TBlock,
+        columns: Option<TColumns>,
+        valid: bool,
+    },
+    OnExecutionPayload {
+        execution_payload: TExecutionPayload,
+        valid: bool,
+    },
+    PayloadAttestationMessage {
+        payload_attestation_message: TPayloadAttestationMessage,
+        #[serde(default = "default_true")]
+        valid: bool,
+    },
+}
+
+fn default_true() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Meta {
+    #[serde(default, rename(deserialize = "description"))]
+    _description: Option<String>,
+    // Some Gloas fork choice tests carry a `bls_setting` instead of a description. We accept and
+    // ignore it: the value is always `1` (BLS required), which matches our default behaviour.
+    #[serde(default, rename(deserialize = "bls_setting"))]
+    _bls_setting: Option<u8>,
+}
+
+#[derive(Debug)]
+pub struct ForkChoiceTest<E: EthSpec> {
+    pub description: String,
+    pub anchor_state: BeaconState<E>,
+    pub anchor_block: BeaconBlock<E>,
+    #[allow(clippy::type_complexity)]
+    pub steps: Vec<
+        Step<
+            SignedBeaconBlock<E>,
+            BlobsList<E>,
+            DataColumnSidecarList<E>,
+            Attestation<E>,
+            AttesterSlashing<E>,
+            PowBlock,
+            SignedExecutionPayloadEnvelope<E>,
+            PayloadAttestationMessage,
+        >,
+    >,
+}
+
+impl<E: EthSpec> LoadCase for ForkChoiceTest<E> {
+    fn load_from_dir(path: &Path, fork_name: ForkName) -> Result<Self, Error> {
+        let description = path
+            .iter()
+            .next_back()
+            .expect("path must be non-empty")
+            .to_str()
+            .expect("path must be valid OsStr")
+            .to_string();
+        let spec = &testing_spec::<E>(fork_name);
+
+        #[allow(clippy::type_complexity)]
+        let steps: Vec<
+            Step<String, String, Vec<String>, String, String, String, String, String>,
+        > = yaml_decode_file(&path.join("steps.yaml"))?;
+
+        // Resolve the object names in `steps.yaml` into actual decoded block/attestation objects.
+        let steps = steps
+            .into_iter()
+            .map(|step| match step {
+                Step::Tick { tick } => Ok(Step::Tick { tick }),
+                Step::ValidBlock { block } => {
+                    ssz_decode_file_with(&path.join(format!("{}.ssz_snappy", block)), |bytes| {
+                        SignedBeaconBlock::from_ssz_bytes(bytes, spec)
+                    })
+                    .map(|block| Step::ValidBlock { block })
+                }
+                Step::MaybeValidBlockAndBlobs {
+                    block,
+                    blobs,
+                    proofs,
+                    valid,
+                } => {
+                    let block =
+                        ssz_decode_file_with(&path.join(format!("{block}.ssz_snappy")), |bytes| {
+                            SignedBeaconBlock::from_ssz_bytes(bytes, spec)
+                        })?;
+                    let blobs = blobs
+                        .map(|blobs| ssz_decode_file(&path.join(format!("{blobs}.ssz_snappy"))))
+                        .transpose()?;
+                    Ok(Step::MaybeValidBlockAndBlobs {
+                        block,
+                        blobs,
+                        proofs,
+                        valid,
+                    })
+                }
+                Step::Attestation { attestation, valid } => {
+                    if fork_name.electra_enabled() {
+                        ssz_decode_file(&path.join(format!("{}.ssz_snappy", attestation))).map(
+                            |attestation| Step::Attestation {
+                                attestation: Attestation::Electra(attestation),
+                                valid,
+                            },
+                        )
+                    } else {
+                        ssz_decode_file(&path.join(format!("{}.ssz_snappy", attestation))).map(
+                            |attestation| Step::Attestation {
+                                attestation: Attestation::Base(attestation),
+                                valid,
+                            },
+                        )
+                    }
+                }
+                Step::AttesterSlashing { attester_slashing } => {
+                    if fork_name.electra_enabled() {
+                        ssz_decode_file(&path.join(format!("{}.ssz_snappy", attester_slashing)))
+                            .map(|attester_slashing| Step::AttesterSlashing {
+                                attester_slashing: AttesterSlashing::Electra(attester_slashing),
+                            })
+                    } else {
+                        ssz_decode_file(&path.join(format!("{}.ssz_snappy", attester_slashing)))
+                            .map(|attester_slashing| Step::AttesterSlashing {
+                                attester_slashing: AttesterSlashing::Base(attester_slashing),
+                            })
+                    }
+                }
+                Step::PowBlock { pow_block } => {
+                    ssz_decode_file(&path.join(format!("{}.ssz_snappy", pow_block)))
+                        .map(|pow_block| Step::PowBlock { pow_block })
+                }
+                Step::OnPayloadInfo {
+                    block_hash,
+                    payload_status,
+                } => Ok(Step::OnPayloadInfo {
+                    block_hash,
+                    payload_status,
+                }),
+                Step::Checks { checks } => Ok(Step::Checks { checks }),
+                Step::MaybeValidBlockAndColumns {
+                    block,
+                    columns,
+                    valid,
+                } => {
+                    let block =
+                        ssz_decode_file_with(&path.join(format!("{block}.ssz_snappy")), |bytes| {
+                            SignedBeaconBlock::from_ssz_bytes(bytes, spec)
+                        })?;
+                    let columns = columns
+                        .map(|columns_vec| {
+                            columns_vec
+                                .into_iter()
+                                .map(|column| {
+                                    ssz_decode_file_with(
+                                        &path.join(format!("{column}.ssz_snappy")),
+                                        |bytes| {
+                                            DataColumnSidecar::from_ssz_bytes_for_fork(
+                                                bytes, fork_name,
+                                            )
+                                            .map(Arc::new)
+                                        },
+                                    )
+                                })
+                                .collect::<Result<Vec<_>, _>>()
+                        })
+                        .transpose()?;
+                    Ok(Step::MaybeValidBlockAndColumns {
+                        block,
+                        columns,
+                        valid,
+                    })
+                }
+                Step::OnExecutionPayload {
+                    execution_payload,
+                    valid,
+                } => {
+                    let envelope =
+                        ssz_decode_file(&path.join(format!("{execution_payload}.ssz_snappy")))?;
+                    Ok(Step::OnExecutionPayload {
+                        execution_payload: envelope,
+                        valid,
+                    })
+                }
+                Step::PayloadAttestationMessage {
+                    payload_attestation_message,
+                    valid,
+                } => {
+                    let msg: PayloadAttestationMessage = ssz_decode_file(
+                        &path.join(format!("{payload_attestation_message}.ssz_snappy")),
+                    )?;
+                    Ok(Step::PayloadAttestationMessage {
+                        payload_attestation_message: msg,
+                        valid,
+                    })
+                }
+            })
+            .collect::<Result<_, _>>()?;
+        let anchor_state = ssz_decode_state(&path.join("anchor_state.ssz_snappy"), spec)?;
+        let anchor_block = ssz_decode_file_with(&path.join("anchor_block.ssz_snappy"), |bytes| {
+            BeaconBlock::from_ssz_bytes(bytes, spec)
+        })?;
+
+        // None of the tests have a `meta.yaml` file, except the altair/genesis tests. For those
+        // tests, the meta file has an irrelevant comment as the `description` field. If the meta
+        // file is present, we parse it for two reasons:
+        //
+        // - To satisfy the `check_all_files_accessed.py` check.
+        // - To ensure that the `meta.yaml` only contains a description field and nothing else that
+        //   might be useful.
+        let meta_path = path.join("meta.yaml");
+        if meta_path.exists() {
+            let _meta: Meta = yaml_decode_file(&meta_path)?;
+        }
+
+        Ok(Self {
+            description,
+            anchor_state,
+            anchor_block,
+            steps,
+        })
+    }
+}
+
+impl<E: EthSpec> Case for ForkChoiceTest<E> {
+    fn description(&self) -> String {
+        self.description.clone()
+    }
+
+    fn result(&self, _case_index: usize, fork_name: ForkName) -> Result<(), Error> {
+        let tester = Tester::new(self, testing_spec::<E>(fork_name))?;
+
+        for step in &self.steps {
+            match step {
+                Step::Tick { tick } => tester.set_tick(*tick),
+                Step::ValidBlock { block } => {
+                    tester.process_block_and_blobs(block.clone(), None, None, true)?
+                }
+                Step::MaybeValidBlockAndBlobs {
+                    block,
+                    blobs,
+                    proofs,
+                    valid,
+                } => tester.process_block_and_blobs(
+                    block.clone(),
+                    blobs.clone(),
+                    proofs.clone(),
+                    *valid,
+                )?,
+                Step::Attestation { attestation, valid } => {
+                    tester.process_attestation(attestation, *valid)?
+                }
+                Step::AttesterSlashing { attester_slashing } => {
+                    tester.process_attester_slashing(attester_slashing.to_ref())
+                }
+                Step::PowBlock { pow_block } => tester.process_pow_block(pow_block),
+                Step::OnPayloadInfo {
+                    block_hash,
+                    payload_status,
+                } => {
+                    let el = tester.harness.mock_execution_layer.as_ref().unwrap();
+                    el.server
+                        .set_payload_statuses(*block_hash, payload_status.clone().into());
+                }
+                Step::Checks { checks } => {
+                    let Checks {
+                        head,
+                        time,
+                        genesis_time,
+                        justified_checkpoint,
+                        justified_checkpoint_root,
+                        finalized_checkpoint,
+                        u_justified_checkpoint,
+                        u_finalized_checkpoint,
+                        proposer_boost_root,
+                        get_proposer_head,
+                        should_override_forkchoice_update: should_override_fcu,
+                        head_payload_status,
+                        payload_timeliness_vote,
+                        payload_data_availability_vote,
+                    } = checks.as_ref();
+
+                    if let Some(expected_head) = head {
+                        tester.check_head(*expected_head)?;
+                    }
+
+                    if let Some(expected_time) = time {
+                        tester.check_time(*expected_time)?;
+                    }
+
+                    if let Some(expected_genesis_time) = genesis_time {
+                        tester.check_genesis_time(*expected_genesis_time)?;
+                    }
+
+                    if let Some(expected_justified_checkpoint) = justified_checkpoint {
+                        tester.check_justified_checkpoint(*expected_justified_checkpoint)?;
+                    }
+
+                    if let Some(expected_justified_checkpoint_root) = justified_checkpoint_root {
+                        tester
+                            .check_justified_checkpoint_root(*expected_justified_checkpoint_root)?;
+                    }
+
+                    if let Some(expected_finalized_checkpoint) = finalized_checkpoint {
+                        tester.check_finalized_checkpoint(*expected_finalized_checkpoint)?;
+                    }
+
+                    if let Some(expected_u_justified_checkpoint) = u_justified_checkpoint {
+                        tester.check_u_justified_checkpoint(*expected_u_justified_checkpoint)?;
+                    }
+
+                    if let Some(expected_u_finalized_checkpoint) = u_finalized_checkpoint {
+                        tester.check_u_finalized_checkpoint(*expected_u_finalized_checkpoint)?;
+                    }
+
+                    if let Some(expected_proposer_boost_root) = proposer_boost_root {
+                        tester.check_expected_proposer_boost_root(*expected_proposer_boost_root)?;
+                    }
+
+                    if let Some(should_override_fcu) = should_override_fcu {
+                        tester.check_should_override_fcu(*should_override_fcu)?;
+                    }
+
+                    if let Some(expected_proposer_head) = get_proposer_head {
+                        tester.check_expected_proposer_head(*expected_proposer_head)?;
+                    }
+
+                    if let Some(expected_status) = head_payload_status {
+                        tester.check_head_payload_status(*expected_status)?;
+                    }
+
+                    if let Some(expected) = payload_timeliness_vote {
+                        tester.check_payload_timeliness_vote(expected)?;
+                    }
+
+                    if let Some(expected) = payload_data_availability_vote {
+                        tester.check_payload_data_availability_vote(expected)?;
+                    }
+                }
+
+                Step::MaybeValidBlockAndColumns {
+                    block,
+                    columns,
+                    valid,
+                } => {
+                    tester.process_block_and_columns(block.clone(), columns.clone(), *valid)?;
+                }
+                Step::OnExecutionPayload {
+                    execution_payload,
+                    valid,
+                } => {
+                    tester.process_execution_payload(execution_payload, *valid)?;
+                }
+                Step::PayloadAttestationMessage {
+                    payload_attestation_message,
+                    valid,
+                } => {
+                    tester
+                        .process_payload_attestation_message(payload_attestation_message, *valid)?;
+                }
+            }
+        }
+
+        Ok(())
+    }
+}
+
+/// A testing rig used to execute a test case.
+struct Tester<E: EthSpec> {
+    harness: BeaconChainHarness<EphemeralHarnessType<E>>,
+    spec: Arc<ChainSpec>,
+}
+
+impl<E: EthSpec> Tester<E> {
+    pub fn new(case: &ForkChoiceTest<E>, spec: ChainSpec) -> Result<Self, Error> {
+        let spec = Arc::new(spec);
+        let genesis_time = case.anchor_state.genesis_time();
+
+        if case.anchor_state.slot() != spec.genesis_slot {
+            // I would hope that future fork-choice tests would start from a non-genesis anchors,
+            // however at the time of writing, none do. I think it would be quite easy to do
+            // non-genesis anchors via a weak-subjectivity/checkpoint start.
+            //
+            // Whilst those tests don't exist, we'll avoid adding checkpoint start complexity to the
+            // `BeaconChainHarness` and create a hard failure so we can deal with it then.
+            return Err(Error::FailedToParseTest(
+                "anchor state is not a genesis state".into(),
+            ));
+        }
+
+        let harness = BeaconChainHarness::<EphemeralHarnessType<E>>::builder(E::default())
+            .spec(spec.clone())
+            .keypairs(vec![])
+            .chain_config(ChainConfig {
+                archive: true,
+                ..ChainConfig::default()
+            })
+            .genesis_state_ephemeral_store(case.anchor_state.clone())
+            .mock_execution_layer()
+            .recalculate_fork_times_with_genesis(0)
+            .node_custody_type(NodeCustodyType::Supernode)
+            .mock_execution_layer_all_payloads_valid()
+            .build();
+
+        if harness.chain.genesis_block_root != case.anchor_block.canonical_root() {
+            // This check will need to be removed if/when the fork-choice tests use a non-genesis
+            // anchor state.
+            return Err(Error::FailedToParseTest(
+                "anchor block differs from locally-generated genesis block".into(),
+            ));
+        }
+
+        // Drop any blocks that might be loaded in the mock execution layer. Some of these tests
+        // will provide their own blocks and we want to start from a clean state.
+        harness
+            .mock_execution_layer
+            .as_ref()
+            .unwrap()
+            .server
+            .drop_all_blocks();
+
+        assert_eq!(
+            harness.chain.slot_clock.genesis_duration().as_secs(),
+            genesis_time
+        );
+
+        Ok(Self { harness, spec })
+    }
+
+    fn tick_to_slot(&self, tick: u64) -> Result<Slot, Error> {
+        let genesis_time = self.harness.chain.slot_clock.genesis_duration().as_secs();
+        let since_genesis = tick
+            .checked_sub(genesis_time)
+            .ok_or_else(|| Error::FailedToParseTest("tick is prior to genesis".into()))?;
+        let slots_since_genesis = since_genesis / self.spec.get_slot_duration().as_secs();
+        Ok(self.spec.genesis_slot + slots_since_genesis)
+    }
+
+    fn block_on_dangerous<F: Future>(&self, future: F) -> Result<F::Output, Error> {
+        self.harness
+            .chain
+            .task_executor
+            .clone()
+            .block_on_dangerous(future, "ef_tests_block_on")
+            .ok_or_else(|| Error::InternalError("runtime shutdown".into()))
+    }
+
+    fn find_head(&self) -> Result<CachedHead<E>, Error> {
+        let chain = self.harness.chain.clone();
+        self.block_on_dangerous(chain.recompute_head_at_current_slot())?;
+        Ok(self.harness.chain.canonical_head.cached_head())
+    }
+
+    pub fn set_tick(&self, tick: u64) {
+        self.harness
+            .chain
+            .slot_clock
+            .set_current_time(Duration::from_secs(tick));
+
+        // Compute the slot time manually to ensure the slot clock is correct.
+        let slot = self.tick_to_slot(tick).unwrap();
+        assert_eq!(slot, self.harness.chain.slot().unwrap());
+
+        self.harness
+            .chain
+            .canonical_head
+            .fork_choice_write_lock()
+            .update_time(slot)
+            .unwrap();
+    }
+
+    pub fn process_block_and_columns(
+        &self,
+        block: SignedBeaconBlock<E>,
+        columns: Option<DataColumnSidecarList<E>>,
+        valid: bool,
+    ) -> Result<(), Error> {
+        let block_root = block.canonical_root();
+
+        let mut data_column_success = true;
+
+        if let Some(columns) = columns.clone() {
+            let gossip_verified_data_columns = columns
+                .into_iter()
+                .map(|column| {
+                    let subnet_id =
+                        DataColumnSubnetId::from_column_index(*column.index(), &self.spec);
+                    GossipVerifiedDataColumn::new(column.clone(), subnet_id, &self.harness.chain)
+                        .unwrap_or_else(|_| {
+                            data_column_success = false;
+                            GossipVerifiedDataColumn::__new_for_testing(column)
+                        })
+                })
+                .collect();
+
+            let result = self.block_on_dangerous(
+                self.harness
+                    .chain
+                    .process_gossip_data_columns(gossip_verified_data_columns, || Ok(())),
+            )?;
+            if valid {
+                assert!(result.is_ok());
+            }
+        };
+
+        let block = Arc::new(block);
+        let result: Result<Result<Hash256, ()>, _> = self
+            .block_on_dangerous(self.harness.chain.process_block(
+                block_root,
+                LookupBlock::new(block.clone()),
+                NotifyExecutionLayer::Yes,
+                BlockImportSource::Lookup,
+                || Ok(()),
+            ))?
+            .map(|avail: AvailabilityProcessingStatus| avail.try_into());
+        let success = data_column_success && result.as_ref().is_ok_and(|inner| inner.is_ok());
+        if success != valid {
+            return Err(Error::DidntFail(format!(
+                "block with root {} was valid={} whilst test expects valid={}. result: {:?}",
+                block_root,
+                result.is_ok(),
+                valid,
+                result
+            )));
+        }
+
+        if !valid && columns.is_none() {
+            self.apply_invalid_block(&block)?;
+        }
+
+        // Per spec test runner: an on_block step implies receiving block's attestations
+        // and attester slashings.
+        if success {
+            for attestation in block.message().body().attestations() {
+                let att = attestation.clone_as_attestation();
+                let _ = self.process_attestation(&att, true);
+            }
+            for attester_slashing in block.message().body().attester_slashings() {
+                self.process_attester_slashing(attester_slashing);
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn process_block_and_blobs(
+        &self,
+        block: SignedBeaconBlock<E>,
+        blobs: Option<BlobsList<E>>,
+        kzg_proofs: Option<Vec<KzgProof>>,
+        valid: bool,
+    ) -> Result<(), Error> {
+        let block_root = block.canonical_root();
+
+        let mut blob_success = true;
+
+        if let Some(blobs) = blobs.clone() {
+            let proofs = kzg_proofs.unwrap();
+            let commitments = block
+                .message()
+                .body()
+                .blob_kzg_commitments()
+                .unwrap()
+                .clone();
+
+            // Zipping will stop when any of the zipped lists runs out, which is what we want. Some
+            // of the tests don't provide enough proofs/blobs, and should fail the availability
+            // check.
+            let verified_blobs: Vec<KzgVerifiedBlob<E>> = blobs
+                .into_iter()
+                .zip(proofs)
+                .zip(commitments)
+                .enumerate()
+                .filter_map(|(i, ((blob, kzg_proof), kzg_commitment))| {
+                    let blob_sidecar = Arc::new(BlobSidecar {
+                        index: i as u64,
+                        blob,
+                        kzg_commitment,
+                        kzg_proof,
+                        signed_block_header: block.signed_block_header(),
+                        kzg_commitment_inclusion_proof: block
+                            .message()
+                            .body()
+                            .kzg_commitment_merkle_proof(i)
+                            .unwrap(),
+                    });
+
+                    match KzgVerifiedBlob::new(
+                        blob_sidecar.clone(),
+                        &self.harness.chain.kzg,
+                        Duration::default(),
+                    ) {
+                        Ok(verified) => Some(verified),
+                        Err(_) => {
+                            blob_success = false;
+                            None
+                        }
+                    }
+                })
+                .collect();
+
+            if !verified_blobs.is_empty() {
+                let result = self
+                    .harness
+                    .chain
+                    .data_availability_checker
+                    .put_kzg_verified_blobs(block_root, verified_blobs);
+                if valid {
+                    assert!(
+                        result.is_ok(),
+                        "put_kzg_verified_blobs failed: {:?}",
+                        result
+                    );
+                }
+            }
+        };
+
+        let block = Arc::new(block);
+        let result: Result<Result<Hash256, ()>, _> = self
+            .block_on_dangerous(self.harness.chain.process_block(
+                block_root,
+                LookupBlock::new(block.clone()),
+                NotifyExecutionLayer::Yes,
+                BlockImportSource::Lookup,
+                || Ok(()),
+            ))?
+            .map(|avail: AvailabilityProcessingStatus| avail.try_into());
+        let success = blob_success && result.as_ref().is_ok_and(|inner| inner.is_ok());
+        // Only assert valid blocks import; blob-DA failure cases are expected to import now.
+        if valid && !success {
+            return Err(Error::DidntFail(format!(
+                "block with root {} was valid={} whilst test expects valid={}. result: {:?}",
+                block_root,
+                result.is_ok(),
+                valid,
+                result
+            )));
+        }
+
+        if !valid && blobs.is_none() {
+            self.apply_invalid_block(&block)?;
+        }
+
+        // Per spec test runner: an on_block step implies receiving block's attestations
+        // and attester slashings.
+        if success {
+            for attestation in block.message().body().attestations() {
+                let att = attestation.clone_as_attestation();
+                let _ = self.process_attestation(&att, true);
+            }
+            for attester_slashing in block.message().body().attester_slashings() {
+                self.process_attester_slashing(attester_slashing);
+            }
+        }
+
+        Ok(())
+    }
+
+    // Apply invalid blocks directly against the fork choice `on_block` function. This ensures
+    // that the block is being rejected by `on_block`, not just some upstream block processing
+    // function. When data columns or blobs exist, we don't do this.
+    fn apply_invalid_block(&self, block: &Arc<SignedBeaconBlock<E>>) -> Result<(), Error> {
+        let block_root = block.canonical_root();
+        // A missing parent block whilst `valid == false` means the test should pass.
+        if let Some(parent_block) = self
+            .harness
+            .chain
+            .get_blinded_block(&block.parent_root())
+            .unwrap()
+        {
+            let parent_state_root = parent_block.state_root();
+
+            let mut state = self
+                .harness
+                .chain
+                .get_state(
+                    &parent_state_root,
+                    Some(parent_block.slot()),
+                    CACHE_STATE_IN_TESTS,
+                )
+                .unwrap()
+                .unwrap();
+
+            complete_state_advance(
+                &mut state,
+                Some(parent_state_root),
+                block.slot(),
+                &self.harness.chain.spec,
+            )
+            .unwrap();
+
+            let block_delay = self
+                .harness
+                .chain
+                .slot_clock
+                .seconds_from_current_slot_start()
+                .unwrap();
+
+            let result = self
+                .harness
+                .chain
+                .canonical_head
+                .fork_choice_write_lock()
+                .on_block(
+                    self.harness.chain.slot().unwrap(),
+                    block.message(),
+                    block_root,
+                    block_delay,
+                    &state,
+                    PayloadVerificationStatus::Irrelevant,
+                    &self.harness.chain.spec,
+                );
+
+            if result.is_ok() {
+                return Err(Error::DidntFail(format!(
+                    "block with root {} should fail on_block",
+                    block_root,
+                )));
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn process_attestation(
+        &self,
+        attestation: &Attestation<E>,
+        valid: bool,
+    ) -> Result<(), Error> {
+        // Post-Gloas `on_attestation` tests can assert that an attestation is rejected (e.g. an
+        // invalid same-slot/payload-present index). Treat any failure in either indexing or fork
+        // choice application as a rejection so it can be compared against the expected `valid` flag.
+        let result = obtain_indexed_attestation_and_committees_per_slot(
+            &self.harness.chain,
+            attestation.to_ref(),
+        )
+        .map_err(|e| format!("attestation indexing failed with {:?}", e))
+        .and_then(|(indexed_attestation, _)| {
+            let verified_attestation: ManuallyVerifiedAttestation<EphemeralHarnessType<E>> =
+                ManuallyVerifiedAttestation {
+                    attestation,
+                    indexed_attestation,
+                };
+
+            self.harness
+                .chain
+                .apply_attestation_to_fork_choice(&verified_attestation)
+                .map_err(|e| format!("attestation import failed with {:?}", e))
+        });
+
+        if valid {
+            result.map_err(Error::InternalError)
+        } else if result.is_ok() {
+            Err(Error::DidntFail(
+                "attestation was valid but the test expects it to be rejected".to_string(),
+            ))
+        } else {
+            Ok(())
+        }
+    }
+
+    pub fn process_attester_slashing(&self, attester_slashing: AttesterSlashingRef<E>) {
+        self.harness
+            .chain
+            .canonical_head
+            .fork_choice_write_lock()
+            .on_attester_slashing(attester_slashing)
+    }
+
+    pub fn process_pow_block(&self, pow_block: &PowBlock) {
+        let el = self.harness.mock_execution_layer.as_ref().unwrap();
+
+        // The EF tests don't supply a block number. Our mock execution layer is fine with duplicate
+        // block numbers for the purposes of this test.
+        let block_number = 0;
+
+        el.server.insert_pow_block(
+            block_number,
+            pow_block.block_hash,
+            pow_block.parent_hash,
+            pow_block.total_difficulty,
+        );
+    }
+
+    pub fn check_head(&self, expected_head: Head) -> Result<(), Error> {
+        let head = self.find_head()?;
+        let chain_head = Head {
+            slot: head.head_slot(),
+            root: head.head_block_root(),
+            // Compared separately below so the slot/root equality is not affected.
+            payload_status: expected_head.payload_status,
+        };
+
+        check_equal("head", chain_head, expected_head)?;
+
+        if let Some(expected_status) = expected_head.payload_status {
+            self.check_head_payload_status(expected_status)?;
+        }
+
+        Ok(())
+    }
+
+    pub fn check_time(&self, expected_time: u64) -> Result<(), Error> {
+        let slot = self.harness.chain.slot().map_err(|e| {
+            Error::InternalError(format!("reading current slot failed with {:?}", e))
+        })?;
+        let expected_slot = self.tick_to_slot(expected_time)?;
+        check_equal("time", slot, expected_slot)
+    }
+
+    pub fn check_genesis_time(&self, expected_genesis_time: u64) -> Result<(), Error> {
+        let genesis_time = self.harness.chain.slot_clock.genesis_duration().as_secs();
+        check_equal("genesis_time", genesis_time, expected_genesis_time)
+    }
+
+    pub fn check_justified_checkpoint(&self, expected_checkpoint: Checkpoint) -> Result<(), Error> {
+        let head_checkpoint = self.find_head()?.justified_checkpoint();
+        let fc_checkpoint = self
+            .harness
+            .chain
+            .canonical_head
+            .fork_choice_read_lock()
+            .justified_checkpoint();
+
+        assert_checkpoints_eq("justified_checkpoint", head_checkpoint, fc_checkpoint);
+
+        check_equal("justified_checkpoint", fc_checkpoint, expected_checkpoint)
+    }
+
+    pub fn check_justified_checkpoint_root(
+        &self,
+        expected_checkpoint_root: Hash256,
+    ) -> Result<(), Error> {
+        let head_checkpoint = self.find_head()?.justified_checkpoint();
+        let fc_checkpoint = self
+            .harness
+            .chain
+            .canonical_head
+            .fork_choice_read_lock()
+            .justified_checkpoint();
+
+        assert_checkpoints_eq("justified_checkpoint_root", head_checkpoint, fc_checkpoint);
+
+        check_equal(
+            "justified_checkpoint_root",
+            fc_checkpoint.root,
+            expected_checkpoint_root,
+        )
+    }
+
+    pub fn check_finalized_checkpoint(&self, expected_checkpoint: Checkpoint) -> Result<(), Error> {
+        let head_checkpoint = self.find_head()?.finalized_checkpoint();
+        let fc_checkpoint = self
+            .harness
+            .chain
+            .canonical_head
+            .fork_choice_read_lock()
+            .finalized_checkpoint();
+
+        assert_checkpoints_eq("finalized_checkpoint", head_checkpoint, fc_checkpoint);
+
+        check_equal("finalized_checkpoint", fc_checkpoint, expected_checkpoint)
+    }
+
+    pub fn check_u_justified_checkpoint(
+        &self,
+        expected_checkpoint: Checkpoint,
+    ) -> Result<(), Error> {
+        let u_justified_checkpoint = self
+            .harness
+            .chain
+            .canonical_head
+            .fork_choice_read_lock()
+            .unrealized_justified_checkpoint();
+        check_equal(
+            "u_justified_checkpoint",
+            u_justified_checkpoint,
+            expected_checkpoint,
+        )
+    }
+
+    pub fn check_u_finalized_checkpoint(
+        &self,
+        expected_checkpoint: Checkpoint,
+    ) -> Result<(), Error> {
+        let u_finalized_checkpoint = self
+            .harness
+            .chain
+            .canonical_head
+            .fork_choice_read_lock()
+            .unrealized_finalized_checkpoint();
+        check_equal(
+            "u_finalized_checkpoint",
+            u_finalized_checkpoint,
+            expected_checkpoint,
+        )
+    }
+
+    pub fn check_expected_proposer_boost_root(
+        &self,
+        expected_proposer_boost_root: Hash256,
+    ) -> Result<(), Error> {
+        let proposer_boost_root = self
+            .harness
+            .chain
+            .canonical_head
+            .fork_choice_read_lock()
+            .proposer_boost_root();
+        check_equal(
+            "proposer_boost_root",
+            proposer_boost_root,
+            expected_proposer_boost_root,
+        )
+    }
+
+    pub fn check_expected_proposer_head(
+        &self,
+        expected_proposer_head: Hash256,
+    ) -> Result<(), Error> {
+        let mut fc = self.harness.chain.canonical_head.fork_choice_write_lock();
+        let slot = self.harness.chain.slot().unwrap();
+        let (canonical_head, _) = fc.get_head(slot, &self.harness.spec).unwrap();
+        let proposer_head_result = fc.get_proposer_head(
+            slot,
+            canonical_head,
+            ReOrgThreshold(self.spec.reorg_head_weight_threshold),
+            ReOrgThreshold(self.spec.reorg_parent_weight_threshold),
+            Epoch::new(self.spec.reorg_max_epochs_since_finalization),
+        );
+        let proposer_head = match proposer_head_result {
+            Ok(head) => head.parent_node.root(),
+            Err(ProposerHeadError::DoNotReOrg(_)) => canonical_head,
+            _ => panic!("Unexpected error in get proposer head"),
+        };
+
+        check_equal("proposer_head", proposer_head, expected_proposer_head)
+    }
+
+    pub fn process_execution_payload(
+        &self,
+        signed_envelope: &SignedExecutionPayloadEnvelope<E>,
+        valid: bool,
+    ) -> Result<(), Error> {
+        let block_root = signed_envelope.message.beacon_block_root;
+        let block_hash = signed_envelope.message.payload.block_hash;
+        let store = &self.harness.chain.store;
+        let spec = &self.harness.chain.spec;
+
+        // Simulate the EL: pre-configure the mock execution engine to return VALID
+        // for envelopes the test expects to be valid. Invalid envelopes are left
+        // unconfigured so the mock EE's default (SYNCING) rejects them.
+        let el = self.harness.mock_execution_layer.as_ref().unwrap();
+        if valid {
+            el.server.set_new_payload_status(
+                block_hash,
+                PayloadStatusV1 {
+                    status: JsonPayloadStatusV1Status::Valid.into(),
+                    latest_valid_hash: Some(block_hash),
+                    validation_error: None,
+                },
+            );
+        }
+
+        // Attempt to verify the envelope against the block's post-state.
+        let verification_result = (|| {
+            let block = store
+                .get_blinded_block(&block_root)
+                .map_err(|e| Error::InternalError(format!("Failed to load block: {e:?}")))?
+                .ok_or_else(|| {
+                    Error::InternalError(format!("Block not found for root {block_root:?}"))
+                })?;
+            let block_state_root = block.state_root();
+
+            let state = store
+                .get_hot_state(&block_state_root, CACHE_STATE_IN_TESTS)
+                .map_err(|e| Error::InternalError(format!("Failed to load state: {e:?}")))?
+                .ok_or_else(|| {
+                    Error::InternalError(format!("State not found for root {block_state_root:?}"))
+                })?;
+
+            verify_execution_payload_envelope(
+                &state,
+                signed_envelope,
+                VerifySignatures::True,
+                block_state_root,
+                spec,
+            )
+            .map_err(|e| {
+                Error::InternalError(format!("Failed to process execution payload: {e:?}"))
+            })?;
+
+            // Check the mock EE's response for this block hash (simulates newPayload).
+            let ee_valid = el
+                .server
+                .ctx
+                .get_new_payload_status(&block_hash)
+                .and_then(|r| r.ok())
+                .is_some_and(|s| s.status == PayloadStatusV1Status::Valid);
+            if !ee_valid {
+                return Err(Error::InternalError(format!(
+                    "Mock EE rejected payload with block hash {block_hash:?}",
+                )));
+            }
+
+            Ok(())
+        })();
+
+        if valid {
+            verification_result?;
+
+            // Store the envelope so that child blocks can load the parent's payload.
+            store
+                .put_payload_envelope(&block_root, signed_envelope)
+                .map_err(|e| {
+                    Error::InternalError(format!(
+                        "Failed to store payload envelope for {block_root:?}: {e:?}",
+                    ))
+                })?;
+
+            self.harness
+                .chain
+                .canonical_head
+                .fork_choice_write_lock()
+                .on_valid_payload_envelope_received(block_root)
+                .map_err(|e| {
+                    Error::InternalError(format!(
+                        "on_execution_payload for block root {} failed: {:?}",
+                        block_root, e
+                    ))
+                })?;
+        } else if verification_result.is_ok() {
+            return Err(Error::DidntFail(format!(
+                "on_execution_payload envelope for block root {} should have failed",
+                block_root
+            )));
+        }
+
+        Ok(())
+    }
+
+    pub fn check_head_payload_status(&self, expected_status: u8) -> Result<(), Error> {
+        let head = self.find_head()?;
+        // PayloadStatus repr: Empty=0, Full=1, Pending=2 (matches spec constants).
+        let actual = head.head_payload_status() as u8;
+        check_equal("head_payload_status", actual, expected_status)
+    }
+
+    pub fn check_should_override_fcu(
+        &self,
+        expected_should_override_fcu: ShouldOverrideFcu,
+    ) -> Result<(), Error> {
+        // Determine proposer.
+        let cached_head = self.harness.chain.canonical_head.cached_head();
+        let next_slot = cached_head.snapshot.beacon_block.slot() + 1;
+        let next_slot_epoch = next_slot.epoch(E::slots_per_epoch());
+        let (proposer_indices, decision_root, _, _, fork) =
+            compute_proposer_duties_from_head(next_slot_epoch, &self.harness.chain).unwrap();
+        let proposer_index = proposer_indices[next_slot.as_usize() % E::slots_per_epoch() as usize];
+
+        // Ensure the proposer index cache is primed.
+        self.harness
+            .chain
+            .beacon_proposer_cache
+            .lock()
+            .insert(next_slot_epoch, decision_root, proposer_indices, fork)
+            .unwrap();
+
+        // Update the execution layer proposer preparation to match the test config.
+        let el = self.harness.chain.execution_layer.clone().unwrap();
+        self.block_on_dangerous(async {
+            if expected_should_override_fcu.validator_is_connected {
+                el.update_proposer_preparation(
+                    next_slot_epoch,
+                    [(
+                        &ProposerPreparationData {
+                            validator_index: dbg!(proposer_index) as u64,
+                            fee_recipient: Default::default(),
+                        },
+                        &None,
+                    )],
+                )
+                .await;
+            } else {
+                el.clear_proposer_preparation(proposer_index as u64).await;
+            }
+        })
+        .unwrap();
+
+        // Check forkchoice override.
+        let canonical_fcu_params = cached_head.forkchoice_update_parameters();
+        let fcu_params = self
+            .harness
+            .chain
+            .overridden_forkchoice_update_params(canonical_fcu_params)
+            .unwrap();
+
+        check_equal(
+            "should_override_forkchoice_update",
+            fcu_params != canonical_fcu_params,
+            expected_should_override_fcu.result,
+        )
+    }
+
+    pub fn process_payload_attestation_message(
+        &self,
+        msg: &PayloadAttestationMessage,
+        valid: bool,
+    ) -> Result<(), Error> {
+        let slot = msg.data.slot;
+        let block_root = msg.data.beacon_block_root;
+
+        // Get the state at the block to compute the PTC and verify signature.
+        let store = &self.harness.chain.store;
+        let block = store
+            .get_blinded_block(&block_root)
+            .map_err(|e| Error::InternalError(format!("Failed to load block: {e:?}")))?;
+
+        let state_opt = block.and_then(|block| {
+            store
+                .get_hot_state(&block.state_root(), CACHE_STATE_IN_TESTS)
+                .ok()?
+        });
+
+        // Build IndexedPayloadAttestation from the message.
+        let indexed = IndexedPayloadAttestation::<E> {
+            attesting_indices: VariableList::new(vec![msg.validator_index]).unwrap(),
+            data: msg.data.clone(),
+            signature: AggregateSignature::from(&msg.signature),
+        };
+
+        let result = if let Some(ref state) = state_opt {
+            is_valid_indexed_payload_attestation(
+                state,
+                &indexed,
+                VerifySignatures::True,
+                &self.spec,
+            )
+            .map_err(|e| {
+                Error::InternalError(format!(
+                    "payload attestation signature verification failed for validator {}: {:?}",
+                    msg.validator_index, e
+                ))
+            })
+            .and_then(|_| {
+                let ptc = state.get_ptc(slot, &self.spec).map_err(|e| {
+                    Error::InternalError(format!(
+                        "Could not compute PTC for block root {block_root:?} at slot {slot:?}: {e:?}"
+                    ))
+                })?;
+
+                self.harness
+                    .chain
+                    .canonical_head
+                    .fork_choice_write_lock()
+                    .on_payload_attestation(
+                        self.harness.chain.slot().unwrap(),
+                        &indexed,
+                        AttestationFromBlock::False,
+                        &ptc.0,
+                    )
+                    .map_err(|e| {
+                        Error::InternalError(format!(
+                            "on_payload_attestation for validator {} failed: {:?}",
+                            msg.validator_index, e
+                        ))
+                    })
+            })
+        } else {
+            Err(Error::InternalError(format!(
+                "Could not get state for block root {block_root:?} at slot {slot:?}"
+            )))
+        };
+
+        if valid {
+            result?;
+        } else if result.is_ok() {
+            return Err(Error::DidntFail(format!(
+                "payload_attestation_message for validator {} should have failed",
+                msg.validator_index
+            )));
+        }
+
+        Ok(())
+    }
+
+    pub fn check_payload_timeliness_vote(&self, expected: &PayloadVoteCheck) -> Result<(), Error> {
+        let fc = self.harness.chain.canonical_head.fork_choice_read_lock();
+        let proto_array = fc.proto_array().core_proto_array();
+
+        let node_index = proto_array
+            .indices
+            .get(&expected.block_root)
+            .ok_or_else(|| {
+                Error::InternalError(format!(
+                    "Block root {:?} not found in proto array",
+                    expected.block_root
+                ))
+            })?;
+        let node = proto_array
+            .nodes
+            .get(*node_index)
+            .ok_or_else(|| Error::InternalError(format!("Node index {} not found", node_index)))?;
+        let v29 = node
+            .as_v29()
+            .map_err(|_| Error::InternalError("Node is not V29".to_string()))?;
+
+        let timeliness_votes = &v29.payload_timeliness_votes;
+        let participation = &v29.ptc_participation;
+
+        for (i, expected_vote) in expected.votes.iter().enumerate() {
+            let actual = if !participation.get(i).unwrap() {
+                None // not yet voted
+            } else {
+                Some(timeliness_votes.get(i).unwrap())
+            };
+            if actual != *expected_vote {
+                return Err(Error::NotEqual(format!(
+                    "payload_timeliness_vote[{}]: Got {:?} | Expected {:?}",
+                    i, actual, expected_vote
+                )));
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn check_payload_data_availability_vote(
+        &self,
+        expected: &PayloadVoteCheck,
+    ) -> Result<(), Error> {
+        let fc = self.harness.chain.canonical_head.fork_choice_read_lock();
+        let proto_array = fc.proto_array().core_proto_array();
+
+        let node_index = proto_array
+            .indices
+            .get(&expected.block_root)
+            .ok_or_else(|| {
+                Error::InternalError(format!(
+                    "Block root {:?} not found in proto array",
+                    expected.block_root
+                ))
+            })?;
+        let node = proto_array
+            .nodes
+            .get(*node_index)
+            .ok_or_else(|| Error::InternalError(format!("Node index {} not found", node_index)))?;
+        let v29 = node
+            .as_v29()
+            .map_err(|_| Error::InternalError("Node is not V29".to_string()))?;
+
+        let availability_votes = &v29.payload_data_availability_votes;
+        let participation = &v29.ptc_participation;
+
+        for (i, expected_vote) in expected.votes.iter().enumerate() {
+            let actual = if !participation.get(i).unwrap() {
+                None // not yet voted
+            } else {
+                Some(availability_votes.get(i).unwrap())
+            };
+            if actual != *expected_vote {
+                return Err(Error::NotEqual(format!(
+                    "payload_data_availability_vote[{}]: Got {:?} | Expected {:?}",
+                    i, actual, expected_vote
+                )));
+            }
+        }
+
+        Ok(())
+    }
+}
+
+/// Checks that the `head` checkpoint from the beacon chain head matches the `fc` checkpoint gleaned
+/// directly from fork choice.
+///
+/// This function is necessary due to a quirk documented in this issue:
+///
+/// https://github.com/ethereum/consensus-specs/issues/2566
+fn assert_checkpoints_eq(name: &str, head: Checkpoint, fc: Checkpoint) {
+    assert_eq!(head, fc, "{}", name)
+}
+
+/// Convenience function to create `Error` messages.
+fn check_equal<T: Debug + PartialEq>(check: &str, result: T, expected: T) -> Result<(), Error> {
+    if result == expected {
+        Ok(())
+    } else {
+        Err(Error::NotEqual(format!(
+            "{} check failed: Got {:?} | Expected {:?}",
+            check, result, expected
+        )))
+    }
+}
+
+/// An attestation that is not verified in the `BeaconChain` sense, but verified-enough for these
+/// tests.
+///
+/// The `BeaconChain` verification is not appropriate since these tests use `Attestation`s with
+/// multiple participating validators. Therefore, they are neither aggregated or unaggregated
+/// attestations.
+pub struct ManuallyVerifiedAttestation<'a, T: BeaconChainTypes> {
+    #[allow(dead_code)]
+    attestation: &'a Attestation<T::EthSpec>,
+    indexed_attestation: IndexedAttestation<T::EthSpec>,
+}
+
+impl<T: BeaconChainTypes> VerifiedAttestation<T> for ManuallyVerifiedAttestation<'_, T> {
+    fn attestation(&self) -> AttestationRef<'_, T::EthSpec> {
+        self.attestation.to_ref()
+    }
+
+    fn indexed_attestation(&self) -> &IndexedAttestation<T::EthSpec> {
+        &self.indexed_attestation
+    }
+}

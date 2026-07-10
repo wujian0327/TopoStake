@@ -1,0 +1,509 @@
+use crate::errors::HandleUnavailable;
+use crate::{Error, HotColdDB, ItemStore};
+use std::borrow::Cow;
+use std::marker::PhantomData;
+use typenum::Unsigned;
+use types::{
+    BeaconState, BeaconStateError, BlindedPayload, EthSpec, Hash256, SignedBeaconBlock, Slot,
+};
+
+/// Implemented for types that have ancestors (e.g., blocks, states) that may be iterated over.
+///
+/// ## Note
+///
+/// It is assumed that all ancestors for this object are stored in the database. If this is not the
+/// case, the iterator will start returning `None` prior to genesis.
+pub trait AncestorIter<'a, E: EthSpec, Hot: ItemStore, Cold: ItemStore, I: Iterator> {
+    /// Returns an iterator over the roots of the ancestors of `self`.
+    fn try_iter_ancestor_roots(&self, store: &'a HotColdDB<E, Hot, Cold>) -> Option<I>;
+}
+
+impl<'a, E: EthSpec, Hot: ItemStore, Cold: ItemStore>
+    AncestorIter<'a, E, Hot, Cold, BlockRootsIterator<'a, E, Hot, Cold>> for SignedBeaconBlock<E>
+{
+    /// Iterates across all available prior block roots of `self`, starting at the most recent and ending
+    /// at genesis.
+    fn try_iter_ancestor_roots(
+        &self,
+        store: &'a HotColdDB<E, Hot, Cold>,
+    ) -> Option<BlockRootsIterator<'a, E, Hot, Cold>> {
+        // Ancestor roots and their states are probably in the cold db
+        // but we set `update_cache` to false just in case
+        let state = store
+            .get_state(&self.message().state_root(), Some(self.slot()), false)
+            .ok()??;
+
+        Some(BlockRootsIterator::owned(store, state))
+    }
+}
+
+impl<'a, E: EthSpec, Hot: ItemStore, Cold: ItemStore>
+    AncestorIter<'a, E, Hot, Cold, StateRootsIterator<'a, E, Hot, Cold>> for BeaconState<E>
+{
+    /// Iterates across all available prior state roots of `self`, starting at the most recent and ending
+    /// at genesis.
+    fn try_iter_ancestor_roots(
+        &self,
+        store: &'a HotColdDB<E, Hot, Cold>,
+    ) -> Option<StateRootsIterator<'a, E, Hot, Cold>> {
+        // The `self.clone()` here is wasteful.
+        Some(StateRootsIterator::owned(store, self.clone()))
+    }
+}
+
+pub struct StateRootsIterator<'a, E: EthSpec, Hot: ItemStore, Cold: ItemStore> {
+    inner: RootsIterator<'a, E, Hot, Cold>,
+}
+
+impl<E: EthSpec, Hot: ItemStore, Cold: ItemStore> Clone for StateRootsIterator<'_, E, Hot, Cold> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+        }
+    }
+}
+
+impl<'a, E: EthSpec, Hot: ItemStore, Cold: ItemStore> StateRootsIterator<'a, E, Hot, Cold> {
+    pub fn new(store: &'a HotColdDB<E, Hot, Cold>, beacon_state: &'a BeaconState<E>) -> Self {
+        Self {
+            inner: RootsIterator::new(store, beacon_state),
+        }
+    }
+
+    pub fn owned(store: &'a HotColdDB<E, Hot, Cold>, beacon_state: BeaconState<E>) -> Self {
+        Self {
+            inner: RootsIterator::owned(store, beacon_state),
+        }
+    }
+}
+
+impl<E: EthSpec, Hot: ItemStore, Cold: ItemStore> Iterator
+    for StateRootsIterator<'_, E, Hot, Cold>
+{
+    type Item = Result<(Hash256, Slot), Error>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner
+            .next()
+            .map(|result| result.map(|(_, state_root, slot)| (state_root, slot)))
+    }
+}
+
+/// Iterates backwards through block roots. If any specified slot is unable to be retrieved, the
+/// iterator returns `None` indefinitely.
+///
+/// Uses the `block_roots` field of `BeaconState` as the source of block roots and will
+/// perform a lookup on the `Store` for a prior `BeaconState` if `block_roots` has been
+/// exhausted.
+///
+/// Returns `None` for roots prior to genesis or when there is an error reading from `Store`.
+pub struct BlockRootsIterator<'a, E: EthSpec, Hot: ItemStore, Cold: ItemStore> {
+    inner: RootsIterator<'a, E, Hot, Cold>,
+}
+
+impl<E: EthSpec, Hot: ItemStore, Cold: ItemStore> Clone for BlockRootsIterator<'_, E, Hot, Cold> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+        }
+    }
+}
+
+impl<'a, E: EthSpec, Hot: ItemStore, Cold: ItemStore> BlockRootsIterator<'a, E, Hot, Cold> {
+    /// Create a new iterator over all block roots in the given `beacon_state` and prior states.
+    pub fn new(store: &'a HotColdDB<E, Hot, Cold>, beacon_state: &'a BeaconState<E>) -> Self {
+        Self {
+            inner: RootsIterator::new(store, beacon_state),
+        }
+    }
+
+    /// Create a new iterator over all block roots in the given `beacon_state` and prior states.
+    pub fn owned(store: &'a HotColdDB<E, Hot, Cold>, beacon_state: BeaconState<E>) -> Self {
+        Self {
+            inner: RootsIterator::owned(store, beacon_state),
+        }
+    }
+
+    pub fn from_block(
+        store: &'a HotColdDB<E, Hot, Cold>,
+        block_hash: Hash256,
+    ) -> Result<Self, Error> {
+        Ok(Self {
+            inner: RootsIterator::from_block(store, block_hash)?,
+        })
+    }
+}
+
+impl<E: EthSpec, Hot: ItemStore, Cold: ItemStore> Iterator
+    for BlockRootsIterator<'_, E, Hot, Cold>
+{
+    type Item = Result<(Hash256, Slot), Error>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner
+            .next()
+            .map(|result| result.map(|(block_root, _, slot)| (block_root, slot)))
+    }
+}
+
+/// Iterator over state and block roots that backtracks using the vectors from a `BeaconState`.
+pub struct RootsIterator<'a, E: EthSpec, Hot: ItemStore, Cold: ItemStore> {
+    store: &'a HotColdDB<E, Hot, Cold>,
+    beacon_state: Cow<'a, BeaconState<E>>,
+    slot: Slot,
+}
+
+impl<E: EthSpec, Hot: ItemStore, Cold: ItemStore> Clone for RootsIterator<'_, E, Hot, Cold> {
+    fn clone(&self) -> Self {
+        Self {
+            store: self.store,
+            beacon_state: self.beacon_state.clone(),
+            slot: self.slot,
+        }
+    }
+}
+
+impl<'a, E: EthSpec, Hot: ItemStore, Cold: ItemStore> RootsIterator<'a, E, Hot, Cold> {
+    pub fn new(store: &'a HotColdDB<E, Hot, Cold>, beacon_state: &'a BeaconState<E>) -> Self {
+        Self {
+            store,
+            slot: beacon_state.slot(),
+            beacon_state: Cow::Borrowed(beacon_state),
+        }
+    }
+
+    pub fn owned(store: &'a HotColdDB<E, Hot, Cold>, beacon_state: BeaconState<E>) -> Self {
+        Self {
+            store,
+            slot: beacon_state.slot(),
+            beacon_state: Cow::Owned(beacon_state),
+        }
+    }
+
+    pub fn from_block(
+        store: &'a HotColdDB<E, Hot, Cold>,
+        block_hash: Hash256,
+    ) -> Result<Self, Error> {
+        let block = store
+            .get_blinded_block(&block_hash)?
+            .ok_or_else(|| BeaconStateError::MissingBeaconBlock(block_hash.into()))?;
+        // We are querying some block from the database. It's not clear if the block's state is useful,
+        // we elect not to cache it.
+        let state = store
+            .get_state(&block.state_root(), Some(block.slot()), false)?
+            .ok_or_else(|| BeaconStateError::MissingBeaconState(block.state_root().into()))?;
+        Ok(Self::owned(store, state))
+    }
+
+    fn do_next(&mut self) -> Result<Option<(Hash256, Hash256, Slot)>, Error> {
+        if self.slot == 0 || self.slot > self.beacon_state.slot() {
+            return Ok(None);
+        }
+
+        self.slot -= 1;
+
+        match (
+            self.beacon_state.get_block_root(self.slot),
+            self.beacon_state.get_state_root(self.slot),
+        ) {
+            (Ok(block_root), Ok(state_root)) => Ok(Some((*block_root, *state_root, self.slot))),
+            (Err(BeaconStateError::SlotOutOfBounds), Err(BeaconStateError::SlotOutOfBounds)) => {
+                // Read a `BeaconState` from the store that has access to prior historical roots.
+                if let Some(beacon_state) =
+                    next_historical_root_backtrack_state(self.store, &self.beacon_state)
+                        .handle_unavailable()?
+                {
+                    self.beacon_state = Cow::Owned(beacon_state);
+
+                    let block_root = *self.beacon_state.get_block_root(self.slot)?;
+                    let state_root = *self.beacon_state.get_state_root(self.slot)?;
+
+                    Ok(Some((block_root, state_root, self.slot)))
+                } else {
+                    // No more states available due to weak subjectivity sync.
+                    Ok(None)
+                }
+            }
+            (Err(e), _) => Err(e.into()),
+            (Ok(_), Err(e)) => Err(e.into()),
+        }
+    }
+}
+
+impl<E: EthSpec, Hot: ItemStore, Cold: ItemStore> Iterator for RootsIterator<'_, E, Hot, Cold> {
+    /// (block_root, state_root, slot)
+    type Item = Result<(Hash256, Hash256, Slot), Error>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.do_next().transpose()
+    }
+}
+
+/// Block iterator that uses the `parent_root` of each block to backtrack.
+pub struct ParentRootBlockIterator<'a, E: EthSpec, Hot: ItemStore, Cold: ItemStore> {
+    store: &'a HotColdDB<E, Hot, Cold>,
+    next_block_root: Hash256,
+    _phantom: PhantomData<E>,
+}
+
+impl<'a, E: EthSpec, Hot: ItemStore, Cold: ItemStore> ParentRootBlockIterator<'a, E, Hot, Cold> {
+    pub fn new(store: &'a HotColdDB<E, Hot, Cold>, start_block_root: Hash256) -> Self {
+        Self {
+            store,
+            next_block_root: start_block_root,
+            _phantom: PhantomData,
+        }
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn do_next(
+        &mut self,
+    ) -> Result<Option<(Hash256, SignedBeaconBlock<E, BlindedPayload<E>>)>, Error> {
+        // Stop once we reach the zero parent, otherwise we'll keep returning the genesis
+        // block forever.
+        if self.next_block_root.is_zero() {
+            Ok(None)
+        } else {
+            let block_root = self.next_block_root;
+            let block = self
+                .store
+                .get_blinded_block(&block_root)?
+                .ok_or(Error::BlockNotFound(block_root))?;
+            self.next_block_root = block.message().parent_root();
+            Ok(Some((block_root, block)))
+        }
+    }
+}
+
+impl<E: EthSpec, Hot: ItemStore, Cold: ItemStore> Iterator
+    for ParentRootBlockIterator<'_, E, Hot, Cold>
+{
+    type Item = Result<(Hash256, SignedBeaconBlock<E, BlindedPayload<E>>), Error>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.do_next().transpose()
+    }
+}
+
+#[derive(Clone)]
+/// Extends `BlockRootsIterator`, returning `SignedBeaconBlock` instances, instead of their roots.
+pub struct BlockIterator<'a, E: EthSpec, Hot: ItemStore, Cold: ItemStore> {
+    roots: BlockRootsIterator<'a, E, Hot, Cold>,
+}
+
+impl<'a, E: EthSpec, Hot: ItemStore, Cold: ItemStore> BlockIterator<'a, E, Hot, Cold> {
+    /// Create a new iterator over all blocks in the given `beacon_state` and prior states.
+    pub fn new(store: &'a HotColdDB<E, Hot, Cold>, beacon_state: &'a BeaconState<E>) -> Self {
+        Self {
+            roots: BlockRootsIterator::new(store, beacon_state),
+        }
+    }
+
+    /// Create a new iterator over all blocks in the given `beacon_state` and prior states.
+    pub fn owned(store: &'a HotColdDB<E, Hot, Cold>, beacon_state: BeaconState<E>) -> Self {
+        Self {
+            roots: BlockRootsIterator::owned(store, beacon_state),
+        }
+    }
+
+    fn do_next(&mut self) -> Result<Option<SignedBeaconBlock<E, BlindedPayload<E>>>, Error> {
+        if let Some(result) = self.roots.next() {
+            let (root, _slot) = result?;
+            self.roots.inner.store.get_blinded_block(&root)
+        } else {
+            Ok(None)
+        }
+    }
+}
+
+impl<E: EthSpec, Hot: ItemStore, Cold: ItemStore> Iterator for BlockIterator<'_, E, Hot, Cold> {
+    type Item = Result<SignedBeaconBlock<E, BlindedPayload<E>>, Error>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.do_next().transpose()
+    }
+}
+
+/// Fetch the next state to use whilst backtracking in `*RootsIterator`.
+///
+/// Return `Err(HistoryUnavailable)` in the case where no more backtrack states are available
+/// due to weak subjectivity sync.
+fn next_historical_root_backtrack_state<E: EthSpec, Hot: ItemStore, Cold: ItemStore>(
+    store: &HotColdDB<E, Hot, Cold>,
+    current_state: &BeaconState<E>,
+) -> Result<BeaconState<E>, Error> {
+    // For compatibility with the freezer database's restore points, we load a state at
+    // a restore point slot (thus avoiding replaying blocks). In the case where we're
+    // not frozen, this just means we might not jump back by the maximum amount on
+    // our first jump (i.e. at most 1 extra state load).
+    let new_state_slot = slot_of_prev_restore_point::<E>(current_state.slot());
+
+    let (_, historic_state_upper_limit) = store.get_historic_state_limits();
+
+    if new_state_slot >= historic_state_upper_limit {
+        let new_state_root = current_state.get_state_root(new_state_slot)?;
+        // We are backtracking through historical states, we don't want to cache these.
+        Ok(store
+            .get_state(new_state_root, Some(new_state_slot), false)?
+            .ok_or_else(|| BeaconStateError::MissingBeaconState((*new_state_root).into()))?)
+    } else {
+        Err(Error::HistoryUnavailable)
+    }
+}
+
+/// Compute the slot of the last guaranteed restore point in the freezer database.
+fn slot_of_prev_restore_point<E: EthSpec>(current_slot: Slot) -> Slot {
+    let slots_per_historical_root = E::SlotsPerHistoricalRoot::to_u64();
+    (current_slot - 1) / slots_per_historical_root * slots_per_historical_root
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::{MemoryStore, StoreConfig as Config};
+    use beacon_chain::test_utils::BeaconChainHarness;
+    use beacon_chain::types::MainnetEthSpec;
+    use fixed_bytes::FixedBytesExtended;
+    use std::sync::Arc;
+
+    fn get_state<E: EthSpec>() -> BeaconState<E> {
+        let harness = BeaconChainHarness::builder(E::default())
+            .default_spec()
+            .deterministic_keypairs(1)
+            .fresh_ephemeral_store()
+            .build();
+        harness.advance_slot();
+        harness.get_current_state()
+    }
+
+    fn get_store<E: EthSpec>() -> HotColdDB<E, MemoryStore, MemoryStore> {
+        let store =
+            HotColdDB::open_ephemeral(Config::default(), Arc::new(E::default_spec())).unwrap();
+        // Init achor info so anchor slot is set. Use a random block as it is only used for the
+        // parent_root
+        let _ = store
+            .init_anchor_info(Hash256::ZERO, Slot::new(0), Slot::new(0), false)
+            .unwrap();
+        // Write a state with state root 0 which is the base `put_state` below tries to diff from
+        {
+            let harness = BeaconChainHarness::builder(E::default())
+                .default_spec()
+                .deterministic_keypairs(1)
+                .fresh_ephemeral_store()
+                .build();
+            let genesis_state = harness.get_current_state();
+            store.put_state(&Hash256::ZERO, &genesis_state).unwrap();
+        }
+        store
+    }
+
+    #[test]
+    fn block_root_iter() {
+        let store = get_store::<MainnetEthSpec>();
+
+        let slots_per_historical_root = MainnetEthSpec::slots_per_historical_root();
+
+        let mut state_a: BeaconState<MainnetEthSpec> = get_state();
+        let mut state_b: BeaconState<MainnetEthSpec> = get_state();
+
+        *state_a.slot_mut() = Slot::from(slots_per_historical_root);
+        *state_b.slot_mut() = Slot::from(slots_per_historical_root * 2);
+
+        let mut hashes = (0..).map(Hash256::from_low_u64_be);
+        let roots_a = state_a.block_roots_mut();
+        for i in 0..roots_a.len() {
+            *roots_a.get_mut(i).unwrap() = hashes.next().unwrap();
+        }
+        let roots_b = state_b.block_roots_mut();
+        for i in 0..roots_b.len() {
+            *roots_b.get_mut(i).unwrap() = hashes.next().unwrap();
+        }
+
+        let state_a_root = hashes.next().unwrap();
+        *state_b.state_roots_mut().get_mut(0).unwrap() = state_a_root;
+        state_a.apply_pending_mutations().unwrap();
+        store.put_state(&state_a_root, &state_a).unwrap();
+
+        let iter = BlockRootsIterator::new(&store, &state_b);
+
+        assert!(
+            iter.clone()
+                .any(|result| result.map(|(_root, slot)| slot == 0).unwrap()),
+            "iter should contain zero slot"
+        );
+
+        let mut collected: Vec<(Hash256, Slot)> = iter.collect::<Result<Vec<_>, _>>().unwrap();
+        collected.reverse();
+
+        let expected_len = 2 * MainnetEthSpec::slots_per_historical_root();
+
+        assert_eq!(collected.len(), expected_len);
+
+        for (i, item) in collected.iter().enumerate() {
+            assert_eq!(item.0, Hash256::from_low_u64_be(i as u64));
+        }
+    }
+
+    #[test]
+    fn state_root_iter() {
+        let store = get_store::<MainnetEthSpec>();
+
+        let slots_per_historical_root = MainnetEthSpec::slots_per_historical_root();
+
+        let mut state_a: BeaconState<MainnetEthSpec> = get_state();
+        let mut state_b: BeaconState<MainnetEthSpec> = get_state();
+
+        *state_a.slot_mut() = Slot::from(slots_per_historical_root);
+        *state_b.slot_mut() = Slot::from(slots_per_historical_root * 2);
+
+        let mut hashes = (0..).map(Hash256::from_low_u64_be);
+
+        for slot in 0..slots_per_historical_root {
+            state_a
+                .set_state_root(Slot::from(slot), hashes.next().unwrap())
+                .unwrap_or_else(|_| panic!("should set state_a slot {}", slot));
+        }
+        for slot in slots_per_historical_root..slots_per_historical_root * 2 {
+            state_b
+                .set_state_root(Slot::from(slot), hashes.next().unwrap())
+                .unwrap_or_else(|_| panic!("should set state_b slot {}", slot));
+        }
+
+        let state_a_root = Hash256::from_low_u64_be(slots_per_historical_root as u64);
+        let state_b_root = Hash256::from_low_u64_be(slots_per_historical_root as u64 * 2);
+
+        state_a.apply_pending_mutations().unwrap();
+        state_b.apply_pending_mutations().unwrap();
+
+        store.put_state(&state_a_root, &state_a).unwrap();
+        store.put_state(&state_b_root, &state_b).unwrap();
+
+        let iter = StateRootsIterator::new(&store, &state_b);
+
+        assert!(
+            iter.clone()
+                .any(|result| result.map(|(_root, slot)| slot == 0).unwrap()),
+            "iter should contain zero slot"
+        );
+
+        let mut collected: Vec<(Hash256, Slot)> = iter.collect::<Result<Vec<_>, _>>().unwrap();
+        collected.reverse();
+
+        let expected_len = MainnetEthSpec::slots_per_historical_root() * 2;
+
+        assert_eq!(collected.len(), expected_len, "collection length incorrect");
+
+        for (i, item) in collected.iter().enumerate() {
+            let (hash, slot) = *item;
+
+            assert_eq!(slot, i as u64, "slot mismatch at {}: {} vs {}", i, slot, i);
+
+            assert_eq!(
+                hash,
+                Hash256::from_low_u64_be(i as u64),
+                "hash mismatch at {}",
+                i
+            );
+        }
+    }
+}

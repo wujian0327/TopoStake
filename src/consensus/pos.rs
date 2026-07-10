@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use crate::blockchain::block::Block;
 use crate::blockchain::Blockchain;
-use crate::consensus::{Consensus, Validator, ValidatorError};
+use crate::consensus::{BalanceDelta, Consensus, Validator, ValidatorError};
 use rand::prelude::StdRng;
 use rand::{Rng, SeedableRng};
 
@@ -51,35 +51,32 @@ impl Consensus for PosConsensus {
         Self::select(validators.to_vec(), combines_seed, blockchain.clone())
     }
 
-    fn on_epoch_end(&mut self, _blocks: &[Block]) {}
+    fn on_epoch_end(&mut self, _blocks: &[Block], _validators: &[Validator]) {}
 
     fn state_summary(&self) -> String {
         "pos".to_string()
     }
 
     fn distribute_rewards(
-        &self,
+        &mut self,
         block: &Block,
-        validators: &mut [Validator],
+        validators: &[Validator],
         _nodes_index: HashMap<String, u32>,
-    ) {
+    ) -> Vec<BalanceDelta> {
         // PoS: 固定奖励 + 交易费用
-        if let Some(validator) = validators
-            .iter_mut()
-            .find(|v| v.address == block.header.miner)
-        {
+        if let Some(validator) = validators.iter().find(|v| v.address == block.header.miner) {
             let base_reward = self.base_reward;
             let tx_fees: f64 = block.body.transactions.iter().map(|tx| tx.fee).sum();
             let total_reward = base_reward + tx_fees;
-            validator.stake += total_reward;
             log::info!(
-                "PoS: Miner {} received reward: base={:.6} + fees={:.6} = {:.6}, new stake: {:.6}",
+                "PoS: Miner {} received balance reward: base={:.6} + fees={:.6} = {:.6}",
                 validator.address,
                 base_reward,
                 tx_fees,
-                total_reward,
-                validator.stake
+                total_reward
             );
+            return vec![BalanceDelta::new(validator.address.clone(), total_reward)];
         }
+        Vec::new()
     }
 }

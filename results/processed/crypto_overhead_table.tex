@@ -1,0 +1,16 @@
+\begin{table}[t]
+\centering
+\caption{BLS microbenchmark under different path lengths. Values are mean runtime in milliseconds; sign and verify measure repeated single-signature operations along the path.}
+\label{tab:crypto_overhead}
+\begin{tabular}{c|c|c|c|c}
+\hline
+Path length & Sign & Verify & Aggregate & Aggregate verify \\
+\hline
+1  & 0.100 & 0.567  & 1.249  & 0.686 \\
+2  & 0.190 & 1.076  & 2.435  & 0.770 \\
+4  & 0.385 & 2.195  & 4.820  & 0.874 \\
+8  & 0.727 & 4.450  & 9.561  & 0.995 \\
+16 & 1.617 & 10.287 & 21.786 & 1.473 \\
+\hline
+\end{tabular}
+\end{table}

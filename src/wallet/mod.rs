@@ -12,11 +12,12 @@ use std::fmt;
 use std::num::ParseIntError;
 use std::str::FromStr;
 
-// 设置一个全局的bls的公钥管理对象
-// 一般来说，这个功能在以太坊2.0由验证者注册合约实现
-// 我们简化成一个全局变量来使用
-// 我们希望愿意参与网络贡献的节点，都注册bls公钥
-// 这样可以大大减少签名带来的存储开销
+// Trusted BLS relay-key registry abstraction.
+//
+// A production deployment should register relay keys with proof-of-possession.
+// The simulator derives BLS keys from local wallets and inserts them into this
+// trusted registry at wallet creation time. Path verification never accepts an
+// unregistered key; missing registry entries make the proof invalid.
 lazy_static! {
     static ref BLS_PUB_KEY_MAP: DashMap<String, BlsPublicKey> = DashMap::new();
 }
@@ -24,8 +25,13 @@ lazy_static! {
 pub fn get_bls_pub_key(address: String) -> Option<BlsPublicKey> {
     BLS_PUB_KEY_MAP.get(&address).map(|entry| *entry.value())
 }
-pub fn insert_bls_pub_key(address: String, public_key: BlsPublicKey) {
+
+pub fn register_trusted_bls_pub_key(address: String, public_key: BlsPublicKey) {
     BLS_PUB_KEY_MAP.insert(address, public_key);
+}
+
+pub fn insert_bls_pub_key(address: String, public_key: BlsPublicKey) {
+    register_trusted_bls_pub_key(address, public_key);
 }
 
 #[derive(Debug, Clone)]
@@ -53,7 +59,7 @@ impl Wallet {
         let bls_private_key =
             BlsSecretKey::key_gen(secret_key.secret_bytes().as_slice(), &[]).unwrap();
         let bls_public_key = bls_private_key.sk_to_pk();
-        insert_bls_pub_key(address.clone(), bls_public_key);
+        register_trusted_bls_pub_key(address.clone(), bls_public_key);
         Wallet {
             secret_key,
             public_key,
@@ -76,7 +82,7 @@ impl Wallet {
         let bls_private_key =
             BlsSecretKey::key_gen(secret_key.secret_bytes().as_slice(), &[]).unwrap();
         let bls_public_key = bls_private_key.sk_to_pk();
-        insert_bls_pub_key(address.clone(), bls_public_key);
+        register_trusted_bls_pub_key(address.clone(), bls_public_key);
         Wallet {
             secret_key,
             public_key,

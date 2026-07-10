@@ -22,6 +22,7 @@ pub struct Header {
     pub parent_hash: String,
     pub timestamp: u64,
     pub merkle_root: String,
+    pub path_root: String,
     pub miner: String,
 }
 
@@ -37,6 +38,7 @@ impl Header {
         epoch: u64,
         slot: u64,
         merkle_root: String,
+        path_root: String,
         miner: String,
         parent_hash: String,
     ) -> Header {
@@ -48,6 +50,7 @@ impl Header {
             parent_hash,
             timestamp: tools::get_timestamp(),
             merkle_root,
+            path_root,
             miner,
         };
         header.hash = header.get_hash();
@@ -70,8 +73,9 @@ impl Header {
         let hash = self.hash.as_bytes().len() as u64;
         let parent_hash = self.parent_hash.as_bytes().len() as u64;
         let merkle_root = self.merkle_root.as_bytes().len() as u64;
+        let path_root = self.path_root.as_bytes().len() as u64;
         let miner = self.miner.as_bytes().len() as u64;
-        index + epoch + slot + timestamp + hash + parent_hash + merkle_root + miner
+        index + epoch + slot + timestamp + hash + parent_hash + merkle_root + path_root + miner
     }
 }
 
@@ -84,40 +88,79 @@ impl Block {
         body: Body,
         wallet: Wallet,
     ) -> Result<Block, BlockError> {
-        if body.transactions.len() != body.paths.len() {
+        if body.paths.len() > body.transactions.len() {
             return Err(BlockError::InvalidBlock);
         }
-        for (i, transaction) in body.transactions.iter().enumerate() {
+        for transaction in body.transactions.iter() {
             if !transaction.verify() {
                 return Err(BlockError::InvalidBlockTransactions);
-            }
-            if !body.paths[i].verify(transaction.clone(), wallet.address.clone()) {
-                return Err(BlockError::InvalidBlockPath);
             }
         }
         let hash_vec = body.transactions.iter().map(|t| t.hash.clone()).collect();
         let merkle_root = Block::cal_merkle_root(hash_vec);
-        let header = Header::new(index, epoch, slot, merkle_root, wallet.address, parent_hash);
+        let path_root = Block::cal_path_root(&body.paths);
+        let header = Header::new(
+            index,
+            epoch,
+            slot,
+            merkle_root,
+            path_root,
+            wallet.address,
+            parent_hash,
+        );
         Ok(Block { header, body })
     }
 
     pub fn verify(&self) -> bool {
-        if self.body.transactions.len() != self.body.paths.len() {
+        self.verify_base()
+    }
+
+    pub fn verify_base(&self) -> bool {
+        if self.body.paths.len() > self.body.transactions.len() {
             error!("{}", BlockError::InvalidBlock);
             return false;
         }
-        for (_i, transaction) in self.body.transactions.iter().enumerate() {
+        for transaction in self.body.transactions.iter() {
             if !transaction.verify() {
                 error!("{}", BlockError::InvalidBlockTransactions);
                 return false;
             }
-            // 这块很消耗CPU资源，有n个节点,每个区块有m个交易，就要验证n*m次，本地跑的话，只有进行安全测试时，才会使用下面的代码
-            // if !self.body.paths[i].verify(transaction.clone(), self.header.miner.clone()) {
-            //     error!("{}", BlockError::InvalidBlockPath);
-            //     return false;
-            // }
+        }
+        let tx_root = Block::cal_merkle_root(
+            self.body
+                .transactions
+                .iter()
+                .map(|tx| tx.hash.clone())
+                .collect(),
+        );
+        if tx_root != self.header.merkle_root {
+            error!("{}", BlockError::InvalidBlockTransactions);
+            return false;
+        }
+        let path_root = Block::cal_path_root(&self.body.paths);
+        if path_root != self.header.path_root {
+            error!("{}", BlockError::InvalidBlockPath);
+            return false;
+        }
+        if self.header.hash != self.header.get_hash() {
+            error!("{}", BlockError::InvalidBlock);
+            return false;
         }
         true
+    }
+
+    pub fn verify_path_evidence(&self, transaction_index: usize) -> bool {
+        let Some(transaction) = self.body.transactions.get(transaction_index) else {
+            return false;
+        };
+        let Some(path) = self.body.paths.get(transaction_index) else {
+            return false;
+        };
+        path.verify_at_epoch(
+            transaction.clone(),
+            self.header.miner.clone(),
+            self.header.epoch,
+        )
     }
 
     pub fn cal_merkle_root(mut leaves: Vec<String>) -> String {
@@ -140,6 +183,17 @@ impl Block {
         leaves.into_iter().next().unwrap_or_else(String::new)
     }
 
+    pub fn cal_path_root(paths: &[AggregatedSignedPaths]) -> String {
+        let leaves = paths
+            .iter()
+            .map(|path| {
+                let bytes = serde_json::to_vec(path).unwrap_or_default();
+                encode(tools::Hasher::hash(bytes))
+            })
+            .collect();
+        Block::cal_merkle_root(leaves)
+    }
+
     pub fn gen_genesis_block() -> Block {
         let miner = Wallet::new();
         let transaction = Transaction::new("000".to_string(), 50, miner.clone());
@@ -152,7 +206,7 @@ impl Block {
     pub fn count_node_paths_map(&self) -> HashMap<String, usize> {
         let mut counts: HashMap<String, usize> = HashMap::new();
         for x in self.body.paths.clone() {
-            for p in x.paths {
+            for p in x.full_path(self.header.miner.clone()) {
                 counts
                     .entry(p)
                     .and_modify(|counter| *counter += 1)
@@ -173,7 +227,7 @@ impl Block {
     pub fn count_all_paths(&self) -> usize {
         let mut counts = 0;
         for x in self.body.paths.clone() {
-            for _y in x.paths {
+            for _y in x.full_path(self.header.miner.clone()) {
                 counts += 1;
             }
         }
@@ -181,8 +235,11 @@ impl Block {
     }
 
     pub fn get_all_paths(&self) -> Vec<Vec<String>> {
-        let paths: Vec<Vec<String>> = self.body.paths.iter().map(|p| p.paths.clone()).collect();
-        paths
+        self.body
+            .paths
+            .iter()
+            .map(|p| p.full_path(self.header.miner.clone()))
+            .collect()
     }
 
     pub fn from_json(json: Vec<u8>) -> Result<Block, BlockError> {
@@ -200,13 +257,18 @@ impl Block {
         info!("\t slot:{}:", self.header.slot);
         info!("\t miner:{}:", self.header.miner);
         info!("\t timestamp:{}:", self.header.timestamp);
+        info!("\t path_root:{}:", self.header.path_root);
         for (i, x) in self.body.transactions.iter().enumerate() {
             info!("\t transactions[{i}]:");
             info!("\t\t from:{}:", x.from);
             info!("\t\t to:{}:", x.to);
             info!("\t\t paths:");
             let mut s = String::from("");
-            for (j, p) in self.body.paths[i].paths.clone().iter().enumerate() {
+            for (j, p) in self.body.paths[i]
+                .full_path(self.header.miner.clone())
+                .iter()
+                .enumerate()
+            {
                 if j == 0 {
                     s.push_str("\t\t\t");
                 }
@@ -238,7 +300,12 @@ impl Block {
             .map(|x| x.hash.to_string())
             .collect();
         s.push_str(format!("\t transactions[{}]\n", trans_hash.join(",")).as_str());
-        let paths: Vec<String> = self.body.paths.iter().map(|p| p.paths.join("->")).collect();
+        let paths: Vec<String> = self
+            .body
+            .paths
+            .iter()
+            .map(|p| p.full_path(self.header.miner.clone()).join("->"))
+            .collect();
         s.push_str(format!("\t paths[{}]\n", paths.join(",")).as_str());
         s
     }
@@ -303,7 +370,6 @@ impl From<serde_json::error::Error> for BlockError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::wallet;
 
     #[test]
     fn test_block() {
@@ -315,8 +381,11 @@ mod tests {
         let transaction = Transaction::new("123".to_string(), 32, wallet.clone());
         let mut transaction_paths = TransactionPaths::new(transaction.clone());
         transaction_paths.add_path(wallet2.address.clone(), wallet);
+        assert!(transaction_paths.complete_pending_hop(wallet2.clone()));
         transaction_paths.add_path(wallet3.address.clone(), wallet2);
+        assert!(transaction_paths.complete_pending_hop(wallet3.clone()));
         transaction_paths.add_path(miner.address.clone(), wallet3);
+        assert!(transaction_paths.complete_pending_hop(miner.clone()));
         let body = Body::new(
             vec![transaction],
             vec![AggregatedSignedPaths::from_transaction_paths(
@@ -337,5 +406,29 @@ mod tests {
     #[test]
     fn test_gen_genesis_block() {
         println!("{:#?}", Block::gen_genesis_block());
+    }
+
+    #[test]
+    fn path_metadata_is_committed() {
+        let origin = Wallet::new();
+        let relay = Wallet::new();
+        let miner = Wallet::new();
+        let transaction = Transaction::new("123".to_string(), 32, origin.clone());
+        let mut transaction_paths = TransactionPaths::new(transaction.clone());
+        transaction_paths.add_path(relay.address.clone(), origin);
+        assert!(transaction_paths.complete_pending_hop(relay.clone()));
+        transaction_paths.add_path(miner.address.clone(), relay);
+        assert!(transaction_paths.complete_pending_hop(miner.clone()));
+        let body = Body::new(
+            vec![transaction],
+            vec![AggregatedSignedPaths::from_transaction_paths(
+                transaction_paths,
+            )],
+        );
+        let mut block = Block::new(1, 0, 0, String::from("parent"), body, miner).unwrap();
+        assert!(block.verify_base());
+
+        block.body.paths[0].paths[0] = "0xdeadbeef".to_string();
+        assert!(!block.verify_base());
     }
 }

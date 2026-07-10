@@ -1,0 +1,90 @@
+{
+  "suite": "main",
+  "build_command": ["cargo", "build", "--release"],
+  "binary": "target/release/topostake",
+  "max_parallel": 1,
+  "timeout_seconds": 1200,
+  "seeds": [0, 1, 2],
+  "defaults": {
+    "node_num": 100,
+    "sybil_node_num": 0,
+    "fake_node_num": 0,
+    "unstable_node_num": 0,
+    "topology": "ba",
+    "tx_rate": 100,
+    "stake_gini": 0.6,
+    "transaction_fee": 0.00001,
+    "base_reward": 1.0,
+    "slot_duration": 1,
+    "slot_per_epoch": 5,
+    "max_epochs": 80,
+    "warmup_epochs": 10,
+    "max_tx_per_block": 250,
+    "time_scale": 0.1,
+    "topostake_initial_depth": 4,
+    "beta": 0.2,
+    "topostake_saturation_k": 1.0,
+    "eta": 0.5,
+    "bonus_cap": 1.0,
+    "proposer_fee_ratio": 0.7,
+    "reward_settlement_depth": 2
+  },
+  "experiments": [
+    {
+      "name": "performance_load",
+      "protocols": ["pos", "topostake"],
+      "node_num": [100],
+      "topology": ["ba"],
+      "tx_rate": [25, 50, 100, 150, 200]
+    },
+    {
+      "name": "performance_scale",
+      "protocols": ["pos", "topostake"],
+      "node_num": [50, 100, 200, 300],
+      "topology": ["ba"],
+      "tx_rate": [100]
+    },
+    {
+      "name": "topology_robustness",
+      "protocols": ["pos", "topostake"],
+      "node_num": [100],
+      "topology": ["ba", "er", "ws"],
+      "tx_rate": [100]
+    },
+    {
+      "name": "reward_fairness",
+      "protocols": ["pos", "topostake_eta0", "topostake"],
+      "stake_gini": [0.2, 0.6, 0.8],
+      "relay_profile": ["active", "normal", "lazy"]
+    },
+    {
+      "name": "real_stake_bound",
+      "protocols": ["topostake"],
+      "adversary_stake_fraction": [0.05, 0.10, 0.20, 0.30],
+      "adversary_placement": ["random", "high-degree"],
+      "eta_bonus_product": [0.25, 0.5]
+    },
+    {
+      "name": "path_padding",
+      "protocols": ["topostake"],
+      "padding_identities": [0, 1, 2, 4, 8, 16],
+      "topostake_initial_depth": [2, 4, 8],
+      "adversary_stake_fraction": [0.10],
+      "sybil_node_num": [1],
+      "attack_mode": "path-padding"
+    },
+    {
+      "name": "transaction_flooding",
+      "protocols": ["topostake"],
+      "attack_tx_rate_multiplier": [0, 0.5, 1, 2, 5],
+      "adversary_stake_fraction": [0.10],
+      "attack_mode": "flooding"
+    },
+    {
+      "name": "churn_appendix",
+      "protocols": ["topostake"],
+      "unstable_fraction": [0, 0.1, 0.3, 0.5],
+      "offline_probability": [0.5]
+    }
+  ]
+}

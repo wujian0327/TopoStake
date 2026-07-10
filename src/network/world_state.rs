@@ -1,20 +1,28 @@
-﻿use crate::blockchain::block::Block;
+use crate::blockchain::block::{Block, BlockError, Body};
+use crate::blockchain::path::{conflicting_receipt_count, AggregatedSignedPaths, TransactionPaths};
+use crate::blockchain::transaction::Transaction;
 use crate::blockchain::{BlockChainError, Blockchain};
 use crate::consensus::minotaur::MinotaurConsensus;
 use crate::consensus::pos::PosConsensus;
 use crate::consensus::pow::PowConsensus;
-use crate::consensus::topostake::TopoStakeConsensus;
-use crate::consensus::{Consensus, ConsensusType, RandaoSeed, Validator};
-use crate::metrics::{self, calculate_stake_concentration, SlotMetrics};
+use crate::consensus::topostake::{TopoStakeConfig, TopoStakeConsensus};
+use crate::consensus::{Consensus, ConsensusMetricsSnapshot, ConsensusType, RandaoSeed, Validator};
+use crate::metrics::{
+    self, calculate_hhi, calculate_stake_concentration, EpochMetrics, NodeEpochMetrics, RunSummary,
+    SlotMetrics,
+};
 use crate::network::calculate_gini;
 use crate::network::message::Message;
+use crate::tools;
 use crate::tools::get_timestamp;
-use crate::{consensus, tools};
+use crate::wallet::Wallet;
 use log::{debug, error, info, warn};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::io::Write;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc::{Receiver, Sender};
@@ -28,24 +36,50 @@ pub struct WorldState {
     pub current_slot: Arc<RwLock<SlotManager>>,
     // pub slots: Vec<SlotManager>,
     pub validators: Arc<RwLock<Vec<Validator>>>,
+    pub account_balances: Arc<RwLock<HashMap<String, f64>>>,
     // sender和receiver要和WorldState解耦，独立返回
     // pub sender: Sender<Message>,
     // pub receiver: Receiver<Message>,
     // pub nodes_balance: HashMap<String, u64>,
     pub nodes_sender: HashMap<String, Sender<Message>>,
+    pub node_wallets: HashMap<String, Wallet>,
+    pub node_mempools: HashMap<String, Arc<RwLock<HashMap<String, Arc<TransactionPaths>>>>>,
+    pub node_relay_profiles: HashMap<String, String>,
     pub blockchain: Arc<RwLock<Blockchain>>,
     pub consensus: Box<dyn Consensus>,
     consensus_name: String,
     metrics_filename: String,
     metrics_slots_file: Option<std::fs::File>,
+    epoch_metrics_filename: PathBuf,
+    epoch_metrics_file: Option<std::fs::File>,
+    node_epoch_metrics_filename: PathBuf,
+    node_epoch_metrics_file: Option<std::fs::File>,
+    run_summary_filename: PathBuf,
+    run_id: String,
     slot_duration: Duration,
+    real_slot_duration: Duration,
     slot_per_epoch: u64,
+    election_seed: u64,
+    pub logical_slot_counter: Arc<AtomicU64>,
+    generated_tx_counter: Arc<AtomicU64>,
+    last_generated_tx_counter: u64,
+    fee_spent: Arc<std::sync::Mutex<HashMap<String, f64>>>,
     pub nodes_index: HashMap<String, u32>,
+    pub adversarial_nodes: HashSet<String>,
+    pub node_degrees: HashMap<String, usize>,
+    pub node_betweenness: HashMap<String, f64>,
+    epoch_proposer_counts: HashMap<String, u64>,
+    total_included_tx: u64,
+    total_reward_income: HashMap<String, f64>,
     // 出块成功率统计
     pub block_production_success: usize, // 成功出块数
     pub block_production_failed: usize,  // 失败出块数
-    pub base_reward: f64,                // 所有共识的固定奖励
-    pub max_epochs: u64,                 // 最大运行Epoch数
+    last_block_production_success: usize,
+    last_block_production_failed: usize,
+    pub base_reward: f64, // 所有共识的固定奖励
+    pub max_epochs: u64,  // 最大运行Epoch数
+    max_tx_per_block: usize,
+    confirmation_latency_adjustment_s: f64,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -58,6 +92,57 @@ pub struct SlotManager {
     pub start_timestamp: u64,
 }
 
+#[derive(Default)]
+struct EpochRewardReport {
+    proposer_by_address: HashMap<String, f64>,
+    relay_by_address: HashMap<String, f64>,
+    total_proposer_reward: f64,
+    total_relay_reward: f64,
+    burned_relay_fee: f64,
+}
+
+impl EpochRewardReport {
+    fn total_by_address(&self) -> HashMap<String, f64> {
+        let mut totals = self.proposer_by_address.clone();
+        for (address, reward) in &self.relay_by_address {
+            *totals.entry(address.clone()).or_insert(0.0) += reward;
+        }
+        totals
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct LogicalTxMetadata {
+    pub created_epoch: u64,
+    pub created_slot: u64,
+}
+
+pub fn logical_tx_metadata(created_epoch: u64, created_slot: u64) -> Vec<u8> {
+    serde_json::to_vec(&LogicalTxMetadata {
+        created_epoch,
+        created_slot,
+    })
+    .unwrap_or_default()
+}
+
+fn tx_logical_slot(tx: &Transaction, slots_per_epoch: u64) -> Option<u64> {
+    let metadata: LogicalTxMetadata = serde_json::from_slice(&tx.data).ok()?;
+    Some(metadata.created_epoch * slots_per_epoch + metadata.created_slot)
+}
+
+fn logical_time_seconds(epoch: u64, slot: u64, slots_per_epoch: u64, slot_duration: u64) -> u64 {
+    (epoch * slots_per_epoch + slot) * slot_duration
+}
+
+fn derive_election_seed(election_seed: u64, epoch: u64, slot: u64, block_index: u64) -> [u8; 32] {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&election_seed.to_le_bytes());
+    bytes.extend_from_slice(&epoch.to_le_bytes());
+    bytes.extend_from_slice(&slot.to_le_bytes());
+    bytes.extend_from_slice(&block_index.to_le_bytes());
+    tools::Hasher::hash(bytes)
+}
+
 impl WorldState {
     pub fn new(
         genesis_block: Block,
@@ -67,23 +152,36 @@ impl WorldState {
         slot_per_epoch: u64,
         pow_difficulty: usize,
         pow_max_threads: usize,
-        omega: f64,
-        beta: f64,
+        topostake_config: TopoStakeConfig,
         base_reward: f64,
         node_num: u32,
         trans_num: u32,
         topology: String,
         max_epochs: u64,
-        metrics_prefix: String,
+        max_tx_per_block: usize,
+        output_dir: PathBuf,
+        run_id: String,
+        election_seed: u64,
+        real_time: bool,
+        time_scale: f64,
+        confirmation_latency_adjustment_s: f64,
+        generated_tx_counter: Arc<AtomicU64>,
+        fee_spent: Arc<std::sync::Mutex<HashMap<String, f64>>>,
     ) -> (Self, Sender<Message>, Receiver<Message>) {
         let (sender, receiver) = tokio::sync::mpsc::channel(4096);
         let nodes_sender: HashMap<String, Sender<Message>> = HashMap::new();
         let slot_duration = Duration::from_secs(slot_duration_secs);
+        let real_slot_duration = if real_time {
+            slot_duration
+        } else {
+            Duration::from_secs_f64(slot_duration.as_secs_f64() * time_scale.max(f64::EPSILON))
+        };
         let consensus_name = consensus_type.to_string();
         let consensus: Box<dyn Consensus> = match consensus_type {
-            ConsensusType::TopoStake => {
-                Box::new(TopoStakeConsensus::new(0, base_reward, omega, beta))
-            }
+            ConsensusType::TopoStake => Box::new(
+                TopoStakeConsensus::new(base_reward, topostake_config.clone())
+                    .expect("invalid TopoStake config"),
+            ),
             ConsensusType::POS => Box::new(PosConsensus::new(base_reward)),
             ConsensusType::POW => Box::new(PowConsensus::new(
                 pow_difficulty,
@@ -96,21 +194,46 @@ impl WorldState {
             }
         };
         // Initialize metrics files - delete old file and create new one
+        let _ = std::fs::create_dir_all(&output_dir);
         let metrics_filename = match consensus_type {
             ConsensusType::TopoStake => format!(
-                "{}_{}_n_{}_t_{}_{}_omega_{}_beta_{}.csv",
-                metrics_prefix, consensus_name, node_num, trans_num, topology, omega, beta
+                "slot_metrics_{}_n_{}_t_{}_{}_D_{}_beta_{}_eta_{}_cap_{}.csv",
+                consensus_name,
+                node_num,
+                trans_num,
+                topology,
+                topostake_config.initial_depth,
+                topostake_config.beta,
+                topostake_config.eta,
+                topostake_config.bonus_cap
             ),
             _ => format!(
-                "{}_{}_n_{}_t_{}_{}.csv",
-                metrics_prefix, consensus_name, node_num, trans_num, topology
+                "slot_metrics_{}_n_{}_t_{}_{}.csv",
+                consensus_name, node_num, trans_num, topology
             ),
         };
-        let _ = std::fs::remove_file(&metrics_filename); // 删除旧文件
+        let metrics_path = output_dir.join(metrics_filename);
+        let epoch_metrics_filename = output_dir.join("epoch_metrics.csv");
+        let node_epoch_metrics_filename = output_dir.join("node_epoch_metrics.csv");
+        let run_summary_filename = output_dir.join("run_summary.json");
+        let _ = std::fs::remove_file(&metrics_path);
+        let _ = std::fs::remove_file(&epoch_metrics_filename);
+        let _ = std::fs::remove_file(&node_epoch_metrics_filename);
+        let _ = std::fs::remove_file(&run_summary_filename);
         let metrics_slots_file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
-            .open(&metrics_filename)
+            .open(&metrics_path)
+            .ok();
+        let epoch_metrics_file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&epoch_metrics_filename)
+            .ok();
+        let node_epoch_metrics_file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&node_epoch_metrics_filename)
             .ok();
 
         (
@@ -120,23 +243,49 @@ impl WorldState {
                     slot_duration,
                     current_epoch: 0,
                     current_slot: 0,
-                    next_seed: [0; 32],
+                    next_seed: derive_election_seed(election_seed, 0, 0, 0),
                     start_timestamp: genesis_block.header.timestamp,
                 })),
                 validators: Arc::new(RwLock::new(vec![])),
+                account_balances: Arc::new(RwLock::new(HashMap::new())),
                 nodes_sender,
+                node_wallets: HashMap::new(),
+                node_mempools: HashMap::new(),
+                node_relay_profiles: HashMap::new(),
                 blockchain: Arc::new(RwLock::new(blockchain)),
                 consensus,
                 consensus_name,
-                metrics_filename,
+                metrics_filename: metrics_path.to_string_lossy().to_string(),
                 metrics_slots_file,
+                epoch_metrics_filename,
+                epoch_metrics_file,
+                node_epoch_metrics_filename,
+                node_epoch_metrics_file,
+                run_summary_filename,
+                run_id,
                 slot_duration,
+                real_slot_duration,
                 slot_per_epoch,
+                election_seed,
+                logical_slot_counter: Arc::new(AtomicU64::new(0)),
+                generated_tx_counter,
+                last_generated_tx_counter: 0,
+                fee_spent,
                 nodes_index: HashMap::new(),
+                adversarial_nodes: HashSet::new(),
+                node_degrees: HashMap::new(),
+                node_betweenness: HashMap::new(),
+                epoch_proposer_counts: HashMap::new(),
+                total_included_tx: 0,
+                total_reward_income: HashMap::new(),
                 block_production_success: 0,
                 block_production_failed: 0,
+                last_block_production_success: 0,
+                last_block_production_failed: 0,
                 base_reward,
                 max_epochs,
+                max_tx_per_block,
+                confirmation_latency_adjustment_s,
             },
             sender,
             receiver,
@@ -146,36 +295,44 @@ impl WorldState {
     pub async fn next_slot(&mut self) {
         let current_slot = self.current_slot.read().await.clone();
         let block_index = self.blockchain.read().await.get_last_index();
-        //计算randao seed
         let validators = self.validators.read().await.clone();
-        let next_seed = consensus::combine_seed(validators.clone(), current_slot.randao_seeds);
 
         if current_slot.current_slot >= self.slot_per_epoch - 1 {
             //更新epoch
             self.next_epoch().await;
         } else {
+            let next_slot = current_slot.current_slot + 1;
+            let next_seed = derive_election_seed(
+                self.election_seed,
+                current_slot.current_epoch,
+                next_slot,
+                block_index + 1,
+            );
             self.current_slot = Arc::new(RwLock::new(SlotManager {
                 randao_seeds: vec![],
                 slot_duration: self.slot_duration,
                 current_epoch: current_slot.current_epoch,
-                current_slot: current_slot.current_slot + 1,
+                current_slot: next_slot,
                 next_seed,
                 start_timestamp: get_timestamp(),
             }));
         }
         self.consensus.next_slot(&validators, block_index);
+        self.logical_slot_counter.fetch_add(1, Ordering::Relaxed);
         let current_slot = self.get_current_slot().await;
+        let selection_seed = current_slot.next_seed;
         info!(
             "World State change slot to: epoch[{}] slot[{}] consensus[{}] seed{:?}",
             current_slot.current_epoch,
             current_slot.current_slot,
             self.consensus.state_summary(),
-            next_seed
+            selection_seed
         );
 
         let nodes_sender: Vec<Sender<Message>> = self.nodes_sender.values().cloned().collect();
 
-        //通知所有节点更新slot
+        //通知所有节点更新slot。控制消息必须可靠送达，否则节点的本地
+        //epoch/slot 会落后，后续交易的 logical metadata 和 randao 都会被污染。
         for sender in nodes_sender {
             if let Err(e) = sender
                 .send(Message::new_update_slot_msg(current_slot.clone()))
@@ -187,42 +344,63 @@ impl WorldState {
 
         //通知所有的validator可以开始新一轮的发送seed
         for v in validators.clone() {
-            if let Err(e) = self.nodes_sender[&v.address]
-                .send(Message::new_send_randao_seed_msg())
-                .await
-            {
-                error!("World State error: send new randao seed msg failed {:?}", e);
+            if let Some(sender) = self.nodes_sender.get(&v.address) {
+                if let Err(e) = sender.send(Message::new_send_randao_seed_msg()).await {
+                    error!("World State error: send new randao seed msg failed {:?}", e);
+                }
             }
         }
 
         //获得出块节点
         let bc = self.blockchain.read().await.clone();
-        let miner_validator =
-            match self
-                .consensus
-                .select_proposer(&validators, next_seed.clone(), &bc)
-            {
-                Ok(miner) => miner,
-                Err(e) => {
-                    warn!("World State error: select proposer failed: {}", e);
-                    return;
-                }
-            };
-
-        //这里简化成通知miner出块，实际上应该是每个节点自己算
-        match self.nodes_sender.get(&miner_validator.address) {
-            Some(sender) => {
-                debug!(
-                    "World State find miner: {}",
-                    miner_validator.address.clone()
-                );
-                sender
-                    .send(Message::new_generate_block_msg())
-                    .await
-                    .unwrap();
+        let miner_validator = match self
+            .consensus
+            .select_proposer(&validators, selection_seed, &bc)
+        {
+            Ok(miner) => miner,
+            Err(e) => {
+                warn!("World State error: select proposer failed: {}", e);
+                return;
             }
-            None => {
-                error!("World State error: failed to find miner");
+        };
+        *self
+            .epoch_proposer_counts
+            .entry(miner_validator.address.clone())
+            .or_insert(0) += 1;
+
+        debug!(
+            "World State find miner: {}",
+            miner_validator.address.clone()
+        );
+        match self
+            .build_canonical_block(
+                &miner_validator,
+                current_slot.current_epoch,
+                current_slot.current_slot,
+            )
+            .await
+        {
+            Ok(block) => {
+                if let Err(e) = self.apply_canonical_block(&block).await {
+                    error!("World State Add Block Error: {}", e);
+                    self.block_production_failed += 1;
+                } else {
+                    let block_arc = Arc::new(block);
+                    let miner_address = miner_validator.address.clone();
+                    for sender in self.nodes_sender.values() {
+                        let _ = sender.try_send(Message::new_block_msg(
+                            block_arc.clone(),
+                            miner_address.clone(),
+                        ));
+                    }
+                }
+            }
+            Err(e) => {
+                error!(
+                    "World State error: failed to build canonical block for miner {}: {}",
+                    miner_validator.address, e
+                );
+                self.block_production_failed += 1;
             }
         }
 
@@ -235,10 +413,16 @@ impl WorldState {
         let _current_epoch = current_slot.current_epoch;
         //更新epoch中调用consensus的on_epoch_end
         let blocks = self.blockchain.read().await.get_last_epoch_block();
-        self.consensus.on_epoch_end(&blocks);
-
         let validators = self.validators.read().await.clone();
-        let next_seed = consensus::combine_seed(validators.clone(), current_slot.randao_seeds);
+        self.consensus.on_epoch_end(&blocks, &validators);
+        self.collect_epoch_metrics(current_slot.current_epoch, &blocks, &validators)
+            .await;
+        let next_seed = derive_election_seed(
+            self.election_seed,
+            current_slot.current_epoch + 1,
+            0,
+            self.blockchain.read().await.get_last_index() + 1,
+        );
         self.current_slot = Arc::new(RwLock::new(SlotManager {
             randao_seeds: vec![],
             slot_duration: self.slot_duration,
@@ -267,12 +451,125 @@ impl WorldState {
 
         if current_slot.current_epoch + 1 >= self.max_epochs {
             info!("Reached max epochs ({}), shutting down...", self.max_epochs);
+            self.write_run_summary(current_slot.current_epoch + 1).await;
             std::process::exit(0);
         }
     }
 
     pub async fn get_current_slot(&self) -> SlotManager {
         self.current_slot.read().await.clone()
+    }
+
+    async fn build_canonical_block(
+        &self,
+        miner: &Validator,
+        epoch: u64,
+        slot: u64,
+    ) -> Result<Block, BlockError> {
+        let wallet = self
+            .node_wallets
+            .get(&miner.address)
+            .cloned()
+            .ok_or(BlockError::InvalidBlock)?;
+        let mempool = self
+            .node_mempools
+            .get(&miner.address)
+            .cloned()
+            .ok_or(BlockError::InvalidBlock)?;
+
+        let transaction_paths_to_pack = {
+            let transaction_paths_cache = mempool.read().await;
+            let blockchain = self.blockchain.read().await;
+            let mut valid_paths: Vec<Arc<TransactionPaths>> = transaction_paths_cache
+                .values()
+                .filter(|paths| !blockchain.exist_transaction(&paths.transaction.hash))
+                .cloned()
+                .collect();
+
+            valid_paths.sort_by(|a, b| {
+                b.transaction
+                    .fee
+                    .partial_cmp(&a.transaction.fee)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| a.transaction.timestamp.cmp(&b.transaction.timestamp))
+            });
+            valid_paths.truncate(self.max_tx_per_block);
+            valid_paths
+        };
+
+        if !transaction_paths_to_pack.is_empty() {
+            let mut transaction_paths_cache = mempool.write().await;
+            for paths in &transaction_paths_to_pack {
+                transaction_paths_cache.remove(&paths.transaction.hash);
+            }
+        }
+
+        let mut transactions = Vec::with_capacity(transaction_paths_to_pack.len());
+        let mut paths = Vec::with_capacity(transaction_paths_to_pack.len());
+        for transaction_paths in transaction_paths_to_pack {
+            transactions.push(transaction_paths.transaction.clone());
+            paths.push(AggregatedSignedPaths::from_transaction_paths(
+                transaction_paths.as_ref().clone(),
+            ));
+        }
+
+        let (last_index, last_hash) = {
+            let blockchain = self.blockchain.read().await;
+            (blockchain.get_last_index(), blockchain.get_last_hash())
+        };
+        Block::new(
+            last_index + 1,
+            epoch,
+            slot,
+            last_hash,
+            Body::new(transactions, paths),
+            wallet,
+        )
+    }
+
+    async fn apply_canonical_block(&mut self, block: &Block) -> Result<(), BlockChainError> {
+        {
+            self.blockchain.write().await.add_block(block.clone())?;
+        }
+        self.block_production_success += 1;
+
+        let validators_snapshot = self.validators.read().await.clone();
+        let reward_deltas = self.consensus.distribute_rewards(
+            block,
+            &validators_snapshot,
+            self.nodes_index.clone(),
+        );
+
+        let balance_updates = {
+            let mut balances = self.account_balances.write().await;
+            let mut touched = HashSet::new();
+            for delta in reward_deltas {
+                let address = delta.address;
+                *balances.entry(address.clone()).or_insert(0.0) += delta.amount;
+                touched.insert(address);
+            }
+            touched
+                .into_iter()
+                .filter_map(|address| balances.get(&address).map(|balance| (address, *balance)))
+                .collect::<Vec<_>>()
+        };
+
+        for (address, balance) in balance_updates {
+            if let Some(sender) = self.nodes_sender.get(&address) {
+                if let Err(e) = sender
+                    .send(Message::new_update_node_balance_msg(balance))
+                    .await
+                {
+                    warn!(
+                        "Failed to send UpdateNodeBalance to {}: {}",
+                        &address[..8.min(address.len())],
+                        e
+                    );
+                }
+            }
+        }
+
+        Ok(())
     }
 
     async fn collect_slot_metrics(&mut self, miner: &Validator) {
@@ -284,25 +581,9 @@ impl WorldState {
         let last_block = blockchain.get_last_block();
         let tx_count = last_block.body.transactions.len();
 
-        // Calculate throughput (tx/s) - based on time between current and previous block
-        let throughput = {
-            let blocks = &blockchain.blocks;
-            if blocks.len() > 1 {
-                let prev_block_timestamp = blocks[blocks.len() - 2].header.timestamp;
-                // Use max(1) to prevent division by zero when blocks are produced in the same second
-                let time_delta = last_block
-                    .header
-                    .timestamp
-                    .saturating_sub(prev_block_timestamp)
-                    .max(1);
-                tx_count as f64 / time_delta as f64
-            } else {
-                0.0
-            }
-        };
+        let throughput = tx_count as f64 / self.slot_duration.as_secs_f64().max(1.0);
 
-        let paths = last_block.body.paths;
-        let paths: Vec<Vec<String>> = paths.iter().map(|p| p.paths.clone()).collect();
+        let paths = last_block.get_all_paths();
         let path_stats = metrics::calculate_path_stats(paths);
 
         // Calculate stake concentration from stakes
@@ -329,7 +610,12 @@ impl WorldState {
             slot: current_slot.current_slot,
             miner: miner.address.clone(),
             proposer_stake: miner.stake,
-            timestamp: tools::get_timestamp(),
+            timestamp: logical_time_seconds(
+                current_slot.current_epoch,
+                current_slot.current_slot,
+                self.slot_per_epoch,
+                self.slot_duration.as_secs(),
+            ),
             block_hash: last_block.header.hash.clone(),
             tx_count,
             throughput,
@@ -365,6 +651,437 @@ impl WorldState {
         }
     }
 
+    async fn collect_epoch_metrics(
+        &mut self,
+        epoch: u64,
+        blocks: &[Block],
+        validators: &[Validator],
+    ) {
+        let snapshot = self.consensus.metrics_snapshot();
+        let generated_total = self.generated_tx_counter.load(Ordering::Relaxed);
+        let generated_tx = generated_total.saturating_sub(self.last_generated_tx_counter);
+        self.last_generated_tx_counter = generated_total;
+
+        let epoch_blocks: Vec<Block> = blocks
+            .iter()
+            .filter(|block| block.header.index > 0 && block.header.epoch == epoch)
+            .cloned()
+            .collect();
+        let included_tx: u64 = epoch_blocks
+            .iter()
+            .map(|block| block.body.transactions.len() as u64)
+            .sum();
+        self.total_included_tx += included_tx;
+
+        let logical_epoch_secs =
+            (self.slot_per_epoch as f64 * self.slot_duration.as_secs_f64()).max(1.0);
+        let throughput = included_tx as f64 / logical_epoch_secs;
+
+        let mut latencies = Vec::new();
+        let mut path_lengths = Vec::new();
+        let mut valid_path_count = 0u64;
+        let mut invalid_path_count = 0u64;
+        let mut conflict_count = 0u64;
+        for block in &epoch_blocks {
+            for (idx, tx) in block.body.transactions.iter().enumerate() {
+                let included_slot = block.header.epoch * self.slot_per_epoch + block.header.slot;
+                if let Some(created_slot) = tx_logical_slot(tx, self.slot_per_epoch) {
+                    let slots = included_slot.saturating_sub(created_slot);
+                    let latency = slots as f64 * self.slot_duration.as_secs_f64()
+                        + self.confirmation_latency_adjustment_s;
+                    latencies.push(latency.max(0.0));
+                }
+                if let Some(path) = block.body.paths.get(idx) {
+                    let full_path = path.full_path(block.header.miner.clone());
+                    path_lengths.push(full_path.len().saturating_sub(1) as f64);
+                    for receiver in &full_path {
+                        conflict_count +=
+                            conflicting_receipt_count(&tx.hash, path.epoch, receiver) as u64;
+                    }
+                }
+                if block.verify_path_evidence(idx) {
+                    valid_path_count += 1;
+                } else {
+                    invalid_path_count += 1;
+                }
+            }
+        }
+
+        let reward_report = self.estimate_epoch_rewards(&epoch_blocks, validators, &snapshot);
+        for (address, reward) in reward_report.total_by_address() {
+            *self.total_reward_income.entry(address).or_insert(0.0) += reward;
+        }
+
+        let stake_values: Vec<f64> = validators.iter().map(|v| v.stake).collect();
+        let stake_gini = calculate_gini(&stake_values);
+        let stake_hhi = calculate_hhi(&stake_values);
+        let normalized_stake = TopoStakeConsensus::normalized_stake(validators);
+        let proposer_weights = if snapshot.normalized_proposer_weights.is_empty() {
+            normalized_stake.clone()
+        } else {
+            snapshot.normalized_proposer_weights.clone()
+        };
+        let proposer_weight_values: Vec<f64> = validators
+            .iter()
+            .map(|v| proposer_weights.get(&v.address).copied().unwrap_or(0.0))
+            .collect();
+        let proposer_weight_gini = calculate_gini(&proposer_weight_values);
+        let proposer_weight_hhi = calculate_hhi(&proposer_weight_values);
+
+        let stake_map: HashMap<String, f64> = validators
+            .iter()
+            .map(|v| (v.address.clone(), v.stake))
+            .collect();
+        let adversary_real_stake_share = metrics::share_for(&self.adversarial_nodes, &stake_map);
+        let adversary_score_share =
+            metrics::share_for(&self.adversarial_nodes, &snapshot.normalized_score);
+        let adversary_proposer_weight_share =
+            metrics::share_for(&self.adversarial_nodes, &proposer_weights);
+        let bound_factor = 1.0
+            + snapshot.topostake_eta.unwrap_or(0.0) * snapshot.topostake_bonus_cap.unwrap_or(0.0);
+        let theoretical_proposer_weight_bound =
+            (bound_factor * adversary_real_stake_share).min(1.0);
+        let proposer_total: u64 = self.epoch_proposer_counts.values().sum();
+        let adversary_proposers: u64 = self
+            .adversarial_nodes
+            .iter()
+            .map(|address| {
+                self.epoch_proposer_counts
+                    .get(address)
+                    .copied()
+                    .unwrap_or(0)
+            })
+            .sum();
+        let observed_adversary_proposer_share = if proposer_total == 0 {
+            0.0
+        } else {
+            adversary_proposers as f64 / proposer_total as f64
+        };
+        let epoch_success = self
+            .block_production_success
+            .saturating_sub(self.last_block_production_success);
+        let epoch_failed = self
+            .block_production_failed
+            .saturating_sub(self.last_block_production_failed);
+        let epoch_attempts = epoch_success + epoch_failed;
+        let block_success_ratio = if epoch_attempts == 0 {
+            0.0
+        } else {
+            epoch_success as f64 / epoch_attempts as f64
+        };
+
+        let epoch_metrics = EpochMetrics {
+            epoch,
+            generated_tx,
+            included_tx,
+            throughput,
+            p50_inclusion_latency_s: metrics::percentile_f64(&latencies, 0.50),
+            p95_inclusion_latency_s: metrics::percentile_f64(&latencies, 0.95),
+            p99_inclusion_latency_s: metrics::percentile_f64(&latencies, 0.99),
+            block_success_ratio,
+            avg_path_length: if path_lengths.is_empty() {
+                0.0
+            } else {
+                path_lengths.iter().sum::<f64>() / path_lengths.len() as f64
+            },
+            p95_path_length: metrics::percentile_f64(&path_lengths, 0.95),
+            valid_path_count,
+            invalid_path_count,
+            conflicting_receipt_count: conflict_count,
+            total_proposer_reward: reward_report.total_proposer_reward,
+            total_relay_reward: reward_report.total_relay_reward,
+            burned_relay_fee: reward_report.burned_relay_fee,
+            stake_gini,
+            stake_hhi,
+            proposer_weight_gini,
+            proposer_weight_hhi,
+            adversary_real_stake_share,
+            adversary_score_share,
+            adversary_proposer_weight_share,
+            theoretical_proposer_weight_bound,
+            observed_adversary_proposer_share,
+            bound_violation: adversary_proposer_weight_share
+                > theoretical_proposer_weight_bound + 1e-9,
+        };
+        self.write_epoch_metrics(&epoch_metrics);
+
+        let balances = self.account_balances.read().await.clone();
+        let fee_spent = self
+            .fee_spent
+            .lock()
+            .map(|ledger| ledger.clone())
+            .unwrap_or_default();
+        let raw_contribution = self.raw_epoch_contribution(&epoch_blocks, validators, &snapshot);
+        for validator in validators {
+            let s_hat = normalized_stake
+                .get(&validator.address)
+                .copied()
+                .unwrap_or(0.0);
+            let raw = raw_contribution
+                .get(&validator.address)
+                .copied()
+                .unwrap_or(0.0);
+            let saturated = TopoStakeConsensus::saturated_contribution(
+                raw,
+                s_hat,
+                snapshot.topostake_saturation_k.unwrap_or(1.0),
+            );
+            let proposer_reward = reward_report
+                .proposer_by_address
+                .get(&validator.address)
+                .copied()
+                .unwrap_or(0.0);
+            let relay_reward = reward_report
+                .relay_by_address
+                .get(&validator.address)
+                .copied()
+                .unwrap_or(0.0);
+            let fee = fee_spent.get(&validator.address).copied().unwrap_or(0.0);
+            let node_metrics = NodeEpochMetrics {
+                epoch,
+                validator_id: self
+                    .nodes_index
+                    .get(&validator.address)
+                    .map(|idx| idx.to_string())
+                    .unwrap_or_else(|| validator.address.clone()),
+                relay_profile: self
+                    .node_relay_profiles
+                    .get(&validator.address)
+                    .cloned()
+                    .unwrap_or_else(|| "normal".to_string()),
+                adversarial: self.adversarial_nodes.contains(&validator.address),
+                economic_stake: validator.stake,
+                balance: balances.get(&validator.address).copied().unwrap_or(0.0),
+                raw_contribution: raw,
+                saturated_contribution: saturated,
+                ema_score: snapshot
+                    .score_history
+                    .get(&validator.address)
+                    .copied()
+                    .unwrap_or(0.0),
+                normalized_score: snapshot
+                    .normalized_score
+                    .get(&validator.address)
+                    .copied()
+                    .unwrap_or(0.0),
+                bonus: snapshot
+                    .bonuses
+                    .get(&validator.address)
+                    .copied()
+                    .unwrap_or(0.0),
+                unnormalized_proposer_weight: snapshot
+                    .unnormalized_proposer_weights
+                    .get(&validator.address)
+                    .copied()
+                    .unwrap_or_else(|| {
+                        normalized_stake
+                            .get(&validator.address)
+                            .copied()
+                            .unwrap_or(0.0)
+                    }),
+                normalized_proposer_weight: proposer_weights
+                    .get(&validator.address)
+                    .copied()
+                    .unwrap_or(0.0),
+                proposer_count: self
+                    .epoch_proposer_counts
+                    .get(&validator.address)
+                    .copied()
+                    .unwrap_or(0),
+                relay_reward,
+                proposer_reward,
+                fee_spent: fee,
+                net_income: proposer_reward + relay_reward - fee,
+                degree: self
+                    .node_degrees
+                    .get(&validator.address)
+                    .copied()
+                    .unwrap_or(0),
+                betweenness: self
+                    .node_betweenness
+                    .get(&validator.address)
+                    .copied()
+                    .unwrap_or(0.0),
+            };
+            self.write_node_epoch_metrics(&node_metrics);
+        }
+        self.epoch_proposer_counts.clear();
+        self.last_block_production_success = self.block_production_success;
+        self.last_block_production_failed = self.block_production_failed;
+        self.write_run_summary(epoch + 1).await;
+    }
+
+    fn write_epoch_metrics(&mut self, metrics: &EpochMetrics) {
+        if self.epoch_metrics_file.is_none() {
+            self.epoch_metrics_file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&self.epoch_metrics_filename)
+                .ok();
+        }
+        if let Some(file) = self.epoch_metrics_file.as_mut() {
+            if file.metadata().map(|m| m.len()).unwrap_or(0) == 0 {
+                let _ = writeln!(file, "{}", EpochMetrics::to_csv_header());
+            }
+            let _ = writeln!(file, "{}", metrics.to_csv_row());
+            let _ = file.flush();
+        }
+    }
+
+    fn write_node_epoch_metrics(&mut self, metrics: &NodeEpochMetrics) {
+        if self.node_epoch_metrics_file.is_none() {
+            self.node_epoch_metrics_file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&self.node_epoch_metrics_filename)
+                .ok();
+        }
+        if let Some(file) = self.node_epoch_metrics_file.as_mut() {
+            if file.metadata().map(|m| m.len()).unwrap_or(0) == 0 {
+                let _ = writeln!(file, "{}", NodeEpochMetrics::to_csv_header());
+            }
+            let _ = writeln!(file, "{}", metrics.to_csv_row());
+            let _ = file.flush();
+        }
+    }
+
+    async fn write_run_summary(&self, completed_epochs: u64) {
+        let fee_spent = self
+            .fee_spent
+            .lock()
+            .map(|ledger| ledger.clone())
+            .unwrap_or_default();
+        let adversary_fee_spent: f64 = self
+            .adversarial_nodes
+            .iter()
+            .map(|address| fee_spent.get(address).copied().unwrap_or(0.0))
+            .sum();
+        let adversary_reward_income: f64 = self
+            .adversarial_nodes
+            .iter()
+            .map(|address| {
+                self.total_reward_income
+                    .get(address)
+                    .copied()
+                    .unwrap_or(0.0)
+            })
+            .sum();
+        let summary = RunSummary {
+            run_id: self.run_id.clone(),
+            completed_epochs,
+            generated_tx: self.generated_tx_counter.load(Ordering::Relaxed),
+            included_tx: self.total_included_tx,
+            block_production_success: self.block_production_success,
+            block_production_failed: self.block_production_failed,
+            adversary_fee_spent,
+            adversary_reward_income,
+            adversary_net_income: adversary_reward_income - adversary_fee_spent,
+        };
+        if let Ok(json) = serde_json::to_string_pretty(&summary) {
+            let _ = tokio::fs::write(&self.run_summary_filename, json).await;
+        }
+    }
+
+    fn raw_epoch_contribution(
+        &self,
+        blocks: &[Block],
+        validators: &[Validator],
+        snapshot: &ConsensusMetricsSnapshot,
+    ) -> HashMap<String, f64> {
+        let validator_set: HashSet<&str> = validators.iter().map(|v| v.address.as_str()).collect();
+        let mut raw = HashMap::new();
+        let depth = snapshot.topostake_depth.unwrap_or(1);
+        for block in blocks {
+            for (idx, _tx) in block.body.transactions.iter().enumerate() {
+                let Some(path) = block.body.paths.get(idx) else {
+                    continue;
+                };
+                if !block.verify_path_evidence(idx) {
+                    continue;
+                }
+                let full_path = path.full_path(block.header.miner.clone());
+                let path_length = full_path.len().saturating_sub(1);
+                if path_length < 2 {
+                    continue;
+                }
+                for position in 1..path_length {
+                    let relayer = &full_path[position];
+                    if validator_set.contains(relayer.as_str()) {
+                        let gamma =
+                            TopoStakeConsensus::gamma_for_depth(depth, position, path_length);
+                        *raw.entry(relayer.clone()).or_insert(0.0) += gamma;
+                    }
+                }
+            }
+        }
+        raw
+    }
+
+    fn estimate_epoch_rewards(
+        &self,
+        blocks: &[Block],
+        validators: &[Validator],
+        snapshot: &ConsensusMetricsSnapshot,
+    ) -> EpochRewardReport {
+        let validator_set: HashSet<&str> = validators.iter().map(|v| v.address.as_str()).collect();
+        let mut report = EpochRewardReport::default();
+        let theta = snapshot.topostake_proposer_fee_ratio.unwrap_or(1.0);
+        let depth = snapshot.topostake_depth.unwrap_or(1);
+        for block in blocks {
+            let total_fee: f64 = block.body.transactions.iter().map(|tx| tx.fee).sum();
+            let proposer_reward = if snapshot.topostake_depth.is_some() {
+                self.base_reward + theta * total_fee
+            } else {
+                self.base_reward + total_fee
+            };
+            *report
+                .proposer_by_address
+                .entry(block.header.miner.clone())
+                .or_insert(0.0) += proposer_reward;
+            report.total_proposer_reward += proposer_reward;
+
+            if snapshot.topostake_depth.is_none() {
+                continue;
+            }
+            for (idx, tx) in block.body.transactions.iter().enumerate() {
+                let relay_budget = (1.0 - theta) * tx.fee;
+                let Some(path) = block.body.paths.get(idx) else {
+                    report.burned_relay_fee += relay_budget;
+                    continue;
+                };
+                if !block.verify_path_evidence(idx) {
+                    report.burned_relay_fee += relay_budget;
+                    continue;
+                }
+                let full_path = path.full_path(block.header.miner.clone());
+                let path_length = full_path.len().saturating_sub(1);
+                if path_length < 2 {
+                    report.burned_relay_fee += relay_budget;
+                    continue;
+                }
+                let mut paid = 0.0;
+                for position in 1..path_length {
+                    let relayer = &full_path[position];
+                    if !validator_set.contains(relayer.as_str()) {
+                        continue;
+                    }
+                    let amount = relay_budget
+                        * TopoStakeConsensus::gamma_for_depth(depth, position, path_length);
+                    if amount > 0.0 {
+                        paid += amount;
+                        *report
+                            .relay_by_address
+                            .entry(relayer.clone())
+                            .or_insert(0.0) += amount;
+                    }
+                }
+                report.total_relay_reward += paid;
+                report.burned_relay_fee += (relay_budget - paid).max(0.0);
+            }
+        }
+        report
+    }
+
     pub async fn run(self, mut receiver: Receiver<Message>) {
         let node_index = self.nodes_index.clone();
         let consensus_name = self.consensus_name.clone();
@@ -384,16 +1101,25 @@ impl WorldState {
                             let mut validators = shared_self.validators.write().await;
                             validators.retain(|v| v.address != validator.address);
                             validators.push(validator.clone());
+                            drop(validators);
+                            let mut balances = shared_self.account_balances.write().await;
+                            balances
+                                .entry(validator.address.clone())
+                                .or_insert(validator.stake);
                         }
                         Message::UpdateValidatorStake { address, new_stake } => {
+                            warn!(
+                                "Ignoring immediate stake update for {}; economic stake changes only at epoch boundaries (requested {:.6})",
+                                address, new_stake
+                            );
+                        }
+                        Message::UpdateAccountBalance {
+                            address,
+                            new_balance,
+                        } => {
                             let shared_self = shared_self.write().await;
-                            let mut validators = shared_self.validators.write().await;
-                            // 更新对应 Validator 的 stake
-                            if let Some(validator) =
-                                validators.iter_mut().find(|v| v.address == address)
-                            {
-                                validator.stake = new_stake;
-                            }
+                            let mut balances = shared_self.account_balances.write().await;
+                            balances.insert(address, new_balance);
                         }
                         Message::SendBlock { block, from: _ } => {
                             {
@@ -413,77 +1139,106 @@ impl WorldState {
                                                 "World State: Parent hash mismatch at index {}, there may be a fork",
                                                 block.header.index
                                             );
-                                            // 出现分叉，显式找到 index==0 的节点请求全链
-                                            if let Some((addr, _)) = shared_self
-                                                .nodes_index
-                                                .iter()
-                                                .find(|(_, &idx)| idx == 0)
-                                            {
-                                                if let Some(sender) =
-                                                    shared_self.nodes_sender.get(addr)
-                                                {
-                                                    warn!(
-                                                        "World State: Requesting full blockchain from Node[0] due to fork"
-                                                    );
-                                                    let _ = sender.try_send(
-                                                        Message::new_request_block_sync_msg(
-                                                            0,
-                                                            "world_state".to_string(),
-                                                        ),
-                                                    );
-                                                }
-                                            }
+                                            shared_self.block_production_failed += 1;
+                                        }
+                                        BlockChainError::DuplicateBlocksReceived => {
+                                            debug!(
+                                                "World State: duplicate block at index {}",
+                                                block.header.index
+                                            );
                                         }
                                         BlockChainError::IndexTooSmall => {
-                                            warn!(
+                                            debug!(
                                                 "World State: Received block at index {}, index too small, current index is {}",
                                                 block.header.index, shared_self.blockchain.read().await.get_last_index()
                                             );
                                         }
                                         _ => {
                                             error!("World State Add Block Error: {}", e);
+                                            shared_self.block_production_failed += 1;
                                         }
                                     }
-                                    shared_self.block_production_failed += 1;
                                     continue;
                                 }
 
                                 // 块添加成功，更新出块成功计数
                                 shared_self.block_production_success += 1;
 
-                                // 块添加成功后，立即分配奖励
+                                // 块添加成功后，结算成熟奖励到账户余额；不修改经济 stake
                                 {
-                                    let mut validators = shared_self.validators.write().await;
-
-                                    // 创建一个可变的向量切片来修改
-                                    let validators_slice: &mut [Validator] = &mut validators;
-                                    shared_self.consensus.distribute_rewards(
+                                    let validators_snapshot =
+                                        shared_self.validators.read().await.clone();
+                                    let reward_deltas = shared_self.consensus.distribute_rewards(
                                         &block,
-                                        validators_slice,
+                                        &validators_snapshot,
                                         node_index.clone(),
                                     );
 
-                                    // 在奖励分配后，同步每个获得奖励的节点的 balance
-                                    for validator in validators.iter() {
-                                        if let Some(sender) =
-                                            shared_self.nodes_sender.get(&validator.address)
-                                        {
-                                            let msg = Message::new_update_node_balance_msg(
-                                                validator.stake,
+                                    let balance_updates = {
+                                        let mut balances =
+                                            shared_self.account_balances.write().await;
+                                        let mut touched = HashSet::new();
+                                        for delta in reward_deltas {
+                                            let address = delta.address;
+                                            *balances.entry(address.clone()).or_insert(0.0) +=
+                                                delta.amount;
+                                            touched.insert(address);
+                                        }
+                                        touched
+                                            .into_iter()
+                                            .filter_map(|address| {
+                                                balances
+                                                    .get(&address)
+                                                    .map(|balance| (address, *balance))
+                                            })
+                                            .collect::<Vec<_>>()
+                                    };
+
+                                    let send_updates = balance_updates
+                                        .into_iter()
+                                        .filter_map(|(address, balance)| {
+                                            shared_self
+                                                .nodes_sender
+                                                .get(&address)
+                                                .cloned()
+                                                .map(|sender| (address, balance, sender))
+                                        })
+                                        .collect::<Vec<_>>();
+
+                                    for (address, balance, sender) in send_updates {
+                                        let msg = Message::new_update_node_balance_msg(balance);
+                                        if let Err(e) = sender.send(msg).await {
+                                            warn!(
+                                                "Failed to send UpdateNodeBalance to {}: {}",
+                                                &address[..8.min(address.len())],
+                                                e
                                             );
-                                            if let Err(e) = sender.send(msg).await {
-                                                warn!(
-                                                    "Failed to send UpdateNodeBalance to {}: {}",
-                                                    &validator.address
-                                                        [..8.min(validator.address.len())],
-                                                    e
-                                                );
-                                            }
                                         }
                                     }
                                 }
                             }
                             debug!("World State add block successfully");
+                        }
+                        Message::RequestBlockSync {
+                            last_block_index: _,
+                            from,
+                        } => {
+                            let shared_self = shared_self.read().await;
+                            let sync_blocks = shared_self.blockchain.read().await.blocks.clone();
+                            if let Some(sender) = shared_self.nodes_sender.get(&from) {
+                                if let Err(e) =
+                                    sender.try_send(Message::new_response_block_sync_msg(
+                                        sync_blocks,
+                                        "world_state".to_string(),
+                                    ))
+                                {
+                                    warn!(
+                                        "World State: failed to send canonical sync to {}: {}",
+                                        &from[..8.min(from.len())],
+                                        e
+                                    );
+                                }
+                            }
                         }
                         Message::BlockProductionFailed {
                             node_index,
@@ -625,17 +1380,7 @@ impl WorldState {
             loop {
                 let time_interval = {
                     let shared_self = shared_self.read().await;
-                    let current_slot = shared_self.get_current_slot().await;
-                    let target_time =
-                        current_slot.start_timestamp + current_slot.slot_duration.as_secs();
-                    let current_time = get_timestamp();
-
-                    // 如果已经超过目标时间，立即触发下一个 slot
-                    if current_time >= target_time {
-                        Duration::from_secs(0)
-                    } else {
-                        Duration::from_secs(target_time - current_time)
-                    }
+                    shared_self.real_slot_duration
                 };
                 let deadline = Instant::now() + time_interval;
                 time::sleep_until(deadline).await;
@@ -644,14 +1389,10 @@ impl WorldState {
                 // 对于 PoW 协议，需要等待区块链长度增加后才进入下一个 slot
                 if consensus_name == "pow" {
                     let pow_wait_start = Instant::now();
-                    let pow_timeout =
-                        Duration::from_secs(shared_self.read().await.slot_duration.as_secs() * 16);
+                    let pow_timeout = shared_self.read().await.real_slot_duration.mul_f64(16.0);
                     loop {
                         if last_index == 0 {
-                            time::sleep(Duration::from_secs(
-                                shared_self.read().await.slot_per_epoch,
-                            ))
-                            .await;
+                            time::sleep(shared_self.read().await.real_slot_duration).await;
                             break;
                         }
                         let current_index = {
@@ -754,14 +1495,21 @@ mod tests {
             5,
             20,
             8,
-            1.0, // omega
-            0.5, // beta
+            TopoStakeConfig::default(),
             0.0, // base_reward
             20,
             10,
             "ba".to_string(),
             500,
-            "metrics".to_string(),
+            1000,
+            PathBuf::from("/tmp/pog-rs-world-test-timer"),
+            "test-timer".to_string(),
+            1,
+            true,
+            1.0,
+            0.0,
+            Arc::new(AtomicU64::new(0)),
+            Arc::new(std::sync::Mutex::new(HashMap::new())),
         );
         tokio::spawn(async move {
             world.run(world_receiver).await;
@@ -785,14 +1533,21 @@ mod tests {
             5,
             20,
             8,
-            1.0, // omega
-            0.5, // beta
+            TopoStakeConfig::default(),
             0.0, // base_reward
             20,
             10,
             "ba".to_string(),
             500,
-            "metrics".to_string(),
+            1000,
+            PathBuf::from("/tmp/pog-rs-world-test-seeds"),
+            "test-seeds".to_string(),
+            1,
+            true,
+            1.0,
+            0.0,
+            Arc::new(AtomicU64::new(0)),
+            Arc::new(std::sync::Mutex::new(HashMap::new())),
         );
 
         let validators = world.validators.clone();
@@ -842,13 +1597,13 @@ mod tests {
             node0.sender.clone(),
         ));
 
-        let handle_world = tokio::spawn(async move {
+        let _handle_world = tokio::spawn(async move {
             world.run(world_receiver).await;
         });
-        let handle0 = tokio::spawn(async move {
+        let _handle0 = tokio::spawn(async move {
             node0.run().await;
         });
-        let handle1 = tokio::spawn(async move {
+        let _handle1 = tokio::spawn(async move {
             node1.run().await;
         });
         //become validator
@@ -856,7 +1611,7 @@ mod tests {
         let nodes_address = vec![node0_wallet.address.clone(), node1_wallet.address.clone()];
         let mut stake_map: std::collections::HashMap<String, f64> =
             std::collections::HashMap::new();
-        for (i, address) in nodes_address.iter().enumerate() {
+        for address in nodes_address.iter() {
             stake_map.insert(address.clone(), 1.0);
         }
         // let stake_json = serde_json::to_vec(&stake_map).unwrap_or_default();
