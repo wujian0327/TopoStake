@@ -31,6 +31,7 @@ MODE_LABELS = {
 
 MEASUREMENT_EPOCHS_BY_PROMPT = {
     "prompt41": 5,
+    "prompt42": 5,
     "prompt43": 5,
     "prompt44": 5,
 }
@@ -40,6 +41,11 @@ WARMUP_EPOCHS_BY_PROMPT = {
         "baseline": 3,
         "pathobs": 3,
         "topostake": 5,
+    },
+    "prompt42": {
+        "baseline": 3,
+        "pathobs": 3,
+        "topostake": 3,
     },
 }
 
@@ -56,12 +62,18 @@ class RunSpec:
     degree: float = 2.0
     ba_m: int = 2
     seed: int = 0
+    offered_tps: int | None = None
 
     @property
     def run_id(self) -> str:
+        load_label = (
+            f"tps{self.offered_tps}"
+            if self.offered_tps is not None
+            else f"txslot{self.offered_tx_per_slot}"
+        )
         return (
             f"{self.prompt}_{self.figure}_{self.mode}_"
-            f"{self.topology}_n{self.nodes}_txslot{self.offered_tx_per_slot}_seed{self.seed}"
+            f"{self.topology}_n{self.nodes}_{load_label}_seed{self.seed}"
         )
 
     @property
@@ -89,6 +101,17 @@ class RunSpec:
     @property
     def tx_interval_seconds(self) -> float:
         return SECONDS_PER_SLOT / float(self.offered_tx_per_slot)
+
+    @property
+    def offered_tps_value(self) -> float:
+        if self.offered_tps is not None:
+            return float(self.offered_tps)
+        return float(self.offered_tx_per_slot) / float(SECONDS_PER_SLOT)
+
+    @property
+    def measurement_window_seconds(self) -> int:
+        epochs = MEASUREMENT_EPOCHS_BY_PROMPT.get(self.prompt, 1)
+        return SECONDS_PER_SLOT * SLOTS_PER_EPOCH * epochs
 
 
 def command_env() -> dict[str, str]:
@@ -139,8 +162,8 @@ def specs_for_prompt41() -> list[RunSpec]:
 def specs_for_prompt42() -> list[RunSpec]:
     specs: list[RunSpec] = []
     order = 1000
-    for load in (60, 120, 180, 240, 300):
-        for mode in MODES:
+    for load in (32, 64, 128, 160):
+        for mode in ("baseline", "topostake"):
             specs.append(
                 RunSpec(
                     prompt="prompt42",
@@ -153,8 +176,8 @@ def specs_for_prompt42() -> list[RunSpec]:
                 )
             )
             order += 1
-    for nodes in (4, 8, 12, 16):
-        for mode in MODES:
+    for nodes in (6, 9, 12, 16):
+        for mode in ("pathobs", "topostake"):
             specs.append(
                 RunSpec(
                     prompt="prompt42",
@@ -398,6 +421,7 @@ def summarize(spec: RunSpec, status: str = "ok", error: str = "") -> dict[str, A
         "mode_label": MODE_LABELS[spec.mode],
         "topology": spec.topology,
         "nodes": spec.nodes,
+        "offered_tps": spec.offered_tps_value,
         "offered_tx_per_slot": spec.offered_tx_per_slot,
         "tx_count": spec.tx_count,
         "warmup_tx_count": spec.warmup_tx_count,
@@ -435,6 +459,16 @@ def summarize(spec: RunSpec, status: str = "ok", error: str = "") -> dict[str, A
     inclusion_tps = float(workload.get("inclusion_throughput_tps", 0.0))
     achieved_tx_per_slot = inclusion_tps * SECONDS_PER_SLOT
     achieved_ratio = achieved_tx_per_slot / float(spec.offered_tx_per_slot)
+    measurement_window_seconds = spec.measurement_window_seconds
+    window_start_unix = float(workload.get("first_send_unix", 0.0))
+    window_end_unix = window_start_unix + float(measurement_window_seconds)
+    window_included_count = sum(
+        1
+        for tx in txs
+        if tx.get("status") == 1
+        and float(tx.get("included_block_timestamp", 0.0) or 0.0) <= window_end_unix
+    )
+    window_achieved_tps = window_included_count / float(measurement_window_seconds)
     peer_graph = result.get("peer_graph", {})
     after = result.get("beacon_after", {})
     before_measurement = result.get("beacon_before_measurement", {})
@@ -444,6 +478,12 @@ def summarize(spec: RunSpec, status: str = "ok", error: str = "") -> dict[str, A
             "status": status,
             "tx_success": success_count,
             "tx_success_ratio": success_count / float(spec.tx_count),
+            "included_ratio": success_count / float(spec.tx_count),
+            "window_included_count": window_included_count,
+            "window_included_ratio": window_included_count / float(spec.tx_count),
+            "measurement_window_seconds": measurement_window_seconds,
+            "window_achieved_tps": window_achieved_tps,
+            "window_achieved_ratio": window_achieved_tps / spec.offered_tps_value,
             "actual_send_tps": float(workload.get("actual_send_tps", 0.0)),
             "origin_mode": workload.get("origin_mode", ""),
             "origin_node_count": int(workload.get("origin_node_count", 0)),
@@ -482,6 +522,7 @@ def write_rows(rows: list[dict[str, Any]]) -> None:
         "mode_label",
         "topology",
         "nodes",
+        "offered_tps",
         "offered_tx_per_slot",
         "tx_count",
         "warmup_tx_count",
@@ -492,6 +533,12 @@ def write_rows(rows: list[dict[str, Any]]) -> None:
         "suite_order",
         "tx_success",
         "tx_success_ratio",
+        "included_ratio",
+        "window_included_count",
+        "window_included_ratio",
+        "measurement_window_seconds",
+        "window_achieved_tps",
+        "window_achieved_ratio",
         "actual_send_tps",
         "origin_mode",
         "origin_node_count",
@@ -537,6 +584,9 @@ def main() -> None:
     parser.add_argument("--suite", choices=["prompt41", "prompt42", "prompt43", "prompt44", "all"], default="all")
     parser.add_argument("--topologies", help="Comma-separated topology filter, e.g. er,ba")
     parser.add_argument("--modes", help="Comma-separated mode filter, e.g. pathobs,topostake")
+    parser.add_argument("--loads", help="Comma-separated offered tx/slot filter, e.g. 192,224")
+    parser.add_argument("--tps", help="Comma-separated offered TPS values; internally converted to tx/slot")
+    parser.add_argument("--nodes", help="Comma-separated node-count filter, e.g. 16")
     parser.add_argument("--skip-existing", action="store_true")
     parser.add_argument("--stop-on-failure", action="store_true")
     args = parser.parse_args()
@@ -544,13 +594,58 @@ def main() -> None:
     OUTPUT_ROOT.mkdir(parents=True, exist_ok=True)
     ARGS_DIR.mkdir(parents=True, exist_ok=True)
     rows_by_run = {row["run_id"]: row for row in load_existing_rows() if row.get("run_id")}
-    specs = selected_specs(args.suite)
+    requested_loads = [int(item.strip()) for item in args.loads.split(",") if item.strip()] if args.loads else []
+    requested_tps = [int(item.strip()) for item in args.tps.split(",") if item.strip()] if args.tps else []
+    if args.suite == "prompt42" and requested_tps:
+        specs = []
+        order = 5000
+        for tps in requested_tps:
+            tx_per_slot = tps * SECONDS_PER_SLOT
+            for mode in ("baseline", "topostake"):
+                specs.append(
+                    RunSpec(
+                        prompt="prompt42",
+                        figure="load_tps",
+                        mode=mode,
+                        topology="ba",
+                        nodes=8,
+                        offered_tx_per_slot=tx_per_slot,
+                        offered_tps=tps,
+                        suite_order=order,
+                    )
+                )
+                order += 1
+    elif args.suite == "prompt42" and requested_loads:
+        specs = []
+        order = 4000
+        for load in requested_loads:
+            for mode in ("baseline", "topostake"):
+                specs.append(
+                    RunSpec(
+                        prompt="prompt42",
+                        figure="load",
+                        mode=mode,
+                        topology="ba",
+                        nodes=8,
+                        offered_tx_per_slot=load,
+                        suite_order=order,
+                    )
+                )
+                order += 1
+    else:
+        specs = selected_specs(args.suite)
     if args.topologies:
         allowed = {item.strip() for item in args.topologies.split(",") if item.strip()}
         specs = [spec for spec in specs if spec.topology in allowed]
     if args.modes:
         allowed = {item.strip() for item in args.modes.split(",") if item.strip()}
         specs = [spec for spec in specs if spec.mode in allowed]
+    if args.nodes:
+        allowed_nodes = {int(item.strip()) for item in args.nodes.split(",") if item.strip()}
+        specs = [spec for spec in specs if spec.nodes in allowed_nodes]
+    if requested_loads:
+        allowed_loads = set(requested_loads)
+        specs = [spec for spec in specs if spec.offered_tx_per_slot in allowed_loads]
     total = len(specs)
     log(f"selected {total} runs for {args.suite}")
 
@@ -575,7 +670,8 @@ def main() -> None:
             log(
                 f"[{index}/{total}] done {spec.run_id}: "
                 f"{row.get('tx_success', 0)}/{spec.tx_count}, "
-                f"ratio={float(row.get('achieved_ratio', 0.0)):.3f}, "
+                f"included={float(row.get('included_ratio', 0.0)):.3f}, "
+                f"achieved={float(row.get('achieved_ratio', 0.0)):.3f}, "
                 f"p95={float(row.get('p95_inclusion_delay_seconds', 0.0)):.2f}s, "
                 f"path={float(row.get('avg_path_len', 0.0)):.2f}"
             )

@@ -25,16 +25,17 @@
 - `8 nodes * 1 validator` devnet 已能启动、出块、finalized；BA(m=2) single-origin workload 下 slot-level inclusion delay 稳定在 `1-2 slots`，relay payout 非零，settlement conservation 为 0。
 - `16 nodes * 1 validator` devnet 在 local path 修正后，Linear/Star/ER/BA 四个 single-origin workload 都达到 `3840 tx / 3840 valid path records / 3840 nonzero fee records`。
 - 8-node BA overhead load sweep 已完成 `60-300 tx/slot` 正常区间；TopoStake 与 PoS-Beacon achieved tx/slot 基本一致，p95 inclusion delay 增量约 `0.7-0.8s`。
+- 固定窗口 TPS probe 已完成 `32/64/96/128/160 TPS`：按 measurement 固定 `120s` 窗口计算 achieved ratio；`32-128 TPS` 区间 TopoStake 与 PoS-Beacon 接近，`160 TPS` 已进入本机/workload stress 区间。
 - 高负载探测显示当前 8-node BA devnet 的瓶颈在 `360-420 tx/slot` 区间开始显现：TopoStake `360 tx/slot` 还能完成但 achieved tx/slot 降到约 `323.07`，`420 tx/slot` p95 inclusion delay 升到约 `58.94s`，`480 tx/slot` 出现 receipt timeout 与部分 EL 明显落后。
 - warmup 后低负载 node-count sweep 已完成 `8/12/16 nodes`，固定 `BA(m=2), 32 tx/slot, 1 epoch measurement`，三种模式 `PoS-Beacon / PoS+PathObs / TopoStake` 均达到 `512/512` included。TopoStake 相比 PoS+PathObs 的吞吐接近，p95 inclusion delay 保持在 `4.6-4.9s`；平均 path length 随节点数从约 `2.27` 增至约 `2.83`。
 - Prompt 44 已完成 16-node ER/BA TopoStake 真实 fee mutation 修复验证；ER 与 BA 均能 finalized，且 Path Rec. / Fee Rec. 达到 `2560/2560`，fee conservation violation 为 `0`。
-- Prompt 45 复跑 `16 nodes, BA(m=2), 32 tx/slot, warmup 10 epochs, no extra wait, measurement 5 epochs`，PathObs 与 TopoStake 均 `2560/2560` included；TopoStake 平均 path length `2.949` 仍高于 PathObs `2.878`，说明当前 score/selection 还没有稳定产生“更短 path”的效果。
+- Prompt 41 已按 `10 nodes, 32 tx/slot, measurement 5 epochs` 重跑 topology impact；PoS-Beacon/PoS+PathObs 使用 `3 epochs` warmup，TopoStake 使用 `5 epochs` warmup。Linear/ER/BA 三拓扑均 `1280/1280` included，Path Rec. / Fee Rec. 在 PathObs 和 TopoStake 中均达到 `1280/1280`；TopoStake 平均 path 在三拓扑下均略短于 PathObs。
 
 仍未完全完成：
 - 最终论文版 block-inline record schema 还需要固定，尤其是 aggregate signature 是否保留 block-level aggregate，还是改成 per-record/per-path aggregate。
 - settlement records 已进入 geth block body / Engine API / Lighthouse ExecutionPayload，但 devnet 仍保留 local-store fallback；若做成正式协议，需要去掉 preload/RPC 依赖，并定义 settlement records availability 与重复 settlement 的 state-level 防重规则。
 - 实验尚未完全稳定：当前 devnet 结果仍是 single seed；多 seed、多 topology、不同 offered load 与 warmup 长度还需要继续重跑和整理。
-- 如果论文主张 TopoStake path 更短，当前 devnet 还需要继续调整 score/selection 目标；仅靠 finalized historical relay score，在 BA 单 seed 下还不能保证 measurement path 优于 PathObs。
+- 如果论文主张 TopoStake path 更短，当前 10-node single-seed Prompt 41 已出现正确方向，但仍需在 16-node、多 seed 和更长 measurement 下确认稳定性。
 - 旧 receipt latency 口径已废弃；论文应使用 `included_block_timestamp - send_unix` 的 inclusion delay。
 - 多入口 workload 需要 multiple funded senders，不能再用单 sender round-robin 作为吞吐/延迟结论，因为它会引入账户 nonce gap。
 - 高负载下 TopoStake evidence coverage 会下降，需要继续区分 block-inline evidence bytes cap、节点落后和 block collection window 三个因素；低负载 warmup 实验已用 measurement tx hash 过滤 records，避免 warmup 尾部记录污染平均 path length。
@@ -1335,7 +1336,27 @@ ER/BA 参数：
 执行备注：
 - 曾按旧口径 `warmup=10 epochs` 完成 `baseline-linear` 与 `pathobs-linear` 两个 10-node run；
 - 这两个旧结果不和新口径混用；
-- 更新脚本后，Prompt 41 应使用 mode-specific warmup 重新开始。
+- 更新脚本后，Prompt 41 已使用 mode-specific warmup 重新开始并完成整轮 `9/9` run。
+
+本轮结果（2026-07-09）：
+
+| Topology | Mode | Tx | Achieved tx/slot | Incl. delay p95 | Avg. path | Path Rec. | Fee Rec. | Missed slots | Finalized epoch | Warmup tx |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Linear | PoS-Beacon | 1280/1280 | 100.9% | 3.82s | 0.00 | 0 | 0 | 0 | 8 | 768 |
+| Linear | PoS+PathObs | 1280/1280 | 98.9% | 6.41s | 3.51 | 1280 | 1280 | 0 | 8 | 768 |
+| Linear | TopoStake | 1280/1280 | 99.4% | 6.32s | 3.49 | 1280 | 1280 | 0 | 10 | 1280 |
+| ER | PoS-Beacon | 1280/1280 | 100.3% | 3.94s | 0.00 | 0 | 0 | 0 | 8 | 768 |
+| ER | PoS+PathObs | 1280/1280 | 101.4% | 6.23s | 3.47 | 1280 | 1280 | 0 | 8 | 768 |
+| ER | TopoStake | 1280/1280 | 99.2% | 6.03s | 3.34 | 1280 | 1280 | 0 | 10 | 1280 |
+| BA | PoS-Beacon | 1280/1280 | 102.6% | 3.89s | 0.00 | 0 | 0 | 0 | 8 | 768 |
+| BA | PoS+PathObs | 1280/1280 | 103.9% | 4.80s | 2.51 | 1280 | 1280 | 0 | 8 | 768 |
+| BA | TopoStake | 1280/1280 | 100.8% | 5.35s | 2.48 | 1280 | 1280 | 3 | 10 | 1280 |
+
+结论：
+- 新 warmup 口径生效：PoS-Beacon / PoS+PathObs 的 `warmup_tx_count=768`，TopoStake 的 `warmup_tx_count=1280`。
+- 三个 topology、三种 mode 都完成 `1280/1280` measurement tx，finality 正常，当前没有遗留 running enclave。
+- TopoStake 的平均 path length 相比 PoS+PathObs 都略短：Linear `3.49 < 3.51`，ER `3.34 < 3.47`，BA `2.48 < 2.51`。
+- BA TopoStake 出现 `missed_slots=3`，但没有导致 receipt timeout、finality failure 或 record coverage 下降；后续若论文主图使用该点，需要在多 seed 或更长 measurement 中确认 missed slot 是否稳定存在。
 
 指标定义：
 
@@ -1420,24 +1441,22 @@ figures/devnet_topology_path_length.pdf
 
 ### Prompt 42 load and node-count bar charts
 
-目标：做另一组 devnet 图，展示固定 BA 拓扑下的负载敏感性与节点数敏感性。与 Prompt 41 的 topology impact 区分开：Prompt 41 改拓扑，Prompt 42 改 offered load 或 node count。
+目标：做另一组 devnet 图，展示固定 BA 拓扑下的负载敏感性与节点数对 path length 的影响。与 Prompt 41 的 topology impact 区分开：Prompt 41 改拓扑，Prompt 42 固定 BA 后改 offered load 或 node count。
 
 全局设置：
 - topology：`BA(m=2), seed=0`
 - network delay：`0ms`，本组不注入额外延迟。
 - slot：`3s`
-- epoch：`16 slots`
+- epoch：minimal preset，`8 slots`
 - validator：`1 validator / node`
 - origin：`round_robin`，交易入口均匀覆盖当前 run 的所有 EL；
 - sender/concurrency：
-  - load sweep 固定 `8 nodes`，使用 `8 senders / 8 send workers / 8 receipt workers`；
+  - load sweep 固定 `8 nodes`，自动覆盖 `8` 个 EL；
   - node-count sweep 使用 `sender_count = send_concurrency = receipt_concurrency = node_count`；
   - runner 中可用 `0` 表示自动等于当前节点数；
   - 每轮 summary 需要检查 `origin_counts`，确认所有节点入口交易数均匀。
-- mode：
-  - `PoS-Beacon`
-  - `PoS+PathObs`
-  - `TopoStake`
+- warmup：所有模式统一 `3 epochs`
+- measurement：所有 run 统一 `5 epochs`
 - 每个 run 使用 clean enclave。
 - measurement 后必须 wait finality。
 - path/fee 统计必须按 measurement tx hash 过滤。
@@ -1447,95 +1466,55 @@ figures/devnet_topology_path_length.pdf
 固定条件：
 - nodes：`8`
 - topology：`BA(m=2)`
-- warmup：`5 epochs`
-- measurement：`1 epoch`
+- warmup：`3 epochs`
+- measurement：`5 epochs`
 
 x-axis：
 
 ```text
-Offered load (tx/slot): 60, 120, 180, 240, 300
+Offered load (tx/slot): 32, 64, 128, 160
 ```
 
 y-axis：
 
 ```text
-Achieved tx/slot (% of offered)
+Included measurement tx ratio
 ```
 
-三组 bar：
+两组 bar：
 - `PoS-Beacon`
-- `PoS+PathObs`
 - `TopoStake`
 
 指标：
 
 ```text
-offered_tx_per_slot in {60,120,180,240,300}
+offered_tx_per_slot in {32,64,128,160}
 tx_interval_seconds = 3 / offered_tx_per_slot
-measurement_tx_count = offered_tx_per_slot * 16
-warmup_tx_count = offered_tx_per_slot * 16 * 5
-achieved_tx_per_slot = inclusion_throughput_tps * 3
-achieved_ratio = achieved_tx_per_slot / offered_tx_per_slot
+measurement_tx_count = offered_tx_per_slot * 8 * 5
+warmup_tx_count = offered_tx_per_slot * 8 * 3
+included_ratio = tx_success / measurement_tx_count
 ```
+
+说明：这里不再使用旧的 `achieved_ratio = inclusion_tps * 3 / offered_tx_per_slot`，因为该口径会受 inclusion window 影响并可能超过 `100%`；Prompt 42 load 图统一使用 measurement tx 完成率。
 
 输出：
 
 ```text
-figures/devnet_load_achieved_ratio_bar.pdf
+figures/devnet_load_included_ratio_bar.pdf
 ```
 
-图 2：node-count latency sensitivity
+图 2：node-count path-length sensitivity
 
 固定条件：
 - offered load：`32 tx/slot`
 - topology：`BA(m=2)`
-- warmup：`5 epochs`
-- measurement：`1 epoch`
+- warmup：`3 epochs`
+- measurement：`5 epochs`
 
 x-axis：
 
 ```text
-Number of nodes: 4, 8, 12, 16
-```
-
-y-axis：
-
-```text
-p95 inclusion delay (s)
-```
-
-三组 bar：
-- `PoS-Beacon`
-- `PoS+PathObs`
-- `TopoStake`
-
-指标：
-
-```text
-measurement_tx_count = 32 * 16 = 512
-warmup_tx_count = 32 * 16 * 5 = 2560
-latency = p95(included_block_timestamp - send_unix)
-```
-
-输出：
-
-```text
-figures/devnet_nodes_delay_bar.pdf
-```
-
-图 3：node-count path-length sensitivity
-
-固定条件与图 2 相同：
-- offered load：`32 tx/slot`
-- topology：`BA(m=2)`
-- nodes：`4, 8, 12, 16`
-- warmup：`5 epochs`
-- measurement：`1 epoch`
-
-x-axis：
-
-```text
-Number of nodes: 4, 8, 12, 16
+Number of nodes: 6, 9, 12, 16
 ```
 
 y-axis：
@@ -1544,60 +1523,146 @@ y-axis：
 Average transaction path length
 ```
 
-三组 bar：
-- `PoS-Beacon`
+两组 bar：
 - `PoS+PathObs`
 - `TopoStake`
 
-说明：
-- `PoS-Beacon` 不产生 path records，因此第三张图中应标成 `N/A`。
-- 如果作图工具必须画三组柱，`PoS-Beacon` 画成 hatch `0`，图注说明 `PoS-Beacon does not record TopoStake path evidence`。
-- `PoS+PathObs` 与 `TopoStake` 使用 measurement tx hash 过滤后的 block-inline path records 计算平均 path length。
+指标：
+
+```text
+measurement_tx_count = 32 * 8 * 5 = 1280
+warmup_tx_count = 32 * 8 * 3 = 768
+avg_path_len = mean(path_len) over measurement tx block-inline path records
+```
 
 输出：
 
 ```text
 figures/devnet_nodes_path_length_bar.pdf
+figures/devnet_nodes_path_length_line.pdf
 ```
+
+说明：`PoS-Beacon` 不产生 TopoStake path records，因此 node-count path-length 图只比较 `PoS+PathObs` 与 `TopoStake`。
 
 建议 LaTeX：
 
 ```latex
-\begin{figure*}[t]
+\begin{figure}[t]
 \centering
 \subfloat[Load sensitivity.]{
-    \includegraphics[width=0.32\linewidth]{figs/devnet_load_achieved_ratio_bar.pdf}
-}
-\subfloat[Node-count latency sensitivity.]{
-    \includegraphics[width=0.32\linewidth]{figs/devnet_nodes_delay_bar.pdf}
+    \includegraphics[width=0.48\linewidth]{figs/devnet_load_included_ratio_bar.pdf}
 }
 \subfloat[Node-count path sensitivity.]{
-    \includegraphics[width=0.32\linewidth]{figs/devnet_nodes_path_length_bar.pdf}
+    \includegraphics[width=0.48\linewidth]{figs/devnet_nodes_path_length_line.pdf}
 }
-\caption{Devnet sensitivity of TopoStake under varying offered load and node count without additional network-delay injection. Panel (a) fixes the network size to 8 nodes and varies the offered transaction load. Panels (b) and (c) fix the offered load to 32 transactions per slot and vary the number of nodes. Throughput is reported as the achieved fraction of the offered load. Delay is measured from transaction submission to block inclusion. Path length is computed from block-inline TopoStake evidence records.}
+\caption{Devnet sensitivity of TopoStake under varying offered load and node count without additional network-delay injection. Panel (a) fixes the network size to 8 nodes and varies the offered transaction load. The y-axis reports the fraction of measurement transactions included during the run. Panel (b) fixes the offered load to 32 transactions per slot and varies the number of nodes. Path length is computed from block-inline TopoStake evidence records.}
 \label{fig:devnet-sensitivity}
-\end{figure*}
+\end{figure}
 ```
 
 Run matrix：
 
 ```text
 load sensitivity:
-  5 loads * 3 modes = 15 runs
+  4 loads * 2 modes = 8 runs
 
-node latency/path sensitivity:
-  4 node counts * 3 modes = 12 runs
+node path sensitivity:
+  4 node counts * 2 modes = 8 runs
 
-total = 27 runs
+total = 16 runs
 ```
 
-不确定/需要定死的地方：
-- 图 2/3 已改成 `32 tx/slot`，这是 Prompt 38 已经验证过的稳定低负载 node-count sensitivity 口径，不再使用 `180 tx/slot` 的 stress 设置。
-- 如果 `12/16 nodes` 在 `32 tx/slot` 下仍出现 receipt timeout，应保留为异常点并采集 per-EL/CL diagnostics；但预期比 `180 tx/slot` 稳定。
-- Path length 图只对 `PoS+PathObs / TopoStake` 有真实意义；`PoS-Beacon` 没有 path observation。
-- `4 nodes` 下 BA(m=2) 比较稠密，平均路径可能偏短；这不是错误，但解释时要说明小规模 BA 的拓扑差异有限。
-- 是否所有 run 都用 `5 epoch warmup`：建议固定为 yes，否则 TopoStake 的 score/selection 预热不足，和 PoS-Beacon 对比不公平。
-- 是否需要多 seed：当前先 single seed 跑通主图；论文最终版建议至少补 seed repeat 或把 devnet 图明确写成 single-seed validation。
+本轮结果（2026-07-09）：
+
+| Figure | Mode | Nodes | Tx/slot | Tx | Included ratio | Incl. delay p95 | Avg. path | Path Rec. | Fee Rec. | Missed slots | Finalized epoch |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Load | PoS-Beacon | 8 | 32 | 1280/1280 | 100% | 3.88s | 0.00 | 0 | 0 | 0 | 7 |
+| Load | TopoStake | 8 | 32 | 1280/1280 | 100% | 4.45s | 2.19 | 1280 | 1280 | 1 | 8 |
+| Load | PoS-Beacon | 8 | 64 | 2560/2560 | 100% | 3.87s | 0.00 | 0 | 0 | 0 | 8 |
+| Load | TopoStake | 8 | 64 | 2560/2560 | 100% | 4.54s | 2.19 | 2560 | 2560 | 0 | 9 |
+| Load | PoS-Beacon | 8 | 128 | 5120/5120 | 100% | 3.87s | 0.00 | 0 | 0 | 0 | 8 |
+| Load | TopoStake | 8 | 128 | 5120/5120 | 100% | 4.89s | 2.16 | 5120 | 5120 | 3 | 8 |
+| Load | PoS-Beacon | 8 | 160 | 6400/6400 | 100% | 4.10s | 0.00 | 0 | 0 | 1 | 9 |
+| Load | TopoStake | 8 | 160 | 6400/6400 | 100% | 4.75s | 2.29 | 6400 | 6400 | 2 | 9 |
+| Nodes | PoS+PathObs | 6 | 32 | 1280/1280 | 100% | 4.47s | 2.11 | 1280 | 1280 | 0 | 8 |
+| Nodes | TopoStake | 6 | 32 | 1280/1280 | 100% | 4.37s | 2.01 | 1280 | 1280 | 1 | 8 |
+| Nodes | PoS+PathObs | 9 | 32 | 1280/1280 | 100% | 4.75s | 2.42 | 1280 | 1280 | 0 | 8 |
+| Nodes | TopoStake | 9 | 32 | 1280/1280 | 100% | 4.71s | 2.35 | 1280 | 1280 | 1 | 8 |
+| Nodes | PoS+PathObs | 12 | 32 | 1280/1280 | 100% | 4.96s | 2.69 | 1280 | 1280 | 0 | 8 |
+| Nodes | TopoStake | 12 | 32 | 1280/1280 | 100% | 5.28s | 2.58 | 1280 | 1280 | 4 | 8 |
+| Nodes | PoS+PathObs | 16 | 32 | 1280/1280 | 100% | 4.98s | 2.87 | 1280 | 1280 | 0 | 11 |
+| Nodes | TopoStake | 16 | 32 | 1280/1280 | 100% | 5.08s | 2.78 | 1280 | 1280 | 0 | 14 |
+
+高负载 included-ratio probe（2026-07-09）：
+
+| Mode | Nodes | Tx/slot | Tx | Included ratio | Achieved ratio | Incl. delay p95 | Avg. path | Path Rec. | Fee Rec. | Missed slots | Finalized epoch |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| PoS-Beacon | 8 | 192 | 7680/7680 | 100% | 97.84% | 3.91s | 0.00 | 0 | 0 | 0 | 9 |
+| TopoStake | 8 | 192 | 7680/7680 | 100% | 97.65% | 4.76s | 2.25 | 7680 | 7680 | 1 | 9 |
+| PoS-Beacon | 8 | 224 | 8960/8960 | 100% | 97.48% | 3.89s | 0.00 | 0 | 0 | 0 | 11 |
+| TopoStake | 8 | 224 | 8960/8960 | 100% | 97.64% | 4.79s | 2.26 | 8960 | 8960 | 1 | 9 |
+| PoS-Beacon | 8 | 256 | 10240/10240 | 100% | 98.26% | 3.88s | 0.00 | 0 | 0 | 0 | 10 |
+| TopoStake | 8 | 256 | 10240/10240 | 100% | 96.58% | 4.93s | 2.24 | 10240 | 10240 | 3 | 15 |
+| PoS-Beacon | 8 | 288 | 11520/11520 | 100% | 97.18% | 3.91s | 0.00 | 0 | 0 | 0 | 12 |
+| TopoStake | 8 | 288 | 11520/11520 | 100% | 97.81% | 4.57s | 2.18 | 11520 | 11520 | 1 | 10 |
+
+结论：
+- `included_ratio` 新口径生效：所有 Prompt 42 measurement tx 都成功 included，图 1 不再使用会超过 `100%` 的旧 `achieved_ratio`。
+- load sweep 下 TopoStake 在 `32/64/128/160 tx/slot` 均完成 `100%` inclusion；额外 probe 显示 `192/224/256/288 tx/slot` 也仍是 `100%` included。TopoStake p95 inclusion delay 比 PoS-Beacon 高约 `0.6-1.1s`。
+- node-count path sweep 下，TopoStake 在 `6/9/12/16` 节点均比 PathObs 短；9-node 重跑后从旧结果 `2.40 > 2.38` 变为 `2.35 < 2.42`，说明之前的 9-node 反例更像 single-run 波动。
+- 所有 path/fee records 均按 measurement tx hash 过滤，PathObs/TopoStake 的 Path Rec. 与 Fee Rec. 都等于 measurement tx 数。
+- 交易入口覆盖均匀：8 节点每节点 `160/320/640/800`，6 节点 `213-214`，9 节点 `142-143`，12 节点 `106-107`，16 节点每节点 `80`。
+
+Fixed-window achieved TPS probe（2026-07-09）：
+
+目的：把 load 图从 `tx/slot ratio` 口径切换到真实固定窗口吞吐口径。measurement 仍为 `5 epochs = 40 slots = 120s`，offered TPS 转换为 `tx/slot = TPS * 3s`，交易入口继续 round-robin 覆盖 8 个 EL。
+
+计算口径：
+
+```text
+window_achieved_tps = measurement tx included by first_send_unix + 120s / 120s
+window_achieved_ratio = window_achieved_tps / offered_tps
+```
+
+参数：
+
+```text
+nodes = 8
+topology = BA(m=2), seed=0
+slot = 3s
+epoch = 8 slots
+warmup = 3 epochs
+measurement = 5 epochs
+modes = PoS-Beacon, TopoStake
+offered TPS = 32, 64, 96, 128, 160
+```
+
+结果：
+
+| Mode | Offered TPS | Tx/slot | Tx | Window achieved TPS | Window ratio | Actual send TPS | p95 incl. delay | Avg. path | Missed slots |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| PoS-Beacon | 32 | 96 | 3840/3840 | 31.48 | 98.36% | 32.01 | 3.93s | 0.00 | 0 |
+| TopoStake | 32 | 96 | 3840/3840 | 31.00 | 96.88% | 32.01 | 4.94s | 2.22 | 2 |
+| PoS-Beacon | 64 | 192 | 7680/7680 | 62.59 | 97.80% | 64.00 | 3.94s | 0.00 | 0 |
+| TopoStake | 64 | 192 | 7680/7680 | 62.27 | 97.29% | 64.00 | 4.58s | 2.21 | 0 |
+| PoS-Beacon | 96 | 288 | 11520/11520 | 94.55 | 98.49% | 96.00 | 3.90s | 0.00 | 0 |
+| TopoStake | 96 | 288 | 11520/11520 | 94.53 | 98.47% | 95.99 | 6.77s | 2.23 | 5 |
+| PoS-Beacon | 128 | 384 | 15360/15360 | 125.65 | 98.16% | 128.00 | 3.89s | 0.00 | 0 |
+| TopoStake | 128 | 384 | 15360/15360 | 123.83 | 96.74% | 127.69 | 4.84s | 2.23 | 1 |
+| PoS-Beacon | 160 | 480 | 19200/19200 | 142.77 | 89.23% | 143.90 | 3.90s | 0.00 | 0 |
+| TopoStake | 160 | 480 | 19200/19200 | 126.94 | 79.34% | 128.82 | 4.68s | 2.23 | 1 |
+
+输出：
+
+```text
+figures/devnet_load_window_achieved_ratio_line.pdf
+figures/devnet_load_window_achieved_ratio_line.png
+```
+
+结论：
+- `32/64/96/128 TPS` 下所有 measurement transactions 最终都成功 included，且 fixed-window achieved ratio 仍接近 `97-98%`；主图使用 fixed-window achieved ratio 作为 y 轴百分比，因为它固定观测窗口，不会被 inclusion span 拉高或超过 100%。
+- `160 TPS = 480 tx/slot` 开始暴露本机/workload 注入压力：PoS-Beacon actual send TPS 只有 `143.90`，TopoStake 只有 `128.82`，因此该点可作为 high-load stress 点，但不应解释为纯协议容量上限。
+- 低到中负载区间 PoS-Beacon 和 TopoStake 曲线接近；TopoStake 在 `160 TPS` 的 fixed-window ratio 明显更低，主要反映 path evidence、score/selection、settlement pipeline 和本机调度共同带来的额外开销。
 
 ### 当前实验缺口
 
@@ -1640,7 +1705,7 @@ Prompt 38     5-epoch warmup + 32 tx/slot node-count sensitivity，三模式对�
 Prompt 39     16-node uniform 50ms delay stress，baseline/pathobs 完成，TopoStake 出现 EL divergence
 Prompt 40     EL P2P-only 50ms delay sanity，确认正确流程为先建拓扑再加 delay，并用 --skip-apply-topology 跑 workload
 Prompt 41     16-node topology impact bar charts：Linear/ER/BA，32 tx/slot，warmup 10 epochs，measurement 5 epochs，PoS-Beacon/PoS+PathObs/TopoStake 三模式对照
-Prompt 42     load/node-count sensitivity bar charts：load=60..300 tx/slot；nodes=4/8/12/16 at 32 tx/slot；三模式对照；workload 默认 round_robin 覆盖所有 EL，sender/concurrency 随节点数自动匹配
+Prompt 42     load/node-count sensitivity charts：load=32/64/128/160 tx/slot，8-node BA，PoS-Beacon vs TopoStake；nodes=6/9/12/16 at 32 tx/slot，PoS+PathObs vs TopoStake；ratio 使用 included_ratio；workload 默认 round_robin 覆盖所有 EL，sender/concurrency 随节点数自动匹配
 Prompt 43     protocol-grade settlement records：扩展 geth block body / Engine API ExecutionPayload 与 Lighthouse ExecutionPayload SSZ/JSON，携带 topostakeSettlementRecords，使 finalized settlement 记录跟随区块/EL payload 传播；TopoStake 模式下重新打开真实余额 mutation
 Prompt 44     settlement records body recovery fix：getPayloadBodiesByHash/Range 与 Lighthouse ExecutionPayloadBodyV1 保留 topostakeSettlementRecords，修复 16-node ER TopoStake state-root divergence
 ```
