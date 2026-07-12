@@ -473,6 +473,8 @@ def summarize(spec: RunSpec, status: str = "ok", error: str = "") -> dict[str, A
     after = result.get("beacon_after", {})
     before_measurement = result.get("beacon_before_measurement", {})
     prom = result.get("prometheus", {})
+    propagation = result.get("propagation", {})
+    propagation_delay = propagation.get("delay_millis", {})
     row.update(
         {
             "status": status,
@@ -495,6 +497,10 @@ def summarize(spec: RunSpec, status: str = "ok", error: str = "") -> dict[str, A
             "achieved_ratio": achieved_ratio,
             "p50_inclusion_delay_seconds": percentile(delays, 50),
             "p95_inclusion_delay_seconds": percentile(delays, 95),
+            "propagation_records": int(propagation.get("record_count", 0)),
+            "propagation_missing": int(propagation.get("missing_count", 0)),
+            "p50_propagation_delay_millis": float(propagation_delay.get("p50", 0.0)),
+            "p95_propagation_delay_millis": float(propagation_delay.get("p95", 0.0)),
             "avg_path_len": (sum(path_lens) / len(path_lens)) if path_lens else 0.0,
             "path_records": len(records),
             "fee_records": len(fee_records),
@@ -550,6 +556,10 @@ def write_rows(rows: list[dict[str, Any]]) -> None:
         "achieved_ratio",
         "p50_inclusion_delay_seconds",
         "p95_inclusion_delay_seconds",
+        "propagation_records",
+        "propagation_missing",
+        "p50_propagation_delay_millis",
+        "p95_propagation_delay_millis",
         "avg_path_len",
         "path_records",
         "fee_records",

@@ -55,11 +55,7 @@ def write_args(args: argparse.Namespace) -> None:
             "  - el_type: geth",
             "    el_image: topostake/geth:dev",
             "    el_extra_params:",
-            (
-                '      - "--http.api=admin,debug,eth,net,web3,txpool,topostake"'
-                if topostake_features
-                else '      - "--http.api=admin,debug,eth,net,web3,txpool"'
-            ),
+            '      - "--http.api=admin,debug,eth,net,web3,txpool,topostake"',
             '      - "--nodiscover"',
             f'      - "--maxpeers={args.maxpeers}"',
             '      - "--bootnodes="',

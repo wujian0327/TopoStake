@@ -28,6 +28,19 @@ func (api *API) GetBlockEvidence(ctx context.Context, hash common.Hash) (*BlockE
 	return evidence, nil
 }
 
+// GetTransactionFirstSeenBatch returns local full-transaction arrival times.
+// This is a diagnostics-only API and is available even when TopoStake protocol
+// features are disabled.
+func (api *API) GetTransactionFirstSeenBatch(ctx context.Context, hashes []common.Hash) (map[string]int64, error) {
+	result := make(map[string]int64, len(hashes))
+	for _, hash := range hashes {
+		if unixNanos, ok := api.store.TransactionFirstSeen(hash); ok {
+			result[hash.Hex()] = unixNanos
+		}
+	}
+	return result, nil
+}
+
 func (api *API) InjectPathEvidence(ctx context.Context, hash common.Hash, validators []uint64) (map[string]any, error) {
 	metadata, err := api.store.InjectPathEvidence(hash, validators)
 	if err != nil {

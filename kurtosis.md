@@ -1393,7 +1393,7 @@ filtered_path_records = block_records filtered by measurement tx_hash
 avg_path_len = mean(path_len)
 ```
 
-`PoS-Beacon` 不产生 path records，因此 path 图中应标为 `N/A` 或以 `0` hatch bar 表示 “not observed”，不要解释成路径真的为 0。
+`PoS-Beacon` 不产生 path records，因此 path-length 图不展示 baseline，只比较 `PoS+PathObs` 与 `TopoStake`，避免把缺失观测误画成路径为 0。
 
 输出图：
 
@@ -1405,10 +1405,9 @@ figures/devnet_topology_path_length.pdf
 
 图设计：
 - x-axis：`Linear`, `ER`, `BA`
-- 每个 topology 下三组 bar：
-  - `PoS-Beacon`
-  - `PoS+PathObs`
-  - `TopoStake`
+- achieved-ratio 图保留三组 bar：`PoS-Beacon`、`PoS+PathObs`、`TopoStake`；
+- inclusion-delay 图只保留两组 bar：`PoS-Beacon`、`TopoStake`；
+- average-path-length 图只保留两组 bar：`PoS+PathObs`、`TopoStake`；
 - 三张图分别展示：
   1. achieved tx/slot ratio；
   2. p95 inclusion delay；
@@ -2678,3 +2677,225 @@ Score/selection 结果侧审计：
 - 这不是完整 score 正确性证明，因为没有 Prometheus runtime score/weight；
 - 只能说明本轮 canonical 结果和 TopoStake 设计方向一致：高 relay/path advantage 节点被更多选中，且打包 path 更短；
 - 若要证明“score 和 election 每个 epoch 都按论文公式正常生效”，需要开启 Prometheus 或新增 canonical score replay，从 finalized block records 重放每个 epoch 的 score/weight。
+
+### Prompt 57：交易传播到打包者的延迟采集
+
+目标：
+- 把 Prompt 41/42 原来的 end-to-end inclusion delay 拆出一个纯传播指标；
+- 测量每笔最终进块交易从 workload runner 发出，到该交易最终 block proposer 对应 EL 首次收到完整交易的时间；
+- 在相同拓扑、负载和时间窗口下同时跑 TopoStake 与 baseline PoS，使两种模式可以直接比较。
+
+指标边界：
+
+```text
+tx_propagation_delay
+  = proposer_first_seen_unix_nanos
+  - runner_send_unix_nanos
+```
+
+实现：
+- 每个 geth 节点为本地 RPC 提交、完整 `TransactionsPacket` 和完整 `PooledTransactionsPacket` 记录最早 `first_seen_unix_nanos`；
+- hash announcement 不写 first-seen，避免把交易哈希公告误当成完整交易到达；
+- first-seen observation 在 TopoStake 功能关闭时仍工作；baseline 仅在 HTTP API 中开放 `topostake` diagnostics namespace，不启用 TopoStake 传播、选举或结算功能；
+- runner 根据 canonical block 的 `proposer_index + execution_block_hash` 找到对应 proposer EL，再以 tx hash 批量查询 `topostake_getTransactionFirstSeenBatch`；
+- 传播起点取 workload 的 `send_unix`，避免依赖仅 TopoStake 模式携带的 origin metadata，从而保证 baseline 与 TopoStake 指标边界完全相同；
+- 这些时间字段只用于本地 devnet diagnostics，不进入 block-inline 共识 schema，也不参与 score/reward；输出包括：
+  - `summary.json` 中的 `propagation.delay_millis`；
+  - `propagation_records.csv` 逐交易记录；
+  - processed CSV 中的 p50/p95 propagation delay。
+
+首轮配置：
+- run id：`prompt42_load_topostake_ba_n8_txslot32_seed0`
+- mode：`TopoStake`
+- nodes：`8`
+- topology：`BA(m=2), seed=0`
+- slot/epoch：`3s slot`, minimal `8 slots/epoch`
+- offered load：`32 tx/slot = 10.67 TPS`
+- warmup：`3 epochs = 768 tx`
+- measurement：`5 epochs = 1280 tx`
+- origin/sender：8 个入口 round-robin，所有入口各 `160 tx`
+- 本轮所有容器位于同一主机，wall clock 可直接比较；跨主机实验需要额外时钟同步或误差说明。
+
+TopoStake 首轮结果（原始口径为 origin metadata 创建到 proposer first-seen）：
+
+| Metric | Value |
+| --- | ---: |
+| tx included | `1280 / 1280` |
+| propagation records | `1280 / 1280` |
+| propagation missing | `0` |
+| propagation p50 | `506.04 ms` |
+| propagation p95 | `1014.47 ms` |
+| propagation mean | `607.86 ms` |
+| propagation max | `1522.68 ms` |
+| inclusion delay p50 | `3.12s` |
+| inclusion delay p95 | `4.62s` |
+| avg path length | `2.29` |
+| finalized epoch | `8` |
+| missed slots | `3` |
+
+按最终 block-inline path length 拆分：
+
+| Path length | Records | Zero-delay | Mean propagation delay |
+| ---: | ---: | ---: | ---: |
+| `1` | `194` | `194` | `0.00 ms` |
+| `2` | `546` | `0` | `472.12 ms` |
+| `3` | `519` | `0` | `942.07 ms` |
+| `4` | `21` | `0` | `1492.72 ms` |
+
+解释：
+- `path_len=1` 是交易入口与最终 proposer 相同的 local/direct 样本，因此传播延迟为 0；
+- 真正跨节点传播的均值随 path length 近似线性增加，每增加一跳约增加 `470-550ms`；
+- 该量级符合 geth announcement -> full transaction retrieval 的调度行为，说明当前采到的是完整交易到达时间，而不是 block timestamp 或 receipt polling 时间；
+- inclusion p95 `4.62s` 明显大于 propagation p95 `1.01s`，剩余部分包含 txpool/slot 等待、proposer scheduling 和构块时间；两种指标应在论文中并列，不能互相替代。
+
+baseline PoS 对照：
+- run id：`prompt42_load_baseline_ba_n8_txslot32_seed0`
+- 配置与 TopoStake 相同：`8 nodes`、`BA(m=2), seed=0`、`32 tx/slot`、`3 epoch warmup`、`5 epoch measurement`；
+- baseline 关闭全部 TopoStake protocol features，只保留通用 full-transaction first-seen 观测；
+- 两组结果均按统一的 `runner send -> canonical proposer full-tx first-seen` 边界重新计算。
+
+| Metric | Baseline PoS | TopoStake | TopoStake - baseline |
+| --- | ---: | ---: | ---: |
+| tx included | `1280 / 1280` | `1280 / 1280` | -- |
+| propagation records | `1280 / 1280` | `1280 / 1280` | -- |
+| propagation p50 | `3.35 ms` | `508.53 ms` | `+505.18 ms` |
+| propagation p95 | `411.60 ms` | `1017.35 ms` | `+605.75 ms` |
+| propagation mean | `35.66 ms` | `610.55 ms` | `+574.89 ms` |
+| propagation max | `506.38 ms` | `1531.15 ms` | `+1024.77 ms` |
+| inclusion delay p50 | `2.55s` | `3.12s` | `+0.57s` |
+| inclusion delay p95 | `3.95s` | `4.62s` | `+0.67s` |
+| finalized epoch | `8` | `8` | -- |
+
+排除 local-origin 样本后的 cross-node 对照：
+
+| Metric | Baseline PoS | TopoStake |
+| --- | ---: | ---: |
+| records | `1115` | `1086` |
+| propagation p50 | `3.46 ms` | `513.37 ms` |
+| propagation p95 | `503.93 ms` | `1017.75 ms` |
+| propagation mean | `40.54 ms` | `719.14 ms` |
+
+按 target BA 图最短距离拆分后，baseline 的 distance 1/2 样本 p50 分别只有 `3.16ms / 3.67ms`，而 TopoStake 为 `493.41ms / 955.50ms`；TopoStake 当前实现基本呈现每增加一跳约增加 `0.5s` 的行为。baseline geth 会主动推送完整交易，因此多数样本在数毫秒内到达，但 announcement/request 调度使其 p95 仍达到约 `0.41s`。
+
+结论：
+- 当前 devnet 实现下，TopoStake 的传播路径略短并不等于传播更快；路径长度与单跳传输机制必须分开评价；
+- TopoStake carrier 当前采用 announcement/request retrieval，带来约 `0.5s/hop` 的实现开销；统一口径下传播 p95 比 baseline 高约 `606ms`，与 inclusion p95 高约 `0.67s` 的结果一致；
+- 因此这组实验不能支持“TopoStake 降低交易传播延迟”的表述。它验证的是 accountable path/evidence 功能，并暴露出当前 carrier 的性能优化空间；
+- 当前对照仍是 single seed，论文正式结论需要多 seed 重复并报告置信区间。
+
+原始文件：
+- `results/raw/devnet_prompt41_42/prompt42_load_topostake_ba_n8_txslot32_seed0/summary.json`
+- `results/raw/devnet_prompt41_42/prompt42_load_topostake_ba_n8_txslot32_seed0/propagation_records.csv`
+- `results/raw/devnet_prompt41_42/prompt42_load_topostake_ba_n8_txslot32_seed0/block_records.csv`
+- `results/raw/devnet_prompt41_42/prompt42_load_baseline_ba_n8_txslot32_seed0/summary.json`
+- `results/raw/devnet_prompt41_42/prompt42_load_baseline_ba_n8_txslot32_seed0/propagation_records.csv`
+
+限制与下一步：
+- 当前只验证了两种模式各一个 load 点，且仍是 single seed；
+- 后续主传播图应同时报告 all-tx 分布和 cross-node 分布，避免 local 样本压低整体 p50；
+- 若目标是让 TopoStake 的传播性能接近 baseline，需要优化/替换当前 full-transaction retrieval 调度，再重新跑完整 load curve。
+
+### Prompt 58：简化 BA 路径与 proposer-ready latency 仿真
+
+目标：隔离验证“bounded proposer-selection feedback 是否让交易到 proposer 的路径变短，以及该网络收益能否覆盖 path BLS 成本”。该实验是确定性图模型，不使用 devnet wall clock，也不包含 txpool、slot waiting 或区块构造时间。
+
+模型：
+
+```text
+PoS latency(h)       = link_delay_ms * h
+TopoStake latency(h) = link_delay_ms * h
+                         + Sign(h) + Verify(h) + Aggregate(h)
+```
+
+- `h` 是随机 transaction origin 到已选 proposer 的 BA 最短路径 hop 数；
+- PoS proposer 按经济 stake 选择；
+- TopoStake 使用 BA relay betweenness 作为 propagation-score proxy，再应用论文的 capped bonus：`W_i = S_i(1 + eta * B_i)`；
+- `eta=0.5`、`bonus_cap=1.0`、stake Gini target `0.4`；
+- BLS Sign/Verify/Aggregate 使用论文 microbenchmark 的逐路径测量值并按 hop 插值；aggregate verification 发生在区块验证阶段，不计入 proposer-ready latency；
+- 每个配置使用 `20 paired seeds`，每个 seed 采样 `20,000` 组共享 origin/election randomness；
+- topology 固定为 `BA(m=1)`；该配置形成稀疏树状网络，用于放大路径长度差异。
+
+Sweep：
+- validator scale：`10/20/50/100/150/200/250/300 nodes`，固定 `50ms/hop`；
+- link delay：固定 `200 nodes`，变化 `25/50/75/100ms`。
+
+节点数结果（跨 seed median）：
+
+| Nodes | PoS mean hops | TopoStake mean hops | PoS mean latency | TopoStake mean latency |
+| ---: | ---: | ---: | ---: | ---: |
+| `10` | `2.090` | `2.053` | `104.52ms` | `106.44ms` |
+| `20` | `3.028` | `2.986` | `151.41ms` | `154.85ms` |
+| `50` | `3.949` | `3.910` | `197.44ms` | `202.73ms` |
+| `100` | `4.673` | `4.605` | `233.65ms` | `238.76ms` |
+| `150` | `5.171` | `5.131` | `258.54ms` | `266.08ms` |
+| `200` | `5.136` | `5.090` | `256.80ms` | `263.93ms` |
+| `250` | `5.528` | `5.466` | `276.42ms` | `283.44ms` |
+| `300` | `5.609` | `5.582` | `280.47ms` | `289.44ms` |
+
+200-node link-delay 结果：
+
+| Link delay | PoS mean latency | TopoStake mean latency | Paired median delta (TopoStake - PoS) |
+| ---: | ---: | ---: | ---: |
+| `25ms` | `128.40ms` | `136.68ms` | `+8.37ms` |
+| `50ms` | `256.80ms` | `263.93ms` | `+7.13ms` |
+| `75ms` | `385.20ms` | `391.17ms` | `+5.80ms` |
+| `100ms` | `513.60ms` | `518.42ms` | `+4.68ms` |
+
+结论：
+- TopoStake 在所有20个 paired seeds 中都得到更短的 mean path，200-node paired median 缩短约 `0.046 hop`；
+- 该网络收益随 link delay 增加而增大，但当前 bounded proposer bonus 产生的路径缩短很小；
+- 在 `25-100ms/hop` 范围内，较长路径带来的平均 Sign+Verify+Aggregate 成本仍大于路径收益，所以 TopoStake proposer-ready latency 比 PoS 高约 `5-8ms`；
+- 按当前缩短幅度，粗略 break-even link delay 约为 `200ms/hop`。因此这组模型支持“路径略短”，但不支持在常见延迟范围内声称“总 proposer-ready latency 更低”。
+
+输出：
+- `results/latency_simple/proposer_latency_sensitivity.pdf`（推荐的双 panel latency 主图）
+- `results/latency_simple/proposer_latency_validators.pdf`
+- `results/latency_simple/proposer_latency_link_delay.pdf`
+- `results/latency_simple/proposer_path_length_validators.pdf`
+- `results/latency_simple/latency_by_validators.csv`
+- `results/latency_simple/latency_by_link_delay.csv`
+- `results/latency_simple/paired_differences.csv`
+
+限制：betweenness 是 propagation score 的简化 proxy，而不是完整 warmup/finalization/EMA replay；该模型也不包含带宽竞争、处理队列、lazy relayer 或丢包。正式论文应明确称其为 topology/path-cost simulation，不能替代 Prompt 57 的真实 devnet first-seen 测量。
+
+### Prompt 59：Active/Normal/Lazy proposer-ready latency
+
+根据传播延迟实验修订意见，将正文 latency 实验改为事件驱动传播，不再使用 BA 静态最短路径或 betweenness score proxy。旧的 node-count 和 link-delay 图仅作为 supplementary，且本轮未重新生成。
+
+固定配置：
+- `BA(m=2)`，`200` validators，所有节点等质押（stake Gini `0`，每节点 stake share `0.5%`）；
+- 经济余额使用绝对值：每节点初始 stake `1.0`，每次出块奖励 `0.5`；余额本身不归一化，每个 epoch 仅临时计算 `balance_i / sum(balance)` 作为 proposer lottery probability 和论文中的 normalized stake snapshot；
+- edge delay `U(40,60)ms`，per-message jitter `±10%`，slot `3s`；
+- 每 epoch `8 slots × 8 tx`，`20` warm-up epochs，`100` measurement epochs；
+- `20 paired seeds`；相同 seed 的 PoS/TopoStake 共享 graph、stake、角色、edge delay、origin、转发随机数和 proposer-election uniform；
+- 本轮按修订要求不再设置 Normal 节点：Lazy 比例为 `p_lazy`，其余节点全部为 Active；Lazy/Active 在 BA 图中按 seed 随机放置；Active 转发全部 eligible neighbors，Lazy 转发 `ceil(25%)`，且至少转发 1 个 peer；eligible neighbors 明确排除本次首次到达路径的 predecessor；
+- TopoStake score 由实际首次到达下一 slot proposer 的 path contribution 更新，使用 `beta=0.8`、`K=1.0`、`eta=0.5`、`bonus_cap=1.0`；
+- proposer-ready crypto cost 包括 Sign、individual Verify 和 Aggregate construction，不包括 aggregate verification；
+- 按本轮要求仅比较 `PoS` 与 `TopoStake`，不绘制 `TopoStake-eta0`。
+
+完整 paper-profile 结果（跨 seed median）：
+
+| Lazy | Active/Normal/Lazy | PoS p95 | TopoStake p95 | PoS delivery | TopoStake delivery |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| `0%` | `200/0/0` | `229.40ms` | `234.67ms` | `100.00%` | `100.00%` |
+| `20%` | `160/0/40` | `272.77ms` | `275.18ms` | `98.98%` | `99.12%` |
+| `40%` | `120/0/80` | `326.32ms` | `331.09ms` | `95.72%` | `96.76%` |
+| `60%` | `80/0/120` | `392.87ms` | `401.42ms` | `88.48%` | `89.40%` |
+
+解释：
+- latency 图改为只统计在一个 slot 内成功到达 proposer 的交易，并明确标记为 `p95 delivered latency`；未送达交易只进入独立的 delivery-ratio 指标，避免用 `3000ms` sentinel 拉伸 y 轴；
+- TopoStake 的 delivered p95 在四个 lazy 点均比 PoS 高约 `2-9ms`（paired median delta 约 `5-11ms`），主要来自 path-certificate BLS 开销；
+- paired delivery-ratio median improvement 在 lazy `0/20/40/60%` 时分别约为 `0.00/+0.19/+0.72/+2.30` percentage points；
+- 120 epochs 共安排 `960` 次出块，每种协议的总 stake 从 `200` 增至 `680`；最终 stake Gini 跨 seed median 在 PoS/TopoStake 中约为 `0.31-0.33`，说明相对初始 stake 很大的 `0.5` 奖励会产生明显的 proposer-reward concentration；
+- 结果支持“bounded score feedback 在高 lazy fraction 下带来小幅可达性改善”，但改善幅度较小，不能表述为显著降低 p95 latency。
+- paired improvement 图在 `40%` 与 `60%` lazy 时的 95% bootstrap CI 分别约为 `[+0.66,+1.39]pp` 和 `[+0.46,+2.77]pp`，均高于零。
+- 额外测试过把 Lazy 全部分配到最低-degree 网络边缘；该放置使高-degree Active 核心把两种协议都提升到近 `100%` delivery，反而消除了 TopoStake 的可达性优势，因此恢复随机 role placement 作为主配置。
+
+输出：
+- `results/latency_simple/proposer_latency_lazy_fraction.pdf`
+- `results/latency_simple/proposer_delivery_lazy_fraction.pdf`
+- `results/latency_simple/proposer_delivery_gain_lazy_fraction.pdf`
+- `results/latency_simple/lazy_fraction_raw_runs.csv`
+- `results/latency_simple/lazy_fraction_summary.csv`
+- `results/latency_simple/delivery_gain_summary.csv`
+- `results/latency_simple/latency_by_lazy_fraction.csv`

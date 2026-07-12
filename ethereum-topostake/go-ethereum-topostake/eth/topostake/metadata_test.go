@@ -365,12 +365,31 @@ func TestStoreRecordsBlockEvidence(t *testing.T) {
 	if len(evidence.Transactions) != 1 || evidence.Transactions[0].TxHash != hash.Hex() {
 		t.Fatalf("unexpected tx evidence: %#v", evidence.Transactions)
 	}
+	if evidence.Transactions[0].OriginCreatedUnixNanos <= 0 {
+		t.Fatal("missing origin creation timestamp")
+	}
+	if evidence.Transactions[0].ProposerFirstSeenUnixNanos <= 0 {
+		t.Fatal("missing proposer first-seen timestamp")
+	}
+	if evidence.Transactions[0].PropagationDelayMillis < 0 {
+		t.Fatalf("negative propagation delay %f", evidence.Transactions[0].PropagationDelayMillis)
+	}
 	var meta propagationMetadata
 	if err := json.Unmarshal(evidence.Transactions[0].Metadata, &meta); err != nil {
 		t.Fatal(err)
 	}
 	if meta.TxHash != hash.Hex() {
 		t.Fatalf("unexpected metadata tx hash %s", meta.TxHash)
+	}
+}
+
+func TestStoreObservesTransactionArrivalWhenDisabled(t *testing.T) {
+	store := &Store{}
+	hash := common.HexToHash("0x1234")
+	store.ObserveTransactionArrival(hash)
+	firstSeen, ok := store.TransactionFirstSeen(hash)
+	if !ok || firstSeen <= 0 {
+		t.Fatalf("missing baseline first-seen timestamp: %d, %v", firstSeen, ok)
 	}
 }
 
@@ -736,6 +755,7 @@ func testStore(validator uint64, secret *blst.SecretKey) *Store {
 		secret:                secret,
 		publicKey:             new(blst.P2Affine).From(secret).Compress(),
 		metadata:              make(map[common.Hash]TxMetadata),
+		firstSeenUnixNanos:    make(map[common.Hash]int64),
 		relayPubkeys:          make(map[uint64][]byte),
 		relayPubkeysByAddress: make(map[string][]byte),
 		validatorAddresses:    make(map[uint64]string),

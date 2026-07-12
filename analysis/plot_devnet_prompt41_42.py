@@ -194,10 +194,10 @@ def percent_line_plot(
     ymin = min(all_values, default=0.0)
     ymax = max(all_values, default=1.0)
     pad = max(0.02, (ymax - ymin) * 0.35)
-    ax.set_ylim(max(0.0, ymin - pad), min(1.08, ymax + pad))
+    ax.set_ylim(min(0.70, max(0.0, ymin - pad)), 1.0)
     ax.tick_params(axis="both", labelsize=13)
     ax.grid(True, alpha=0.25)
-    ax.legend(frameon=False, fontsize=12, loc="upper left")
+    ax.legend(frameon=False, fontsize=12, loc="lower left")
     fig.subplots_adjust(left=0.18, right=0.98, top=0.97, bottom=0.18)
     output.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output)
@@ -212,14 +212,18 @@ def plot_prompt41(rows: list[dict[str, str]]) -> None:
     categories = ["linear", "er", "ba"]
     p41 = [row for row in rows if row.get("prompt") == "prompt41" and row.get("status") == "ok"]
     ratio = {mode: [] for mode in MODES}
-    delay = {mode: [] for mode in MODES}
-    path = {mode: [] for mode in MODES}
+    delay_modes = ["PoS-Beacon", "TopoStake"]
+    delay = {mode: [] for mode in delay_modes}
+    path_modes = ["PoS+PathObs", "TopoStake"]
+    path = {mode: [] for mode in path_modes}
     for topology in categories:
         for mode in MODES:
             row = find_row(p41, topology=topology, mode_label=mode)
             ratio[mode].append(as_float(row or {}, "achieved_ratio"))
-            delay[mode].append(as_float(row or {}, "p95_inclusion_delay_seconds"))
-            path[mode].append(0.0 if mode == "PoS-Beacon" else as_float(row or {}, "avg_path_len"))
+            if mode in delay_modes:
+                delay[mode].append(as_float(row or {}, "p95_inclusion_delay_seconds"))
+            if mode in path_modes:
+                path[mode].append(as_float(row or {}, "avg_path_len"))
     grouped_bars(
         categories,
         ratio,
@@ -242,7 +246,6 @@ def plot_prompt41(rows: list[dict[str, str]]) -> None:
         ylabel="Average path length",
         xlabel="Topology",
         output=FIGURES / "devnet_topology_path_length.pdf",
-        na_baseline=True,
     )
 
 
@@ -267,7 +270,13 @@ def plot_prompt42(rows: list[dict[str, str]]) -> None:
     )
 
     tps_rows = [row for row in p42 if row.get("figure") == "load_tps"]
-    tps_loads = sorted({int(as_float(row, "offered_tps")) for row in tps_rows if as_float(row, "offered_tps") > 0})
+    tps_loads = sorted(
+        {
+            int(as_float(row, "offered_tps"))
+            for row in tps_rows
+            if as_float(row, "offered_tps") > 0
+        }
+    )
     if tps_loads:
         window_ratio = {mode: [] for mode in load_modes}
         for load in tps_loads:

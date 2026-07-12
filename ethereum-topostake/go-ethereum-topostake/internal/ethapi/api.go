@@ -1563,6 +1563,7 @@ func SubmitTransaction(ctx context.Context, b Backend, tx *types.Transaction) (c
 		return common.Hash{}, err
 	}
 	topostake.DefaultStore().EnsureLocalHash(tx.Hash())
+	topostake.DefaultStore().ObserveTransactionArrival(tx.Hash())
 	// Print a log with full tx details for manual investigations and interventions
 	head := b.CurrentBlock()
 	signer := types.MakeSigner(b.ChainConfig(), head.Number, head.Time)

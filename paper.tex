@@ -1190,6 +1190,27 @@ We implement TopoStake in an event-driven Rust simulator. The simulator supports
 
 We compare three main configurations: \emph{PoS}, which uses economic stake for proposer selection and does not reward transaction relay; \emph{TopoStake-$\eta0$}, which enables relay rewards and propagation scoring but disables the proposer bonus; and \emph{TopoStake}, which enables both relay rewards and bounded proposer bonuses. This separation allows us to distinguish the immediate relay incentive from the bounded future proposer opportunity.
 
+Table~\ref{tab:default_protocol_parameters} summarizes the default TopoStake parameters used throughout the evaluation unless a parameter is explicitly varied or overridden by a sensitivity experiment. In particular, the default proposer-bonus setting satisfies the security constraint $\eta b_{\max}=0.5$.
+
+\begin{table}[t]
+\centering
+\caption{Default TopoStake protocol parameters.}
+\label{tab:default_protocol_parameters}
+\small
+\begin{tabular}{c|c|p{0.54\columnwidth}}
+\hline
+Parameter & Default & Meaning \\
+\hline
+$K$ & $1.0$ & Stake-scaled contribution saturation parameter. \\
+$\beta$ & $0.2$ & EMA weight assigned to the current epoch contribution. \\
+$\theta$ & $0.7$ & Fraction of each transaction fee assigned to the proposer. \\
+$\eta$ & $0.5$ & Strength of the propagation-score proposer bonus. \\
+$b_{\max}$ & $1.0$ & Maximum per-validator normalized score bonus. \\
+$D_0$ & $4$ & Initial target propagation depth in hops. \\
+\hline
+\end{tabular}
+\end{table}
+
 We record throughput, block success rate, transaction confirmation latency, path length, valid and invalid path records, relay rewards, proposer rewards, reward concentration, and adversarial proposer influence. For adversarial experiments, we additionally record the adversarial real-stake share, propagation-score share, proposer-weight share, observed proposer frequency, theoretical proposer-weight bound, and bound violations.
 
 \subsection{Performance and Scalability}
@@ -1384,5 +1405,4 @@ This should be a simple paragraph before the References to thank those individua
 
 
 \end{document}
-
 

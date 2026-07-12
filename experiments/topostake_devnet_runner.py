@@ -693,6 +693,7 @@ def choose_origin(index: int, n: int, mode: str, seed: int) -> int:
 
 def collect_blocks(cl_api: str, start_slot: int, end_slot: int) -> Dict[str, Any]:
     records = []
+    canonical_blocks = []
     missed_slots = []
     for slot in range(start_slot, end_slot + 1):
         response = requests.get(f"{cl_api}/eth/v2/beacon/blocks/{slot}", timeout=10)
@@ -702,6 +703,16 @@ def collect_blocks(cl_api: str, start_slot: int, end_slot: int) -> Dict[str, Any
         response.raise_for_status()
         message = response.json()["data"]["message"]
         body = message.get("body", {})
+        execution_payload = body.get("execution_payload") or body.get("executionPayload") or {}
+        execution_block_hash = execution_payload.get("block_hash") or execution_payload.get("blockHash")
+        if execution_block_hash:
+            canonical_blocks.append(
+                {
+                    "slot": int(message["slot"]),
+                    "proposer_index": int(message["proposer_index"]),
+                    "execution_block_hash": execution_block_hash,
+                }
+            )
         inline_records = body.get("topostake_evidence_records") or body.get("topostakeEvidenceRecords") or []
         for record_index, record in enumerate(inline_records):
             path = [int(v) for v in record.get("relay_path", [])]
@@ -709,6 +720,7 @@ def collect_blocks(cl_api: str, start_slot: int, end_slot: int) -> Dict[str, Any
                 {
                     "slot": int(message["slot"]),
                     "proposer_index": int(message["proposer_index"]),
+                    "execution_block_hash": execution_block_hash,
                     "record_index": record_index,
                     "tx_hash": record.get("tx_hash"),
                     "epoch": int(record.get("epoch", 0)),
@@ -734,6 +746,80 @@ def collect_blocks(cl_api: str, start_slot: int, end_slot: int) -> Dict[str, Any
         "path_length_histogram": dict(sorted(path_histogram.items())),
         "path_length": path_length_summary(records),
         "relay_counts": dict(sorted(relay_counts.items(), key=lambda item: int(item[0]))),
+        "canonical_blocks": canonical_blocks,
+        "records": records,
+    }
+
+
+def normalized_tx_hash(value: Any) -> str:
+    return str(value or "").lower().removeprefix("0x")
+
+
+def collect_propagation(
+    canonical_blocks: Sequence[Dict[str, Any]],
+    el_rpcs: Sequence[str],
+    measurement_txs: Sequence[Dict[str, Any]],
+) -> Dict[str, Any]:
+    tx_by_hash = {
+        normalized_tx_hash(tx.get("tx_hash")): tx
+        for tx in measurement_txs
+        if tx.get("tx_hash") and tx.get("send_unix")
+    }
+    records: List[Dict[str, Any]] = []
+    errors: List[Dict[str, Any]] = []
+    for block in canonical_blocks:
+        block_hash = block["execution_block_hash"]
+        proposer_index = int(block["proposer_index"])
+        slot = int(block["slot"])
+        if proposer_index >= len(el_rpcs):
+            errors.append({"slot": slot, "proposer_index": proposer_index, "error": "missing proposer EL endpoint"})
+            continue
+        try:
+            execution_block = rpc(el_rpcs[proposer_index], "eth_getBlockByHash", [block_hash, False])
+            included_hashes = [
+                tx_hash
+                for value in execution_block.get("transactions", [])
+                if (tx_hash := normalized_tx_hash(value)) in tx_by_hash
+            ]
+            if not included_hashes:
+                continue
+            query_hashes = ["0x" + tx_hash for tx_hash in included_hashes]
+            first_seen_batch = rpc(
+                el_rpcs[proposer_index],
+                "topostake_getTransactionFirstSeenBatch",
+                [query_hashes],
+            )
+        except Exception as exc:  # best-effort diagnostics should not fail the workload
+            errors.append({"slot": slot, "proposer_index": proposer_index, "error": str(exc)})
+            continue
+        normalized_first_seen = {
+            normalized_tx_hash(tx_hash): int(unix_nanos)
+            for tx_hash, unix_nanos in first_seen_batch.items()
+        }
+        for tx_hash in included_hashes:
+            proposer_first_seen = normalized_first_seen.get(tx_hash, 0)
+            send_unix = float(tx_by_hash[tx_hash]["send_unix"])
+            if not proposer_first_seen:
+                continue
+            delay_ms = max(0.0, proposer_first_seen / 1_000_000.0 - send_unix * 1000.0)
+            records.append(
+                {
+                    "slot": slot,
+                    "proposer_index": proposer_index,
+                    "execution_block_hash": block_hash,
+                    "tx_hash": "0x" + tx_hash,
+                    "send_unix": send_unix,
+                    "proposer_first_seen_unix_nanos": proposer_first_seen,
+                    "propagation_delay_millis": delay_ms,
+                }
+            )
+    return {
+        "definition": "proposer_first_seen_unix_nanos - runner_send_unix",
+        "clock_scope": "same-host devnet container wall clocks",
+        "record_count": len(records),
+        "missing_count": max(0, len(tx_by_hash) - len(records)),
+        "rpc_errors": errors,
+        "delay_millis": latency_summary([record["propagation_delay_millis"] for record in records]),
         "records": records,
     }
 
@@ -765,6 +851,7 @@ def write_records_csv(path: Path, records: List[Dict[str, Any]]) -> None:
     fieldnames = [
         "slot",
         "proposer_index",
+        "execution_block_hash",
         "record_index",
         "tx_hash",
         "epoch",
@@ -788,6 +875,21 @@ def save_result(output_dir: Path, result: Dict[str, Any]) -> None:
     block_records = result.get("blocks", {}).get("records", [])
     if block_records:
         write_records_csv(output_dir / "block_records.csv", block_records)
+    propagation_records = result.get("propagation", {}).get("records", [])
+    if propagation_records:
+        fieldnames = [
+            "slot",
+            "proposer_index",
+            "execution_block_hash",
+            "tx_hash",
+            "send_unix",
+            "proposer_first_seen_unix_nanos",
+            "propagation_delay_millis",
+        ]
+        with (output_dir / "propagation_records.csv").open("w", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(propagation_records)
 
 
 def wait_for_finality(cl_api: str, start_finalized_epoch: int, min_advance: int, timeout_seconds: int) -> Dict[str, int]:
@@ -856,6 +958,7 @@ def command_run(args: argparse.Namespace) -> Dict[str, Any]:
         max(0, measurement_before["head_slot"] - args.pre_scan_slots),
         after["head_slot"],
     )
+    propagation = collect_propagation(blocks["canonical_blocks"], endpoints.el_rpcs, workload.get("txs", []))
     result = {
         "run_id": args.run_id,
         "enclave": args.enclave,
@@ -880,6 +983,7 @@ def command_run(args: argparse.Namespace) -> Dict[str, Any]:
         "warmup": warmup,
         "workload": workload,
         "blocks": blocks,
+        "propagation": propagation,
         "prometheus": collect_prometheus(endpoints.prometheus),
     }
     save_result(args.output_root / args.run_id, result)
@@ -997,6 +1101,9 @@ def main() -> None:
             "inclusion_throughput_tps": result["workload"]["inclusion_throughput_tps"],
             "inclusion_delay_slots": result["workload"]["inclusion_delay_slots"],
             "inclusion_delay_seconds": result["workload"]["inclusion_delay_seconds"],
+            "propagation_delay_millis": result["propagation"]["delay_millis"],
+            "propagation_record_count": result["propagation"]["record_count"],
+            "propagation_missing_count": result["propagation"]["missing_count"],
             "record_count": result["blocks"]["record_count"],
             "path_length_histogram": result["blocks"]["path_length_histogram"],
             "avg_path_len": result["blocks"]["path_length"]["avg_path_len"],

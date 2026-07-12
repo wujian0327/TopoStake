@@ -502,6 +502,7 @@ func handleTransactions(backend Backend, msg Decoder, peer *Peer) error {
 	}
 	// Duplicate transactions are not allowed
 	seen := make(map[common.Hash]struct{})
+	hashes := make([]common.Hash, 0, len(txs))
 	for i, tx := range txs {
 		// Validate and mark the remote transaction
 		if tx == nil {
@@ -512,8 +513,10 @@ func handleTransactions(backend Backend, msg Decoder, peer *Peer) error {
 			return fmt.Errorf("Transactions: multiple copies of the same hash %v", hash)
 		}
 		seen[hash] = struct{}{}
+		hashes = append(hashes, hash)
 		peer.markTransaction(hash)
 	}
+	topostake.DefaultStore().ObserveTransactionArrivals(hashes)
 	return backend.Handle(peer, &txs)
 }
 
@@ -545,12 +548,13 @@ func handlePooledTransactions(backend Backend, msg Decoder, peer *Peer) error {
 		topostake.DefaultStore().RecordInbound(nil, nil)
 		return fmt.Errorf("PooledTransactions: invalid topostake metadata len %v for txs %v", len(txs.TopoStake), len(txs.PooledTransactionsResponse))
 	}
+	hashes := make([]common.Hash, 0, len(txs.PooledTransactionsResponse))
+	for _, tx := range txs.PooledTransactionsResponse {
+		hashes = append(hashes, tx.Hash())
+	}
+	topostake.DefaultStore().ObserveTransactionArrivals(hashes)
 	if len(txs.TopoStake) > 0 {
-		hashes := make([]common.Hash, 0, len(txs.PooledTransactionsResponse))
-		for _, tx := range txs.PooledTransactionsResponse {
-			hashes = append(hashes, tx.Hash())
-		}
-		recordInboundMetadata(hashes, txs.TopoStake)
+		recordInboundTransactionMetadata(hashes, txs.TopoStake)
 	}
 	requestTracker.Fulfil(peer.id, peer.version, PooledTransactionsMsg, txs.RequestId)
 
@@ -566,6 +570,17 @@ func recordInboundMetadata(hashes []common.Hash, batch []TopoStakeTxMetadata) {
 		raw[i] = topostake.TxMetadata(batch[i])
 	}
 	topostake.DefaultStore().RecordInbound(hashes, raw)
+}
+
+func recordInboundTransactionMetadata(hashes []common.Hash, batch []TopoStakeTxMetadata) {
+	if len(batch) == 0 {
+		return
+	}
+	raw := make([]topostake.TxMetadata, len(batch))
+	for i := range batch {
+		raw[i] = topostake.TxMetadata(batch[i])
+	}
+	topostake.DefaultStore().RecordInboundTransactions(hashes, raw)
 }
 
 func handleBlockRangeUpdate(backend Backend, msg Decoder, peer *Peer) error {

@@ -67,7 +67,7 @@ def save_figure(fig: plt.Figure, stem: str) -> None:
     FIGURES.mkdir(parents=True, exist_ok=True)
     for suffix in ("pdf", "png"):
         path = FIGURES / f"{stem}.{suffix}"
-        fig.savefig(path, bbox_inches="tight")
+        fig.savefig(path)
         print(f"wrote {path}")
 
 
@@ -134,7 +134,7 @@ def grouped_bars(
             bbox_to_anchor=(0.5, 1.18),
             ncol=len(values_by_label),
         )
-    fig.subplots_adjust(left=0.20, right=0.98, top=0.96, bottom=0.18)
+    fig.subplots_adjust(left=0.14, right=0.98, top=0.96, bottom=0.18)
     save_figure(fig, stem)
     plt.close(fig)
 
@@ -152,6 +152,16 @@ def main() -> None:
         ],
         "TopoStake": [
             tx_completion_ratio(find_row(rows, topology, "TopoStake"))
+            for topology in TOPOLOGIES
+        ],
+    }
+    delay = {
+        "PoS-Beacon": [
+            as_float(find_row(rows, topology, "PoS-Beacon"), "p95_inclusion_delay_seconds")
+            for topology in TOPOLOGIES
+        ],
+        "TopoStake": [
+            as_float(find_row(rows, topology, "TopoStake"), "p95_inclusion_delay_seconds")
             for topology in TOPOLOGIES
         ],
     }
@@ -174,6 +184,12 @@ def main() -> None:
         percent_axis=True,
         legend_inside=True,
         show_value_labels=False,
+    )
+    grouped_bars(
+        values_by_label=delay,
+        ylabel="p95 inclusion delay (s)",
+        stem="devnet_topology_delay",
+        legend_inside=True,
     )
     grouped_bars(
         values_by_label=path_length,

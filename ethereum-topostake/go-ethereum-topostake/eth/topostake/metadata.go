@@ -102,6 +102,7 @@ type Store struct {
 	secret                *blst.SecretKey
 	publicKey             []byte
 	metadata              map[common.Hash]TxMetadata
+	firstSeenUnixNanos    map[common.Hash]int64
 	relayPubkeys          map[uint64][]byte
 	relayPubkeysByAddress map[string][]byte
 	validatorAddresses    map[uint64]string
@@ -135,15 +136,18 @@ type BlockEvidence struct {
 }
 
 type BlockTransactionEvidence struct {
-	Index              int             `json:"index"`
-	TxHash             string          `json:"tx_hash"`
-	GasUsed            uint64          `json:"gas_used,omitempty"`
-	EffectiveGasTipWei string          `json:"effective_gas_tip_wei,omitempty"`
-	PriorityFeeWei     string          `json:"priority_fee_wei,omitempty"`
-	BaseFeeWei         string          `json:"base_fee_wei,omitempty"`
-	FeeRecipient       string          `json:"fee_recipient,omitempty"`
-	EscrowRecipient    string          `json:"escrow_recipient,omitempty"`
-	Metadata           json.RawMessage `json:"metadata"`
+	Index                      int             `json:"index"`
+	TxHash                     string          `json:"tx_hash"`
+	GasUsed                    uint64          `json:"gas_used,omitempty"`
+	EffectiveGasTipWei         string          `json:"effective_gas_tip_wei,omitempty"`
+	PriorityFeeWei             string          `json:"priority_fee_wei,omitempty"`
+	BaseFeeWei                 string          `json:"base_fee_wei,omitempty"`
+	FeeRecipient               string          `json:"fee_recipient,omitempty"`
+	EscrowRecipient            string          `json:"escrow_recipient,omitempty"`
+	Metadata                   json.RawMessage `json:"metadata"`
+	OriginCreatedUnixNanos     int64           `json:"origin_created_unix_nanos,omitempty"`
+	ProposerFirstSeenUnixNanos int64           `json:"proposer_first_seen_unix_nanos,omitempty"`
+	PropagationDelayMillis     float64         `json:"propagation_delay_millis,omitempty"`
 }
 
 type SettlementPayload struct {
@@ -175,6 +179,7 @@ type propagationMetadata struct {
 	Paths                     []pathEdge `json:"paths"`
 	Status                    string     `json:"status"`
 	CreatedUnixMillis         int64      `json:"created_unix_millis"`
+	CreatedUnixNanos          int64      `json:"created_unix_nanos,omitempty"`
 }
 
 type pathEdge struct {
@@ -240,6 +245,7 @@ func NewStoreFromEnv() *Store {
 		chainID:               getenvUint64("TOPOSTAKE_CHAIN_ID", DefaultChainID),
 		maxBytes:              int(getenvUint64("TOPOSTAKE_TX_METADATA_MAX_BYTES", DefaultMaxBytes)),
 		metadata:              make(map[common.Hash]TxMetadata),
+		firstSeenUnixNanos:    make(map[common.Hash]int64),
 		relayPubkeys:          make(map[uint64][]byte),
 		relayPubkeysByAddress: make(map[string][]byte),
 		validatorAddresses:    make(map[uint64]string),
@@ -308,7 +314,8 @@ func (s *Store) EnsureLocalHash(hash common.Hash) {
 	if ok {
 		return
 	}
-	meta, err := s.newOriginMetadata(hash)
+	now := time.Now()
+	meta, err := s.newOriginMetadataAt(hash, now)
 	if err != nil {
 		txMetadataInvalidMeter.Mark(1)
 		return
@@ -316,6 +323,7 @@ func (s *Store) EnsureLocalHash(hash common.Hash) {
 	s.lock.Lock()
 	if _, ok := s.metadata[hash]; !ok {
 		s.metadata[hash] = meta
+		s.recordFirstSeenLocked(hash, now.UnixNano())
 		txMetadataCreatedMeter.Mark(1)
 		txMetadataBytesMeter.Mark(int64(len(meta)))
 	}
@@ -447,6 +455,17 @@ func (s *Store) MetadataBatchForPeerAddress(hashes []common.Hash, peerID string,
 }
 
 func (s *Store) RecordInbound(hashes []common.Hash, batch []TxMetadata) {
+	s.recordInbound(hashes, batch, false)
+}
+
+// RecordInboundTransactions records valid metadata accompanying full transaction
+// payloads and marks the local arrival time of each transaction. Hash-only
+// announcements deliberately do not set first-seen time.
+func (s *Store) RecordInboundTransactions(hashes []common.Hash, batch []TxMetadata) {
+	s.recordInbound(hashes, batch, true)
+}
+
+func (s *Store) recordInbound(hashes []common.Hash, batch []TxMetadata, recordArrival bool) {
 	if !s.Enabled() || len(batch) == 0 {
 		return
 	}
@@ -470,6 +489,9 @@ func (s *Store) RecordInbound(hashes []common.Hash, batch []TxMetadata) {
 			txMetadataInvalidMeter.Mark(1)
 			continue
 		}
+		if recordArrival {
+			s.recordFirstSeenLocked(hash, time.Now().UnixNano())
+		}
 		if _, ok := s.metadata[hash]; ok {
 			continue
 		}
@@ -477,6 +499,43 @@ func (s *Store) RecordInbound(hashes []common.Hash, batch []TxMetadata) {
 		txMetadataReceivedMeter.Mark(1)
 		txMetadataBytesMeter.Mark(int64(len(completed)))
 	}
+}
+
+func (s *Store) recordFirstSeenLocked(hash common.Hash, unixNanos int64) {
+	if unixNanos <= 0 {
+		return
+	}
+	if s.firstSeenUnixNanos == nil {
+		s.firstSeenUnixNanos = make(map[common.Hash]int64)
+	}
+	if previous, ok := s.firstSeenUnixNanos[hash]; !ok || unixNanos < previous {
+		s.firstSeenUnixNanos[hash] = unixNanos
+	}
+}
+
+// ObserveTransactionArrival records the first time a complete transaction is
+// available locally. It remains active when TopoStake protocol features are
+// disabled so baseline devnets can collect propagation diagnostics.
+func (s *Store) ObserveTransactionArrival(hash common.Hash) {
+	s.lock.Lock()
+	s.recordFirstSeenLocked(hash, time.Now().UnixNano())
+	s.lock.Unlock()
+}
+
+func (s *Store) ObserveTransactionArrivals(hashes []common.Hash) {
+	now := time.Now().UnixNano()
+	s.lock.Lock()
+	for _, hash := range hashes {
+		s.recordFirstSeenLocked(hash, now)
+	}
+	s.lock.Unlock()
+}
+
+func (s *Store) TransactionFirstSeen(hash common.Hash) (int64, bool) {
+	s.lock.RLock()
+	defer s.lock.RUnlock()
+	unixNanos, ok := s.firstSeenUnixNanos[hash]
+	return unixNanos, ok
 }
 
 func (s *Store) RecordBlockEvidence(blockHash common.Hash, blockNumber uint64, txs types.Transactions) {
@@ -527,6 +586,19 @@ func (s *Store) buildBlockEvidenceLocked(blockHash common.Hash, blockNumber uint
 			Index:    i,
 			TxHash:   hash.Hex(),
 			Metadata: append(json.RawMessage(nil), meta...),
+		}
+		var propagation propagationMetadata
+		if err := json.Unmarshal(meta, &propagation); err == nil {
+			originCreated := propagation.CreatedUnixNanos
+			if originCreated == 0 && propagation.CreatedUnixMillis > 0 {
+				originCreated = propagation.CreatedUnixMillis * int64(time.Millisecond)
+			}
+			firstSeen := s.firstSeenUnixNanos[hash]
+			txEvidence.OriginCreatedUnixNanos = originCreated
+			txEvidence.ProposerFirstSeenUnixNanos = firstSeen
+			if originCreated > 0 && firstSeen >= originCreated {
+				txEvidence.PropagationDelayMillis = float64(firstSeen-originCreated) / float64(time.Millisecond)
+			}
 		}
 		s.attachFeeEvidence(&txEvidence, tx, receiptAt(receipts, i), baseFee, feeRecipient)
 		evidence.Transactions = append(evidence.Transactions, txEvidence)
@@ -957,6 +1029,10 @@ func normalizeEvidenceRoot(root string) string {
 }
 
 func (s *Store) newOriginMetadata(hash common.Hash) (TxMetadata, error) {
+	return s.newOriginMetadataAt(hash, time.Now())
+}
+
+func (s *Store) newOriginMetadataAt(hash common.Hash, now time.Time) (TxMetadata, error) {
 	epoch := s.epoch.Load()
 	localAddress := s.localRelayAddress()
 	statement := originStatement(s.chainID, epoch, hash, localAddress)
@@ -973,7 +1049,8 @@ func (s *Store) newOriginMetadata(hash common.Hash) (TxMetadata, error) {
 		OriginSignature:           "0x" + hex.EncodeToString(signature),
 		Paths:                     []pathEdge{},
 		Status:                    "origin",
-		CreatedUnixMillis:         time.Now().UnixMilli(),
+		CreatedUnixMillis:         now.UnixMilli(),
+		CreatedUnixNanos:          now.UnixNano(),
 	}
 	encoded, err := json.Marshal(meta)
 	if err != nil {
