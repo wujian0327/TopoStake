@@ -19,6 +19,7 @@ PROCESSED_ROOT = ROOT / "results" / "processed"
 
 META_FIELDS = [
     "suite",
+    "protocol_version",
     "experiment",
     "run_id",
     "protocol_label",
@@ -37,7 +38,7 @@ META_FIELDS = [
     "adversary_placement",
     "eta_bonus_product",
     "padding_identities",
-    "topostake_initial_depth",
+    "topostake_target_depth",
     "attack_tx_rate_multiplier",
     "unstable_fraction",
     "offline_probability",
@@ -64,6 +65,8 @@ RUN_METRICS = [
     "valid_path_count",
     "invalid_path_count",
     "conflicting_receipt_count",
+    "active_score_epoch",
+    "latest_score_epoch",
     "total_proposer_reward",
     "total_relay_reward",
     "burned_relay_fee",
@@ -73,7 +76,9 @@ RUN_METRICS = [
     "proposer_weight_hhi",
     "adversary_real_stake_share",
     "adversary_score_share",
+    "adversary_damped_score_mass",
     "adversary_proposer_weight_share",
+    "score_dependent_proposer_weight_bound",
     "theoretical_proposer_weight_bound",
     "observed_adversary_proposer_share",
 ]
@@ -91,6 +96,7 @@ SUMMARY_FIELDS = [
 
 GROUP_FIELDS = [
     "suite",
+    "protocol_version",
     "experiment",
     "protocol_label",
     "node_num",
@@ -105,7 +111,7 @@ GROUP_FIELDS = [
     "adversary_placement",
     "eta_bonus_product",
     "padding_identities",
-    "topostake_initial_depth",
+    "topostake_target_depth",
     "attack_tx_rate_multiplier",
     "unstable_fraction",
     "offline_probability",

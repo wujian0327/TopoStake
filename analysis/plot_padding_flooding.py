@@ -73,7 +73,7 @@ def main() -> int:
         stake = to_float(row.get("adversary_real_stake_share_mean"), 0.0)
         if stake <= 0:
             continue
-        series = f"D={row.get('topostake_initial_depth', '')}"
+        series = f"D={row.get('topostake_target_depth', row.get('topostake_initial_depth', ''))}"
         x = row.get("padding_identities", "")
         padding[(f"weight {series}", x)].append(
             to_float(row.get("adversary_proposer_weight_share_mean"), 0.0) / stake
@@ -106,7 +106,7 @@ def main() -> int:
             for row in group
             if row.get("adversarial") == "true"
         )
-        series = f"D={meta.get('topostake_initial_depth', '')}"
+        series = f"D={meta.get('topostake_target_depth', meta.get('topostake_initial_depth', ''))}"
         x = meta.get("padding_identities", "")
         if total_credit > 0:
             padding[(f"credit {series}", x)].append((adv_credit / total_credit) / stake)

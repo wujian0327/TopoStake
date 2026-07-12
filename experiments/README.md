@@ -8,6 +8,7 @@ Python standard library; if PyYAML is installed, normal YAML is also accepted.
 
 ```bash
 python scripts/task.py experiments-smoke
+python scripts/task.py frozen-smoke
 python scripts/task.py tdsc-fast
 python scripts/task.py experiments-main
 python scripts/task.py figures
@@ -26,6 +27,10 @@ python analysis/plot_performance.py
 ```
 
 ## Experiment Profiles
+
+`experiments/configs/frozen_v1_smoke.yaml` is the first migration smoke test for
+the frozen TDSC formulas. It is a correctness check, not a paper experiment.
+Its protocol defaults come from `experiments/configs/protocol_frozen_v1.yaml`.
 
 `experiments/configs/tdsc_fast.yaml` is the compact paper-figure profile. It uses deterministic seeds `[0, 1, 2]`, a shorter epoch horizon with warmup, and reduced sweeps for the TDSC submission figures.
 

@@ -88,6 +88,12 @@ def task_tdsc_fast(args: argparse.Namespace) -> None:
         raise subprocess.CalledProcessError(completed.returncode, completed.args)
 
 
+def task_frozen_smoke(args: argparse.Namespace) -> None:
+    config = "experiments/configs/frozen_v1_smoke.yaml"
+    task_run_experiments(config, force=args.force)
+    task_summarize_config(config)
+
+
 def task_summarize(_args: argparse.Namespace) -> None:
     run([PYTHON, "experiments/summarize.py"])
 
@@ -98,6 +104,7 @@ TASKS: Dict[str, Callable[[argparse.Namespace], None]] = {
     "experiments-smoke": task_experiments_smoke,
     "experiments-main": task_experiments_main,
     "tdsc-fast": task_tdsc_fast,
+    "frozen-smoke": task_frozen_smoke,
     "summarize": task_summarize,
     "figures": task_figures,
 }
