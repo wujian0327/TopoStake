@@ -22,9 +22,17 @@ def sample(value: float, **labels: str) -> dict:
 def base_summary() -> dict:
     return {
         "beacon_before_measurement": {"finalized_epoch": 3},
-        "beacon_after": {"finalized_epoch": 4},
+        "beacon_after": {"finalized_epoch": 4, "head_slot": 32},
         "peer_graph": {"matches_target": True},
         "blocks": {"records": []},
+        "geth_topostake_status": [
+            {
+                "dynamic_relay_epoch": True,
+                "relay_epoch": 4,
+                "seconds_per_slot": 3,
+                "slots_per_epoch": 8,
+            }
+        ],
         "prometheus": {
             "topostake_fee_conservation_violation": [sample(0)],
             "topostake_epoch_score_scaled": [sample(0)],
@@ -64,6 +72,10 @@ class FrozenDevnetAcceptanceTests(unittest.TestCase):
                 "topostake_proposer_weight_scaled": [
                     sample(32_000_000_000_000_000_000, slot="32", proposer_epoch="4", validator_index="0"),
                     sample(32_000_000_000_000_000_000, slot="33", proposer_epoch="4", validator_index="0"),
+                ],
+                "topostake_selected_proposer": [
+                    sample(1, slot="32", proposer_epoch="4", validator_index="0"),
+                    sample(1, slot="33", proposer_epoch="4", validator_index="0"),
                 ],
             }
         )
@@ -126,6 +138,36 @@ class FrozenDevnetAcceptanceTests(unittest.TestCase):
 
         self.assertEqual(enriched["blocks"]["records"][0]["irrecoverable_cost_wei"], 21_000)
         self.assertEqual(enriched["blocks"]["irrecoverable_cost_sum_wei"], 21_000)
+
+    def test_cross_node_proposer_divergence_is_rejected(self) -> None:
+        summary = base_summary()
+        summary["blocks"]["records"] = [
+            {
+                "slot": 32,
+                "epoch": 4,
+                "path_len": 2,
+                "path": [0, 1],
+                "irrecoverable_cost_wei": 1,
+            }
+        ]
+        summary["prometheus"].update(
+            {
+                "topostake_evidence_epoch_valid_paths": [sample(1)],
+                "topostake_epoch_score_scaled": [sample(1)],
+                "topostake_proposer_score_scaled": [sample(1)],
+                "topostake_selection_score_epoch": [sample(2, proposer_epoch="4")],
+                "topostake_proposer_weight_scaled": [
+                    sample(32_000_000_000_000_000_000, instance="cl-1", slot="32", proposer_epoch="4", validator_index="0"),
+                    sample(32_000_000_000_000_000_000, instance="cl-2", slot="32", proposer_epoch="4", validator_index="0"),
+                ],
+                "topostake_selected_proposer": [
+                    sample(1, instance="cl-1", slot="32", proposer_epoch="4", validator_index="0"),
+                    sample(1, instance="cl-2", slot="32", proposer_epoch="4", validator_index="1"),
+                ],
+            }
+        )
+        by_name = {item.name: item for item in artifact_checks(summary, "topostake")}
+        self.assertFalse(by_name["cross-node-proposer-consistency"].passed)
 
 
 if __name__ == "__main__":

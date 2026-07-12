@@ -37,6 +37,33 @@ def run(cmd: list[str], *, check: bool = True) -> subprocess.CompletedProcess[st
     return subprocess.run(cmd, cwd=ROOT, env=command_env(), check=check, text=True)
 
 
+def capture(cmd: list[str]) -> str:
+    completed = subprocess.run(
+        cmd,
+        cwd=ROOT,
+        env=command_env(),
+        check=True,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+    )
+    return completed.stdout.strip()
+
+
+def collect_build_provenance() -> dict:
+    provenance = {"source_commit": capture(["git", "rev-parse", "HEAD"]), "images": {}}
+    for image in ("topostake/geth:dev", "topostake/lighthouse:dev"):
+        raw = capture(["docker", "image", "inspect", image])
+        inspected = json.loads(raw)[0]
+        provenance["images"][image] = {
+            "id": inspected.get("Id"),
+            "created": inspected.get("Created"),
+            "repo_digests": inspected.get("RepoDigests") or [],
+            "labels": inspected.get("Config", {}).get("Labels") or {},
+        }
+    return provenance
+
+
 def ensure_registry(nodes: int) -> tuple[Path, Path]:
     public = ROOT / "results" / "processed" / f"frozen_v1_relay_registry_n{nodes}.json"
     private = ROOT / "results" / "raw" / f"frozen_v1_relay_private_n{nodes}.json"
@@ -158,6 +185,26 @@ def enrich_irrecoverable_costs(summary_path: Path) -> None:
             writer.writerows(rows)
 
 
+def collect_geth_statuses(summary_path: Path) -> None:
+    summary = json.loads(summary_path.read_text())
+    statuses = []
+    for endpoint in summary.get("endpoints", {}).get("el_rpcs", []):
+        request = urllib.request.Request(
+            endpoint,
+            data=json.dumps(
+                {"jsonrpc": "2.0", "id": 1, "method": "topostake_status", "params": []}
+            ).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(request, timeout=15) as response:
+            payload = json.loads(response.read())
+        if "error" in payload:
+            raise RuntimeError(f"topostake_status failed on {endpoint}: {payload['error']}")
+        statuses.append({"endpoint": endpoint, **payload["result"]})
+    summary["geth_topostake_status"] = statuses
+    summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
+
+
 def run_mode(args: argparse.Namespace, mode: str, public: Path, private: Path) -> dict:
     enclave = f"ts-frozen-v1-{mode}"
     run_id = mode
@@ -230,6 +277,8 @@ def run_mode(args: argparse.Namespace, mode: str, public: Path, private: Path) -
                 ]
             )
             enrich_irrecoverable_costs(summary_path)
+            if mode != "baseline":
+                collect_geth_statuses(summary_path)
         finally:
             if not args.keep_enclaves:
                 remove_enclave(enclave)
@@ -237,6 +286,8 @@ def run_mode(args: argparse.Namespace, mode: str, public: Path, private: Path) -
     if not summary_path.exists():
         raise FileNotFoundError(f"missing devnet artifact {summary_path}")
     summary = json.loads(summary_path.read_text())
+    summary["build_provenance"] = args.build_provenance
+    summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
     mode_report = report(static_checks() + artifact_checks(summary, mode), mode=mode, artifact=str(summary_path))
     mode_report_path = args.report.parent / f"frozen_v1_devnet_{mode}.json"
     mode_report_path.parent.mkdir(parents=True, exist_ok=True)
@@ -283,6 +334,7 @@ def main() -> int:
         parser.error(f"ethereum-package not found: {args.package}")
 
     started = time.time()
+    args.build_provenance = collect_build_provenance()
     if any(mode != "baseline" for mode in modes_to_run):
         public, private = ensure_registry(args.nodes)
     else:
@@ -294,6 +346,7 @@ def main() -> int:
         "protocol_version": "frozen-v1",
         "passed": all(item["passed"] for item in reports),
         "duration_seconds": time.time() - started,
+        "build_provenance": args.build_provenance,
         "modes": reports,
     }
     args.report.parent.mkdir(parents=True, exist_ok=True)

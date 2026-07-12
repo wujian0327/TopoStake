@@ -65,6 +65,8 @@ def static_checks() -> list[Check]:
             int(profile["evidence_work_limit"]) == int(fixed["evidence_work_limit"]),
             f"profile={profile['evidence_work_limit']}, devnet={fixed['evidence_work_limit']}",
         ),
+        check("devnet-seconds-per-slot", int(fixed["seconds_per_slot"]) > 0, str(fixed["seconds_per_slot"])),
+        check("devnet-slots-per-epoch", int(fixed["slots_per_epoch"]) > 0, str(fixed["slots_per_epoch"])),
         check(
             "kappa-fixed-point",
             int(fixed["score_floor_kappa_scaled"]) == round(float(profile["score_floor_kappa"]) * scale),
@@ -158,15 +160,46 @@ def frozen_weight_checks(summary: dict[str, Any]) -> list[Check]:
     samples, error = metric_samples(summary, "topostake_proposer_weight_scaled")
     if error:
         return [check("proposer-weight-metric", False, error)]
-    grouped: dict[tuple[str, str], set[float]] = {}
+    within_instance: dict[tuple[str, str, str], set[float]] = {}
+    across_instances: dict[tuple[str, str, str], set[float]] = {}
     for sample in samples:
         labels = sample.get("metric", {})
-        key = (str(labels.get("proposer_epoch", "")), str(labels.get("validator_index", "")))
-        grouped.setdefault(key, set()).add(sample_value(sample))
-    unstable = {key: values for key, values in grouped.items() if len(values) > 1}
+        instance = str(labels.get("instance", ""))
+        proposer_epoch = str(labels.get("proposer_epoch", ""))
+        validator = str(labels.get("validator_index", ""))
+        slot = str(labels.get("slot", ""))
+        within_instance.setdefault((instance, proposer_epoch, validator), set()).add(sample_value(sample))
+        across_instances.setdefault((proposer_epoch, slot, validator), set()).add(sample_value(sample))
+    intra_unstable = {key: values for key, values in within_instance.items() if len(values) > 1}
+    cross_unstable = {key: values for key, values in across_instances.items() if len(values) > 1}
+
+    selected, selected_error = metric_samples(summary, "topostake_selected_proposer")
+    selected_by_slot: dict[tuple[str, str], set[str]] = {}
+    for sample in selected:
+        if sample_value(sample) != 1.0:
+            continue
+        labels = sample.get("metric", {})
+        key = (str(labels.get("proposer_epoch", "")), str(labels.get("slot", "")))
+        selected_by_slot.setdefault(key, set()).add(str(labels.get("validator_index", "")))
+    proposer_divergence = {key: values for key, values in selected_by_slot.items() if len(values) > 1}
     return [
         check("proposer-weight-metric", bool(samples), f"samples={len(samples)}"),
-        check("epoch-weight-snapshot-frozen", not unstable, f"unstable_groups={len(unstable)}"),
+        check(
+            "epoch-weight-snapshot-frozen",
+            not intra_unstable,
+            f"unstable_groups={len(intra_unstable)}, examples={list(intra_unstable.items())[:2]}",
+        ),
+        check(
+            "cross-node-weight-consistency",
+            not cross_unstable,
+            f"unstable_groups={len(cross_unstable)}, examples={list(cross_unstable.items())[:2]}",
+        ),
+        check("selected-proposer-metric", selected_error is None and bool(selected), f"samples={len(selected)}, error={selected_error}"),
+        check(
+            "cross-node-proposer-consistency",
+            not proposer_divergence,
+            f"divergent_slots={len(proposer_divergence)}, examples={list(proposer_divergence.items())[:2]}",
+        ),
     ]
 
 
@@ -204,7 +237,7 @@ def artifact_checks(summary: dict[str, Any], mode: str) -> list[Check]:
     finalized_after = int(after.get("finalized_epoch", 0))
     max_path = int(fixed["max_path_evidence_len"])
     work_limit = int(fixed["evidence_work_limit"])
-    slots_per_epoch = 8
+    slots_per_epoch = int(fixed["slots_per_epoch"])
     _, fee_metric_error = metric_samples(summary, "topostake_fee_conservation_violation")
 
     checks = [
@@ -222,6 +255,35 @@ def artifact_checks(summary: dict[str, Any], mode: str) -> list[Check]:
             ]
         )
         return checks
+
+    geth_statuses = summary.get("geth_topostake_status", [])
+    expected_relay_epoch = int(after.get("head_slot", 0)) // slots_per_epoch
+    checks.extend(
+        [
+            check("geth-status-present", bool(geth_statuses), f"nodes={len(geth_statuses)}"),
+            check(
+                "geth-dynamic-epoch-enabled",
+                bool(geth_statuses) and all(item.get("dynamic_relay_epoch") is True for item in geth_statuses),
+                str([item.get("dynamic_relay_epoch") for item in geth_statuses]),
+            ),
+            check(
+                "geth-epoch-timing",
+                bool(geth_statuses)
+                and all(
+                    int(item.get("seconds_per_slot", 0)) == int(fixed["seconds_per_slot"])
+                    and int(item.get("slots_per_epoch", 0)) == slots_per_epoch
+                    for item in geth_statuses
+                ),
+                str([(item.get("seconds_per_slot"), item.get("slots_per_epoch")) for item in geth_statuses]),
+            ),
+            check(
+                "geth-relay-epoch-current",
+                bool(geth_statuses)
+                and all(int(item.get("relay_epoch", -1)) == expected_relay_epoch for item in geth_statuses),
+                f"expected={expected_relay_epoch}, observed={[item.get('relay_epoch') for item in geth_statuses]}",
+            ),
+        ]
+    )
 
     stale = [record for record in records if int(record.get("epoch", -1)) != int(record.get("slot", 0)) // slots_per_epoch]
     oversized = [record for record in records if int(record.get("path_len", len(record.get("path", [])))) > max_path]

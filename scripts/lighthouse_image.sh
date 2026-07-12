@@ -158,6 +158,7 @@ cmd_package_local() {
     tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/topostake-lighthouse-image.XXXXXX")
     cp "$binary_path" "$tmp_dir/lighthouse"
     printf 'FROM %s\n' "$LIGHTHOUSE_RUNTIME_IMAGE" > "$tmp_dir/Dockerfile"
+    printf 'LABEL org.opencontainers.image.revision="%s"\n' "$(commit_hash)" >> "$tmp_dir/Dockerfile"
     cat >> "$tmp_dir/Dockerfile" <<'EOF'
 COPY lighthouse /usr/local/bin/lighthouse
 EOF
