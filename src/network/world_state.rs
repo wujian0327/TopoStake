@@ -738,7 +738,13 @@ impl WorldState {
         let adversary_damped_score_mass: f64 = self
             .adversarial_nodes
             .iter()
-            .map(|address| snapshot.normalized_score.get(address).copied().unwrap_or(0.0))
+            .map(|address| {
+                snapshot
+                    .normalized_score
+                    .get(address)
+                    .copied()
+                    .unwrap_or(0.0)
+            })
             .sum();
         let adversary_proposer_weight_share =
             metrics::share_for(&self.adversarial_nodes, &proposer_weights);
@@ -747,11 +753,7 @@ impl WorldState {
         let zeta = snapshot.topostake_bonus_zeta.unwrap_or(1.0);
         let a = adversary_real_stake_share;
         let coalition_bonus = if a > 0.0 {
-            TopoStakeConsensus::propagation_bonus(
-                adversary_damped_score_mass / a,
-                bonus_cap,
-                zeta,
-            )
+            TopoStakeConsensus::propagation_bonus(adversary_damped_score_mass / a, bonus_cap, zeta)
         } else {
             0.0
         };

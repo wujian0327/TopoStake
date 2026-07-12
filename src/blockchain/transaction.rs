@@ -89,8 +89,7 @@ impl Transaction {
         let timestamp = 8;
         let fee = 8;
         let irrecoverable_cost = 8;
-        hash
-            + amount
+        hash + amount
             + fee
             + irrecoverable_cost
             + timestamp

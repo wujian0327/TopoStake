@@ -244,13 +244,23 @@ impl TopoStakeConsensus {
     ) -> HashMap<String, f64> {
         let score_sum: f64 = validators
             .iter()
-            .map(|validator| scores.get(&validator.address).copied().unwrap_or(0.0).max(0.0))
+            .map(|validator| {
+                scores
+                    .get(&validator.address)
+                    .copied()
+                    .unwrap_or(0.0)
+                    .max(0.0)
+            })
             .sum();
         let denominator = kappa + score_sum;
         validators
             .iter()
             .map(|validator| {
-                let score = scores.get(&validator.address).copied().unwrap_or(0.0).max(0.0);
+                let score = scores
+                    .get(&validator.address)
+                    .copied()
+                    .unwrap_or(0.0)
+                    .max(0.0);
                 (validator.address.clone(), score / denominator)
             })
             .collect()
@@ -786,8 +796,14 @@ mod tests {
             Validator::new("validator-b".to_string(), 1.0, 1.0),
         ];
         let scores = HashMap::from([
-            (validators[0].address.clone(), vectors.damped_score.scores[0]),
-            (validators[1].address.clone(), vectors.damped_score.scores[1]),
+            (
+                validators[0].address.clone(),
+                vectors.damped_score.scores[0],
+            ),
+            (
+                validators[1].address.clone(),
+                vectors.damped_score.scores[1],
+            ),
         ]);
         let damped = TopoStakeConsensus::damped_score_for_active_set(
             &scores,
@@ -845,9 +861,17 @@ mod tests {
     #[test]
     fn transaction_credit_weight_is_cost_backed_and_capped() {
         let reference = 10.0;
-        assert_eq!(TopoStakeConsensus::transaction_credit_weight(0.0, reference), 0.0);
-        assert!((TopoStakeConsensus::transaction_credit_weight(2.5, reference) - 0.25).abs() < 1e-12);
-        assert_eq!(TopoStakeConsensus::transaction_credit_weight(20.0, reference), 1.0);
+        assert_eq!(
+            TopoStakeConsensus::transaction_credit_weight(0.0, reference),
+            0.0
+        );
+        assert!(
+            (TopoStakeConsensus::transaction_credit_weight(2.5, reference) - 0.25).abs() < 1e-12
+        );
+        assert_eq!(
+            TopoStakeConsensus::transaction_credit_weight(20.0, reference),
+            1.0
+        );
     }
 
     #[test]
@@ -860,8 +884,7 @@ mod tests {
         let consensus = TopoStakeConsensus::new(1.0, config).unwrap();
         let (full_cost_block, validators) =
             block_with_path_and_cost(&origin, &relay, &miner, 1.0, 10.0);
-        let (half_cost_block, _) =
-            block_with_path_and_cost(&origin, &relay, &miner, 1.0, 5.0);
+        let (half_cost_block, _) = block_with_path_and_cost(&origin, &relay, &miner, 1.0, 5.0);
 
         let full = consensus.raw_epoch_contribution(&[full_cost_block], &validators);
         let half = consensus.raw_epoch_contribution(&[half_cost_block], &validators);
@@ -876,11 +899,21 @@ mod tests {
         let b = Wallet::new();
         let validators = validators(&[&a, &b]);
         let mut consensus = TopoStakeConsensus::new(1.0, test_config()).unwrap();
-        consensus.active_score_history.insert(a.address.clone(), 1e-9);
+        consensus
+            .active_score_history
+            .insert(a.address.clone(), 1e-9);
         consensus.freeze_proposer_weights(&validators);
 
-        let damped = consensus.normalized_score.get(&a.address).copied().unwrap_or(0.0);
-        let bonus = consensus.epoch_bonuses.get(&a.address).copied().unwrap_or(0.0);
+        let damped = consensus
+            .normalized_score
+            .get(&a.address)
+            .copied()
+            .unwrap_or(0.0);
+        let bonus = consensus
+            .epoch_bonuses
+            .get(&a.address)
+            .copied()
+            .unwrap_or(0.0);
         assert!(damped < 1e-8);
         assert!(bonus < 1e-7);
     }
@@ -901,12 +934,14 @@ mod tests {
 
         consensus.on_epoch_end(&[], &validators);
         assert_eq!(consensus.active_score_epoch(), Some(0));
-        assert!(consensus
-            .active_score_history
-            .get(&relay.address)
-            .copied()
-            .unwrap_or(0.0)
-            > 0.0);
+        assert!(
+            consensus
+                .active_score_history
+                .get(&relay.address)
+                .copied()
+                .unwrap_or(0.0)
+                > 0.0
+        );
     }
 
     #[test]
@@ -951,8 +986,12 @@ mod tests {
             Validator::new(b.address.clone(), 3.0, 1.0),
         ];
         let mut consensus = TopoStakeConsensus::new(1.0, test_config()).unwrap();
-        consensus.active_score_history.insert(a.address.clone(), 100.0);
-        consensus.active_score_history.insert(b.address.clone(), 0.0);
+        consensus
+            .active_score_history
+            .insert(a.address.clone(), 100.0);
+        consensus
+            .active_score_history
+            .insert(b.address.clone(), 0.0);
         consensus.freeze_proposer_weights(&validators);
         let stake = TopoStakeConsensus::normalized_stake(&validators);
         let bound_factor = 1.0 + consensus.config.eta * consensus.config.bonus_cap;
