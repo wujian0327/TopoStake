@@ -57,6 +57,8 @@ collected artifacts without restarting Kurtosis.
 Acceptance reports are written to
 `results/processed/frozen_v1_devnet_*.json`; raw mode artifacts live under
 `results/raw/frozen_v1_devnet/`.
+Use the exact local client build and packaging commands documented in
+`docs/FROZEN_V1_DEVNET.md`; Lighthouse must include the `spec-minimal` feature.
 
 `experiments/configs/tdsc_fast.yaml` is the compact paper-figure profile. It uses deterministic seeds `[0, 1, 2]`, a shorter epoch horizon with warmup, and reduced sweeps for the TDSC submission figures.
 

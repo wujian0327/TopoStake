@@ -4,6 +4,37 @@ This document maps the frozen TDSC mechanism to the modified Geth and
 Lighthouse clients. Shared defaults live in
 `experiments/configs/protocol_frozen_v1.yaml`.
 
+## Rebuild the client images
+
+Build Geth from its checkout, then package the resulting binary from the
+repository root:
+
+```bash
+cd ethereum-topostake/go-ethereum-topostake
+make geth
+
+cd ../..
+GETH_BINARY="$PWD/ethereum-topostake/go-ethereum-topostake/build/bin/geth" \
+  ./scripts/geth_image.sh package-local
+./scripts/geth_image.sh verify
+```
+
+The Lighthouse devnet uses the minimal preset, so its release binary must be
+built with `spec-minimal` before packaging:
+
+```bash
+cd ethereum-topostake/lighthouse
+cargo build --release -p lighthouse --features spec-minimal
+
+cd ../..
+LIGHTHOUSE_BINARY="$PWD/ethereum-topostake/lighthouse/target/release/lighthouse" \
+  ./scripts/lighthouse_image.sh package-local
+./scripts/lighthouse_image.sh verify
+```
+
+Rebuild both images after any consensus/evidence schema change. The smoke
+report records both image IDs, creation times, and revision labels.
+
 ## Evidence and cost fields
 
 Geth commits two distinct monetary values for every included transaction:
