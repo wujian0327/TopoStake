@@ -94,6 +94,29 @@ def task_frozen_smoke(args: argparse.Namespace) -> None:
     task_summarize_config(config)
 
 
+def task_frozen_devnet_check(args: argparse.Namespace) -> None:
+    cmd = [PYTHON, "experiments/frozen_devnet_acceptance.py"]
+    if args.artifact:
+        cmd.extend(["--artifact", args.artifact, "--mode", args.mode])
+    run(cmd)
+
+
+def task_frozen_devnet_smoke(args: argparse.Namespace) -> None:
+    cmd = [
+        PYTHON,
+        "experiments/run_frozen_devnet_smoke.py",
+        "--modes",
+        args.modes,
+    ]
+    if args.package:
+        cmd.extend(["--package", args.package])
+    if args.skip_existing:
+        cmd.append("--skip-existing")
+    if args.keep_enclaves:
+        cmd.append("--keep-enclaves")
+    run(cmd)
+
+
 def task_summarize(_args: argparse.Namespace) -> None:
     run([PYTHON, "experiments/summarize.py"])
 
@@ -105,6 +128,8 @@ TASKS: Dict[str, Callable[[argparse.Namespace], None]] = {
     "experiments-main": task_experiments_main,
     "tdsc-fast": task_tdsc_fast,
     "frozen-smoke": task_frozen_smoke,
+    "frozen-devnet-check": task_frozen_devnet_check,
+    "frozen-devnet-smoke": task_frozen_devnet_smoke,
     "summarize": task_summarize,
     "figures": task_figures,
 }
@@ -118,6 +143,12 @@ def main() -> int:
         action="store_true",
         help="Rerun experiment tasks even when existing summaries are present.",
     )
+    parser.add_argument("--artifact", help="Devnet summary.json for frozen-devnet-check.")
+    parser.add_argument("--mode", choices=["baseline", "pathobs", "topostake"], default="topostake")
+    parser.add_argument("--modes", default="baseline,pathobs,topostake", help="Modes for frozen-devnet-smoke.")
+    parser.add_argument("--package", help="Path to the local ethereum-package checkout.")
+    parser.add_argument("--skip-existing", action="store_true", help="Reuse existing devnet summary artifacts.")
+    parser.add_argument("--keep-enclaves", action="store_true", help="Leave smoke enclaves running after collection.")
     args = parser.parse_args()
 
     TASKS[args.target](args)

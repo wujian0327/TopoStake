@@ -459,6 +459,9 @@ def summarize(spec: RunSpec, status: str = "ok", error: str = "") -> dict[str, A
             "path_records": len(records),
             "fee_records": len(fee_records),
             "priority_fee_sum_wei": sum(int(record.get("priority_fee_wei", 0)) for record in records),
+            "irrecoverable_cost_sum_wei": sum(
+                int(record.get("irrecoverable_cost_wei", 0)) for record in records
+            ),
             "raw_block_records": int(blocks.get("record_count", 0)),
             "raw_nonzero_fee_records": int(blocks.get("nonzero_fee_records", 0)),
             "matches_target": peer_graph.get("matches_target"),
@@ -507,6 +510,7 @@ def write_rows(rows: list[dict[str, Any]]) -> None:
         "path_records",
         "fee_records",
         "priority_fee_sum_wei",
+        "irrecoverable_cost_sum_wei",
         "raw_block_records",
         "raw_nonzero_fee_records",
         "matches_target",

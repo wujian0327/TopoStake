@@ -9,6 +9,7 @@ Python standard library; if PyYAML is installed, normal YAML is also accepted.
 ```bash
 python scripts/task.py experiments-smoke
 python scripts/task.py frozen-smoke
+python scripts/task.py frozen-devnet-check
 python scripts/task.py tdsc-fast
 python scripts/task.py experiments-main
 python scripts/task.py figures
@@ -31,6 +32,31 @@ python analysis/plot_performance.py
 `experiments/configs/frozen_v1_smoke.yaml` is the first migration smoke test for
 the frozen TDSC formulas. It is a correctness check, not a paper experiment.
 Its protocol defaults come from `experiments/configs/protocol_frozen_v1.yaml`.
+
+## Frozen-v1 Devnet Acceptance
+
+Run the dependency-free profile and golden-vector checks with:
+
+```bash
+python scripts/task.py frozen-devnet-check
+```
+
+After building the `topostake/geth:dev` and `topostake/lighthouse:dev` images,
+run the sequential baseline, path-observation, and TopoStake Kurtosis smokes:
+
+```bash
+python scripts/task.py frozen-devnet-smoke --package /path/to/ethereum-package
+```
+
+On Windows, pass the native checkout path to `--package`. The runner generates
+relay registries and Kurtosis args, runs a small ring workload in each mode,
+waits for finality, validates each `summary.json`, and removes each enclave
+unless `--keep-enclaves` is set. Use `--skip-existing` to validate already
+collected artifacts without restarting Kurtosis.
+
+Acceptance reports are written to
+`results/processed/frozen_v1_devnet_*.json`; raw mode artifacts live under
+`results/raw/frozen_v1_devnet/`.
 
 `experiments/configs/tdsc_fast.yaml` is the compact paper-figure profile. It uses deterministic seeds `[0, 1, 2]`, a shorter epoch horizon with warmup, and reduced sweeps for the TDSC submission figures.
 

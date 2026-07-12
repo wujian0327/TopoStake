@@ -44,6 +44,19 @@ also rejects evidence whose total path work exceeds `evidence_work_limit`.
 Stale records whose tagged epoch differs from the containing block epoch are
 recorded as invalid evidence and earn neither score nor relay credit.
 
+## Automated acceptance
+
+`experiments/frozen_devnet_acceptance.py` validates the shared fixed-point
+profile and golden vectors without a running network. Given a devnet
+`summary.json`, it also checks finality progress, evidence epoch freshness,
+path and block work limits, positive irrecoverable cost carriage, score
+activation delay, within-epoch proposer-weight stability, and the proposer
+weight cap.
+
+`experiments/run_frozen_devnet_smoke.py` runs baseline, path-observation, and
+TopoStake enclaves sequentially and applies those checks to every artifact.
+The runner is a smoke gate; its small sample is not paper evidence.
+
 ## Remaining work
 
 The frozen-v1 challenge payload, bond, deduplication key, and

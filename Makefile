@@ -1,4 +1,4 @@
-.PHONY: test bench experiments-smoke experiments-main summarize figures
+.PHONY: test bench experiments-smoke experiments-main frozen-devnet-check summarize figures
 
 test:
 	cargo fmt --check
@@ -12,6 +12,9 @@ experiments-smoke:
 	python3 experiments/run_experiments.py --config experiments/configs/smoke.yaml
 	python3 experiments/summarize.py --config experiments/configs/smoke.yaml
 	$(MAKE) figures
+
+frozen-devnet-check:
+	python3 experiments/frozen_devnet_acceptance.py
 
 experiments-main:
 	python3 experiments/run_experiments.py --config experiments/configs/main.yaml
