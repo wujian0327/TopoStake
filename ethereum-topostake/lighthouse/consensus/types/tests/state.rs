@@ -306,7 +306,7 @@ fn topostake_bonus_cap_bound() {
 
     let balance = 32_000_000_000;
     let total_active_balance = balance * 4;
-    let expected_multiplier = 1_196_078_431;
+    let expected_multiplier: u64 = 1_196_078_431;
     assert_eq!(
         config.proposer_weight_scaled_at_epoch(Epoch::new(0), balance, total_active_balance, 0),
         u128::from(balance) * u128::from(expected_multiplier)
