@@ -135,15 +135,16 @@ type BlockEvidence struct {
 }
 
 type BlockTransactionEvidence struct {
-	Index              int             `json:"index"`
-	TxHash             string          `json:"tx_hash"`
-	GasUsed            uint64          `json:"gas_used,omitempty"`
-	EffectiveGasTipWei string          `json:"effective_gas_tip_wei,omitempty"`
-	PriorityFeeWei     string          `json:"priority_fee_wei,omitempty"`
-	BaseFeeWei         string          `json:"base_fee_wei,omitempty"`
-	FeeRecipient       string          `json:"fee_recipient,omitempty"`
-	EscrowRecipient    string          `json:"escrow_recipient,omitempty"`
-	Metadata           json.RawMessage `json:"metadata"`
+	Index                   int             `json:"index"`
+	TxHash                  string          `json:"tx_hash"`
+	GasUsed                 uint64          `json:"gas_used,omitempty"`
+	EffectiveGasTipWei      string          `json:"effective_gas_tip_wei,omitempty"`
+	PriorityFeeWei          string          `json:"priority_fee_wei,omitempty"`
+	BaseFeeWei              string          `json:"base_fee_wei,omitempty"`
+	IrrecoverableCostWei    string          `json:"irrecoverable_cost_wei,omitempty"`
+	FeeRecipient            string          `json:"fee_recipient,omitempty"`
+	EscrowRecipient         string          `json:"escrow_recipient,omitempty"`
+	Metadata                json.RawMessage `json:"metadata"`
 }
 
 type SettlementPayload struct {
@@ -592,6 +593,10 @@ func (s *Store) attachFeeEvidence(evidence *BlockTransactionEvidence, tx *types.
 	evidence.PriorityFeeWei = priorityFee.String()
 	if baseFee != nil {
 		evidence.BaseFeeWei = baseFee.String()
+		evidence.IrrecoverableCostWei = new(big.Int).Mul(
+			new(big.Int).SetUint64(receipt.GasUsed),
+			baseFee,
+		).String()
 	}
 	if feeRecipient != (common.Address{}) {
 		evidence.FeeRecipient = feeRecipient.Hex()
@@ -1497,6 +1502,7 @@ func blockEvidenceRoot(blockHash common.Hash, blockNumber uint64, records []bloc
 		writeEvidenceString(digest, tx.EffectiveGasTipWei)
 		writeEvidenceString(digest, tx.PriorityFeeWei)
 		writeEvidenceString(digest, tx.BaseFeeWei)
+		writeEvidenceString(digest, tx.IrrecoverableCostWei)
 		writeEvidenceString(digest, normalizeRelayAddress(tx.FeeRecipient))
 		writeEvidenceString(digest, normalizeRelayAddress(tx.EscrowRecipient))
 	}

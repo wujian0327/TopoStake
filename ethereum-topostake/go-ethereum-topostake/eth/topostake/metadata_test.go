@@ -413,6 +413,36 @@ func TestStoreRecordsCommittedFeeInput(t *testing.T) {
 	}
 }
 
+func TestStoreRecordsIrrecoverableBaseFeeCost(t *testing.T) {
+	secret := blst.KeyGen([]byte("topostake frozen v1 base fee cost key"))
+	store := testStore(0, secret)
+	tx := types.NewTx(&types.LegacyTx{
+		Nonce:    1,
+		To:       &common.Address{0x42},
+		Gas:      21_000,
+		GasPrice: big.NewInt(5),
+	})
+	store.EnsureLocalHash(tx.Hash())
+	receipt := &types.Receipt{GasUsed: 21_000}
+	baseFee := big.NewInt(2)
+	blockHash := common.HexToHash("0xf00d")
+	store.RecordBlockEvidenceWithReceipts(
+		blockHash,
+		14,
+		types.Transactions{tx},
+		types.Receipts{receipt},
+		baseFee,
+		common.Address{},
+	)
+	evidence, ok := store.BlockEvidence(blockHash)
+	if !ok || len(evidence.Transactions) != 1 {
+		t.Fatalf("missing fee evidence: %#v", evidence)
+	}
+	if got := evidence.Transactions[0].IrrecoverableCostWei; got != "42000" {
+		t.Fatalf("unexpected irrecoverable cost %q", got)
+	}
+}
+
 func TestStoreAppliesSubmittedSettlementOnce(t *testing.T) {
 	t.Setenv("TOPOSTAKE_FEE_ESCROW", "1")
 	t.Setenv("TOPOSTAKE_SETTLEMENT_MUTATION", "1")
