@@ -13,5 +13,17 @@
   "score_activation_delay_epochs": 2,
   "max_path_hops": 16,
   "evidence_work_limit": 4096,
-  "challenge_work_limit": 1024
+  "challenge_work_limit": 1024,
+  "devnet_fixed_point": {
+    "scale": 1000000000,
+    "score_cost_reference_wei": 21000000000000,
+    "score_floor_kappa_scaled": 1000000000,
+    "bonus_zeta_scaled": 1000000000,
+    "score_activation_delay_epochs": 2,
+    "evidence_finality_depth": 1,
+    "max_path_evidence_len": 16,
+    "max_paths_per_block": 1024,
+    "evidence_work_limit": 4096,
+    "challenge_work_limit": 1024
+  }
 }

@@ -12,6 +12,10 @@ from typing import Any, Dict, List
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_PUBLIC_REGISTRY = ROOT / "results" / "processed" / "topostake_relay_key_registry.json"
 DEFAULT_PRIVATE_REGISTRY = ROOT / "results" / "raw" / "topostake_relay_keys_private.json"
+FROZEN_PROFILE = json.loads(
+    (ROOT / "experiments" / "configs" / "protocol_frozen_v1.yaml").read_text()
+)
+DEVNET_PROFILE = FROZEN_PROFILE["devnet_fixed_point"]
 
 
 def compact_json(value: Dict[str, Any]) -> str:
@@ -48,6 +52,7 @@ def write_args(args: argparse.Namespace) -> None:
     lines: List[str] = []
     topostake_features = args.mode in ("pathobs", "topostake")
     fee_escrow_enabled = args.mode == "topostake" and not args.disable_fee_settlement
+    scale = int(DEVNET_PROFILE["scale"])
 
     lines.extend(
         [
@@ -97,7 +102,8 @@ def write_args(args: argparse.Namespace) -> None:
                 '      TOPOSTAKE_TX_EVIDENCE_GRAFFITI_COMMITMENT: "1"',
                 '      TOPOSTAKE_FORK_EPOCH: "0"',
                 f'      TOPOSTAKE_ETA_SCALED: "{eta_scaled}"',
-                '      TOPOSTAKE_EVIDENCE_FINALITY_DEPTH: "1"',
+                f'      TOPOSTAKE_EVIDENCE_FINALITY_DEPTH: "{DEVNET_PROFILE["evidence_finality_depth"]}"',
+                f'      TOPOSTAKE_SCORE_ACTIVATION_DELAY_EPOCHS: "{DEVNET_PROFILE["score_activation_delay_epochs"]}"',
             ]
         )
     lines.extend(
@@ -133,10 +139,19 @@ def write_args(args: argparse.Namespace) -> None:
                 "      TOPOSTAKE_CONFIG:",
                 '        TOPOSTAKE_FORK_EPOCH: "0"',
                 f'        ETA_SCALED: "{eta_scaled}"',
-                '        BONUS_CAP_SCALED: "1000000000"',
-                '        EVIDENCE_FINALITY_DEPTH: "1"',
-                '        MAX_PATH_EVIDENCE_LEN: "32"',
-                '        MAX_PATHS_PER_BLOCK: "1024"',
+                f'        BONUS_CAP_SCALED: "{scale}"',
+                f'        SCORE_EMA_BETA_SCALED: "{int(float(FROZEN_PROFILE["beta"]) * scale)}"',
+                f'        SCORE_SATURATION_K_SCALED: "{int(float(FROZEN_PROFILE["saturation_k"]) * scale)}"',
+                f'        SCORE_TARGET_DEPTH: "{FROZEN_PROFILE["target_depth"]}"',
+                f'        SCORE_COST_REFERENCE_WEI: "{DEVNET_PROFILE["score_cost_reference_wei"]}"',
+                f'        SCORE_FLOOR_KAPPA_SCALED: "{DEVNET_PROFILE["score_floor_kappa_scaled"]}"',
+                f'        BONUS_ZETA_SCALED: "{DEVNET_PROFILE["bonus_zeta_scaled"]}"',
+                f'        EVIDENCE_FINALITY_DEPTH: "{DEVNET_PROFILE["evidence_finality_depth"]}"',
+                f'        SCORE_ACTIVATION_DELAY_EPOCHS: "{DEVNET_PROFILE["score_activation_delay_epochs"]}"',
+                f'        MAX_PATH_EVIDENCE_LEN: "{DEVNET_PROFILE["max_path_evidence_len"]}"',
+                f'        MAX_PATHS_PER_BLOCK: "{DEVNET_PROFILE["max_paths_per_block"]}"',
+                f'        EVIDENCE_WORK_LIMIT: "{DEVNET_PROFILE["evidence_work_limit"]}"',
+                f'        CHALLENGE_WORK_LIMIT: "{DEVNET_PROFILE["challenge_work_limit"]}"',
             ]
         )
     if args.enable_observability:
@@ -180,7 +195,7 @@ def main() -> None:
     parser.add_argument("--validator-count", type=int, default=16)
     parser.add_argument("--chain-id", type=int, default=7_032_030)
     parser.add_argument("--maxpeers", type=int, default=8)
-    parser.add_argument("--eta-scaled", type=int, default=1_000_000_000)
+    parser.add_argument("--eta-scaled", type=int, default=500_000_000)
     parser.add_argument("--disable-fee-settlement", action="store_true")
     parser.add_argument("--enable-observability", action="store_true")
     parser.add_argument("--label", default="topostake-devnet-8node-overhead")
