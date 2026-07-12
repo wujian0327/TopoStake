@@ -1,0 +1,27 @@
+{
+  "credit_weights": [
+    {"irrecoverable_cost": 0.0, "reference_cost": 10.0, "expected": 0.0},
+    {"irrecoverable_cost": 2.5, "reference_cost": 10.0, "expected": 0.25},
+    {"irrecoverable_cost": 20.0, "reference_cost": 10.0, "expected": 1.0}
+  ],
+  "bonuses": [
+    {"score_to_stake": 0.0, "bonus_cap": 1.0, "zeta": 1.0, "expected": 0.0},
+    {"score_to_stake": 0.25, "bonus_cap": 1.0, "zeta": 1.0, "expected": 0.2},
+    {"score_to_stake": 1.0, "bonus_cap": 1.0, "zeta": 1.0, "expected": 0.5},
+    {"score_to_stake": 3.0, "bonus_cap": 1.0, "zeta": 1.0, "expected": 0.75}
+  ],
+  "damped_score": {
+    "kappa": 1.0,
+    "scores": [2.0, 1.0],
+    "expected": [0.5, 0.25]
+  },
+  "proposer_weight": {
+    "stakes": [0.25, 0.75],
+    "damped_scores": [0.5, 0.25],
+    "eta": 0.5,
+    "bonus_cap": 1.0,
+    "zeta": 1.0,
+    "expected_unnormalized": [0.3333333333333333, 0.84375],
+    "expected_normalized": [0.2831858407079646, 0.7168141592920354]
+  }
+}

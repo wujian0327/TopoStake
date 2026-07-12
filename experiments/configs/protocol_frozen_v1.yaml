@@ -1,0 +1,17 @@
+{
+  "protocol_version": "frozen-v1",
+  "target_depth": 4,
+  "beta": 0.8,
+  "saturation_k": 1.0,
+  "score_cost_reference": 0.00001,
+  "score_floor_kappa": 1.0,
+  "bonus_zeta": 1.0,
+  "eta": 0.5,
+  "bonus_cap": 1.0,
+  "proposer_fee_ratio": 0.5,
+  "reward_settlement_depth": 2,
+  "score_activation_delay_epochs": 2,
+  "max_path_hops": 16,
+  "evidence_work_limit": 4096,
+  "challenge_work_limit": 1024
+}
