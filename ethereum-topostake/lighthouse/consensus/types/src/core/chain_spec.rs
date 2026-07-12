@@ -2050,9 +2050,7 @@ impl TopoStakeConfig {
             return 0;
         }
         let score_to_stake_scaled = damped_score_scaled.saturating_mul(scale) / stake_share_scaled;
-        self.concave_bonus_scaled(
-            score_to_stake_scaled.min(u128::from(u64::MAX)) as u64,
-        )
+        self.concave_bonus_scaled(score_to_stake_scaled.min(u128::from(u64::MAX)) as u64)
     }
 
     pub fn concave_bonus_scaled(&self, score_to_stake_scaled: u64) -> u64 {
@@ -2804,10 +2802,7 @@ fn topostake_path_budget_scaled(edge_count: usize, spec: &ChainSpec) -> u64 {
         .saturating_mul(u128::from(TOPOSTAKE_FIXED_POINT_SCALE))
         / depth.saturating_mul(3).saturating_add(1))
     .min(u128::from(u64::MAX)) as u64;
-    let decay = fixed_pow_scaled(
-        lambda_scaled,
-        edge_count.saturating_sub(1) as u64,
-    );
+    let decay = fixed_pow_scaled(lambda_scaled, edge_count.saturating_sub(1) as u64);
     (depth_factor.saturating_mul(u128::from(decay)) / u128::from(TOPOSTAKE_FIXED_POINT_SCALE))
         .min(u128::from(u64::MAX)) as u64
 }

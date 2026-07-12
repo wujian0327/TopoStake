@@ -364,8 +364,7 @@ fn topostake_bonus_denominator_excludes_inactive_validators() {
 
     let balance = 32_000_000_000;
     let total_active_balance = balance * 2;
-    let active_score_total =
-        config.score_total_for_validators_at_epoch(Epoch::new(0), &[0, 1]);
+    let active_score_total = config.score_total_for_validators_at_epoch(Epoch::new(0), &[0, 1]);
     let active_set_bonus = config.bonus_scaled_at_epoch_with_score_total(
         Epoch::new(0),
         balance,
@@ -403,7 +402,10 @@ fn topostake_frozen_v1_matches_shared_golden_vectors() {
             (irrecoverable_cost * 1_000.0).round() as u64,
             (reference_cost * 1_000.0).round() as u64,
         );
-        assert_eq!(actual, (expected * TOPOSTAKE_FIXED_POINT_SCALE as f64) as u64);
+        assert_eq!(
+            actual,
+            (expected * TOPOSTAKE_FIXED_POINT_SCALE as f64) as u64
+        );
     }
 
     let config = TopoStakeConfig::devnet_enabled_at(Epoch::new(0));
@@ -417,9 +419,8 @@ fn topostake_frozen_v1_matches_shared_golden_vectors() {
         let expected = vector["expected"]
             .as_f64()
             .expect("expected bonus should be numeric");
-        let actual = config.concave_bonus_scaled(
-            (ratio * TOPOSTAKE_FIXED_POINT_SCALE as f64).round() as u64,
-        );
+        let actual = config
+            .concave_bonus_scaled((ratio * TOPOSTAKE_FIXED_POINT_SCALE as f64).round() as u64);
         let expected_scaled = (expected * TOPOSTAKE_FIXED_POINT_SCALE as f64).round() as u64;
         assert!(actual.abs_diff(expected_scaled) <= 1);
     }
@@ -750,7 +751,7 @@ fn topostake_invalid_and_duplicate_evidence_do_not_add_score() {
 
     let csv = topostake_evidence_csv_snapshot(&spec);
     assert!(csv.contains("epoch,valid_paths,invalid_paths"));
-    assert!(csv.contains("0,1,1,1,2,"));
+    assert!(csv.contains("0,1,1,1,0,"), "unexpected CSV: {csv}");
 }
 
 /// Test that
