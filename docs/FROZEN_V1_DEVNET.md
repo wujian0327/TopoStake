@@ -16,6 +16,11 @@ Lighthouse carries both values in the block-inline evidence record. Relay
 settlement uses only `priority_fee_wei`; score contribution is multiplied by
 `q(tx) = min(1, irrecoverable_cost_wei / score_cost_reference_wei)`.
 
+For the devnet, Geth derives the relay epoch from the canonical execution
+head's timestamp relative to genesis using the configured seconds per slot and
+slots per epoch. Only newly created certificates use the updated epoch;
+already-signed evidence is never silently rebound across an epoch boundary.
+
 ## Score and proposer weight
 
 - `D` is fixed and the path budget uses the frozen exponential factor
@@ -56,6 +61,9 @@ weight cap.
 `experiments/run_frozen_devnet_smoke.py` runs baseline, path-observation, and
 TopoStake enclaves sequentially and applies those checks to every artifact.
 The runner is a smoke gate; its small sample is not paper evidence.
+Each summary also records the source commit, Docker image IDs, creation times,
+and image revision labels so results cannot silently mix current source with
+stale client images.
 
 ## Remaining work
 

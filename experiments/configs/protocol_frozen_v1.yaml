@@ -16,6 +16,8 @@
   "challenge_work_limit": 1024,
   "devnet_fixed_point": {
     "scale": 1000000000,
+    "seconds_per_slot": 3,
+    "slots_per_epoch": 8,
     "score_cost_reference_wei": 21000000000000,
     "score_floor_kappa_scaled": 1000000000,
     "bonus_zeta_scaled": 1000000000,

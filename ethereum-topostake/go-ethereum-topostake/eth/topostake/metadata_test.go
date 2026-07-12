@@ -68,6 +68,49 @@ func TestStoreCreatesOriginMetadata(t *testing.T) {
 	}
 }
 
+func TestStoreDerivesRelayEpochFromCanonicalBlockTime(t *testing.T) {
+	secret := blst.KeyGen([]byte("topostake dynamic relay epoch test key material"))
+	store := testStore(2, secret)
+	store.dynamicEpoch = true
+	store.secondsPerSlot = 3
+	store.slotsPerEpoch = 8
+
+	if got := store.UpdateRelayEpochFromBlockTime(1_000, 1_023); got != 0 {
+		t.Fatalf("unexpected epoch before boundary %d", got)
+	}
+	if got := store.UpdateRelayEpochFromBlockTime(1_000, 1_024); got != 1 {
+		t.Fatalf("unexpected epoch at boundary %d", got)
+	}
+	if got := store.UpdateRelayEpochFromBlockTime(1_000, 1_072); got != 3 {
+		t.Fatalf("unexpected later epoch %d", got)
+	}
+
+	hash := common.HexToHash("0xd1")
+	store.EnsureLocalHash(hash)
+	batch := store.MetadataBatch([]common.Hash{hash})
+	if len(batch) != 1 {
+		t.Fatalf("missing dynamic-epoch metadata: %#v", batch)
+	}
+	var meta propagationMetadata
+	if err := json.Unmarshal(batch[0], &meta); err != nil {
+		t.Fatal(err)
+	}
+	if meta.Epoch != 3 {
+		t.Fatalf("metadata used epoch %d, want 3", meta.Epoch)
+	}
+	if !store.verifyOrigin(meta) {
+		t.Fatal("dynamic-epoch origin signature did not verify")
+	}
+}
+
+func TestStoreKeepsConfiguredEpochWhenDynamicUpdatesAreDisabled(t *testing.T) {
+	store := &Store{}
+	store.epoch.Store(7)
+	if got := store.UpdateRelayEpochFromBlockTime(1_000, 2_000); got != 7 {
+		t.Fatalf("disabled dynamic epoch changed to %d", got)
+	}
+}
+
 func TestStoreInjectsDevnetPathEvidence(t *testing.T) {
 	type relayEntry struct {
 		NodeIndex       uint64 `json:"node_index"`

@@ -34,6 +34,8 @@ const (
 	Domain          = "TOPOSTAKE_TX_PATH_V1"
 	DefaultChainID  = uint64(7_032_030)
 	DefaultMaxBytes = 64 * 1024
+	DefaultSecondsPerSlot = uint64(12)
+	DefaultSlotsPerEpoch  = uint64(32)
 
 	serviceLookupTimeout = 75 * time.Millisecond
 )
@@ -98,6 +100,9 @@ type Store struct {
 	localAddress          string
 	chainID               uint64
 	epoch                 atomic.Uint64
+	dynamicEpoch          bool
+	secondsPerSlot        uint64
+	slotsPerEpoch         uint64
 	maxBytes              int
 	secret                *blst.SecretKey
 	publicKey             []byte
@@ -239,6 +244,9 @@ func DefaultStore() *Store {
 func NewStoreFromEnv() *Store {
 	store := &Store{
 		chainID:               getenvUint64("TOPOSTAKE_CHAIN_ID", DefaultChainID),
+		dynamicEpoch:          getenvBool("TOPOSTAKE_DYNAMIC_RELAY_EPOCH", false),
+		secondsPerSlot:        getenvUint64("TOPOSTAKE_SECONDS_PER_SLOT", DefaultSecondsPerSlot),
+		slotsPerEpoch:         getenvUint64("TOPOSTAKE_SLOTS_PER_EPOCH", DefaultSlotsPerEpoch),
 		maxBytes:              int(getenvUint64("TOPOSTAKE_TX_METADATA_MAX_BYTES", DefaultMaxBytes)),
 		metadata:              make(map[common.Hash]TxMetadata),
 		relayPubkeys:          make(map[uint64][]byte),
@@ -285,6 +293,33 @@ func NewStoreFromEnv() *Store {
 
 func (s *Store) Enabled() bool {
 	return s != nil && s.enabled
+}
+
+// UpdateRelayEpochFromBlockTime updates the epoch used for newly created path
+// certificates from the canonical execution head. Existing metadata remains
+// bound to the epoch in which it was signed and can therefore become stale at
+// an epoch boundary without being silently re-signed.
+func (s *Store) UpdateRelayEpochFromBlockTime(genesisTime, blockTime uint64) uint64 {
+	if s == nil || !s.dynamicEpoch || blockTime < genesisTime {
+		if s == nil {
+			return 0
+		}
+		return s.epoch.Load()
+	}
+	if s.secondsPerSlot == 0 || s.slotsPerEpoch == 0 || s.secondsPerSlot > ^uint64(0)/s.slotsPerEpoch {
+		return s.epoch.Load()
+	}
+	epochDuration := s.secondsPerSlot * s.slotsPerEpoch
+	epoch := (blockTime - genesisTime) / epochDuration
+	s.epoch.Store(epoch)
+	return epoch
+}
+
+func (s *Store) RelayEpoch() uint64 {
+	if s == nil {
+		return 0
+	}
+	return s.epoch.Load()
 }
 
 func (s *Store) EnsureLocalTransactions(txs types.Transactions) {
@@ -1796,6 +1831,21 @@ func getenvUint64(key string, fallback uint64) uint64 {
 		return fallback
 	}
 	return value
+}
+
+func getenvBool(key string, fallback bool) bool {
+	raw := strings.ToLower(strings.TrimSpace(os.Getenv(key)))
+	if raw == "" {
+		return fallback
+	}
+	switch raw {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return fallback
+	}
 }
 
 func getenvOptionalUint64(key string) (uint64, bool) {

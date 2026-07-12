@@ -1170,6 +1170,7 @@ func (bc *BlockChain) ResetWithGenesisBlock(genesis *types.Block) error {
 
 	// Last update all in-memory chain markers
 	bc.genesisBlock = genesis
+	topostake.DefaultStore().UpdateRelayEpochFromBlockTime(genesis.Time(), genesis.Time())
 	bc.currentBlock.Store(bc.genesisBlock.Header())
 	headBlockGauge.Update(int64(bc.genesisBlock.NumberU64()))
 	bc.hc.SetGenesis(bc.genesisBlock.Header())
@@ -1245,6 +1246,9 @@ func (bc *BlockChain) writeHeadBlock(block *types.Block) {
 
 	bc.currentBlock.Store(block.Header())
 	headBlockGauge.Update(int64(block.NumberU64()))
+	if bc.genesisBlock != nil {
+		topostake.DefaultStore().UpdateRelayEpochFromBlockTime(bc.genesisBlock.Time(), block.Time())
+	}
 }
 
 // stopWithoutSaving stops the blockchain service. If any imports are currently in progress
