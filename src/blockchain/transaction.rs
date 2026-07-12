@@ -10,6 +10,10 @@ pub struct Transaction {
     pub to: String,
     pub amount: i64,
     pub fee: f64, // 交易手续费
+    /// Protocol-visible cost that is unconditionally irrecoverable by the payer.
+    /// This is distinct from `fee`, which is split between proposer and relayers.
+    #[serde(default)]
+    pub irrecoverable_cost: f64,
     pub hash: String,
     pub signature: String,
     pub timestamp: u64,
@@ -22,6 +26,16 @@ impl Transaction {
     }
 
     pub fn with_fee(to: String, amount: i64, fee: f64, wallet: Wallet) -> Transaction {
+        Self::with_costs(to, amount, fee, fee, wallet)
+    }
+
+    pub fn with_costs(
+        to: String,
+        amount: i64,
+        fee: f64,
+        irrecoverable_cost: f64,
+        wallet: Wallet,
+    ) -> Transaction {
         let from = wallet.address.clone();
 
         let mut t = Transaction {
@@ -29,6 +43,7 @@ impl Transaction {
             to: to.clone(),
             amount,
             fee,
+            irrecoverable_cost,
             hash: "".to_string(),
             signature: "".to_string(),
             timestamp: get_timestamp(),
@@ -51,6 +66,7 @@ impl Transaction {
             to: to.clone(),
             amount: self.amount,
             fee: self.fee,
+            irrecoverable_cost: self.irrecoverable_cost,
             hash: "".to_string(),
             signature: "".to_string(),
             timestamp: self.timestamp,
@@ -71,7 +87,17 @@ impl Transaction {
         let signature = self.signature.as_bytes().len() as u64;
         let amount = 8;
         let timestamp = 8;
-        hash + amount + timestamp + from + to + signature + self.data.len() as u64
+        let fee = 8;
+        let irrecoverable_cost = 8;
+        hash
+            + amount
+            + fee
+            + irrecoverable_cost
+            + timestamp
+            + from
+            + to
+            + signature
+            + self.data.len() as u64
     }
 }
 

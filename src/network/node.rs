@@ -739,10 +739,11 @@ impl Node {
                 }
                 Message::GenerateTransactionPaths { to } => {
                     // 检查余额是否充足
-                    if !self.deduct_balance(self.transaction_fee) {
+                    let total_transaction_cost = 2.0 * self.transaction_fee;
+                    if !self.deduct_balance(total_transaction_cost) {
                         warn!(
                             "Node[{}] insufficient balance: {} < {}",
-                            self.index, self.balance, self.transaction_fee
+                            self.index, self.balance, total_transaction_cost
                         );
                         continue;
                     }

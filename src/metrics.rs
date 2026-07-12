@@ -49,6 +49,8 @@ pub struct EpochMetrics {
     pub valid_path_count: u64,
     pub invalid_path_count: u64,
     pub conflicting_receipt_count: u64,
+    pub active_score_epoch: i64,
+    pub latest_score_epoch: i64,
     pub total_proposer_reward: f64,
     pub total_relay_reward: f64,
     pub burned_relay_fee: f64,
@@ -58,7 +60,9 @@ pub struct EpochMetrics {
     pub proposer_weight_hhi: f64,
     pub adversary_real_stake_share: f64,
     pub adversary_score_share: f64,
+    pub adversary_damped_score_mass: f64,
     pub adversary_proposer_weight_share: f64,
+    pub score_dependent_proposer_weight_bound: f64,
     pub theoretical_proposer_weight_bound: f64,
     pub observed_adversary_proposer_share: f64,
     pub bound_violation: bool,
@@ -138,16 +142,16 @@ impl SlotMetrics {
 impl EpochMetrics {
     pub fn to_csv_header() -> String {
         "epoch,generated_tx,included_tx,throughput,p50_inclusion_latency_s,p95_inclusion_latency_s,p99_inclusion_latency_s,\
-         block_success_ratio,avg_path_length,p95_path_length,valid_path_count,invalid_path_count,conflicting_receipt_count,\
+         block_success_ratio,avg_path_length,p95_path_length,valid_path_count,invalid_path_count,conflicting_receipt_count,active_score_epoch,latest_score_epoch,\
          total_proposer_reward,total_relay_reward,burned_relay_fee,stake_gini,stake_hhi,proposer_weight_gini,proposer_weight_hhi,\
-         adversary_real_stake_share,adversary_score_share,adversary_proposer_weight_share,theoretical_proposer_weight_bound,\
+         adversary_real_stake_share,adversary_score_share,adversary_damped_score_mass,adversary_proposer_weight_share,score_dependent_proposer_weight_bound,theoretical_proposer_weight_bound,\
          observed_adversary_proposer_share,bound_violation"
             .to_string()
     }
 
     pub fn to_csv_row(&self) -> String {
         format!(
-            "{},{},{},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{},{},{},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{}",
+            "{},{},{},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{},{},{},{},{},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{}",
             self.epoch,
             self.generated_tx,
             self.included_tx,
@@ -161,6 +165,8 @@ impl EpochMetrics {
             self.valid_path_count,
             self.invalid_path_count,
             self.conflicting_receipt_count,
+            self.active_score_epoch,
+            self.latest_score_epoch,
             self.total_proposer_reward,
             self.total_relay_reward,
             self.burned_relay_fee,
@@ -170,7 +176,9 @@ impl EpochMetrics {
             self.proposer_weight_hhi,
             self.adversary_real_stake_share,
             self.adversary_score_share,
+            self.adversary_damped_score_mass,
             self.adversary_proposer_weight_share,
+            self.score_dependent_proposer_weight_bound,
             self.theoretical_proposer_weight_bound,
             self.observed_adversary_proposer_share,
             self.bound_violation,

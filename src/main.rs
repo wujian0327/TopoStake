@@ -111,33 +111,61 @@ struct Args {
     #[clap(long, default_value = "8")]
     wallet_seed: u64,
 
-    /// TopoStake的beta参数 (Beta parameter for TopoStake)
-    #[clap(long, default_value = "0.2")]
-    beta: f64,
+    /// TopoStake EMA update coefficient beta
+    #[clap(long)]
+    beta: Option<f64>,
 
-    /// Revised TopoStake initial target depth
-    #[clap(long, default_value = "4")]
-    topostake_initial_depth: usize,
+    /// Frozen TopoStake target depth D
+    #[clap(long)]
+    topostake_target_depth: Option<usize>,
 
     /// Revised TopoStake saturation parameter K
-    #[clap(long, default_value = "1.0")]
-    topostake_saturation_k: f64,
+    #[clap(long)]
+    topostake_saturation_k: Option<f64>,
+
+    /// Irrecoverable transaction cost that yields unit score credit
+    #[clap(long)]
+    topostake_score_cost_reference: Option<f64>,
+
+    /// Absolute-score floor kappa used in damped score mass
+    #[clap(long)]
+    topostake_score_floor_kappa: Option<f64>,
+
+    /// Concave proposer-bonus saturation parameter zeta
+    #[clap(long)]
+    topostake_bonus_zeta: Option<f64>,
 
     /// Revised TopoStake proposer bonus strength eta
-    #[clap(long, default_value = "0.5")]
-    eta: f64,
+    #[clap(long)]
+    eta: Option<f64>,
 
     /// Revised TopoStake maximum propagation bonus
-    #[clap(long, default_value = "1.0")]
-    bonus_cap: f64,
+    #[clap(long)]
+    bonus_cap: Option<f64>,
 
     /// Revised TopoStake proposer fee ratio theta
-    #[clap(long, default_value = "0.7")]
-    proposer_fee_ratio: f64,
+    #[clap(long)]
+    proposer_fee_ratio: Option<f64>,
 
     /// Canonical block depth before revised TopoStake rewards settle
-    #[clap(long, default_value = "2")]
-    reward_settlement_depth: u64,
+    #[clap(long)]
+    reward_settlement_depth: Option<u64>,
+
+    /// Epoch delay before a produced score root becomes active
+    #[clap(long)]
+    topostake_score_activation_delay_epochs: Option<u64>,
+
+    /// Maximum certified path length accepted for score and reward
+    #[clap(long)]
+    topostake_max_path_hops: Option<usize>,
+
+    /// Per-block normal evidence work-unit limit
+    #[clap(long)]
+    topostake_evidence_work_limit: Option<usize>,
+
+    /// Per-block challenge work-unit limit
+    #[clap(long)]
+    topostake_challenge_work_limit: Option<usize>,
 
     /// 最大运行Epoch数 (Max epochs to run)
     /// 当达到此Epoch数时，程序将自动退出
@@ -221,15 +249,49 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     //log setting
     init_logger()?;
 
-    let topostake_config = TopoStakeConfig {
-        initial_depth: args.topostake_initial_depth,
-        beta: args.beta,
-        saturation_k: args.topostake_saturation_k,
-        eta: args.eta,
-        bonus_cap: args.bonus_cap,
-        proposer_fee_ratio: args.proposer_fee_ratio,
-        reward_settlement_depth: args.reward_settlement_depth,
-    };
+    let mut topostake_config = TopoStakeConfig::default();
+    if let Some(value) = args.topostake_target_depth {
+        topostake_config.target_depth = value;
+    }
+    if let Some(value) = args.beta {
+        topostake_config.beta = value;
+    }
+    if let Some(value) = args.topostake_saturation_k {
+        topostake_config.saturation_k = value;
+    }
+    if let Some(value) = args.topostake_score_cost_reference {
+        topostake_config.score_cost_reference = value;
+    }
+    if let Some(value) = args.topostake_score_floor_kappa {
+        topostake_config.score_floor_kappa = value;
+    }
+    if let Some(value) = args.topostake_bonus_zeta {
+        topostake_config.bonus_zeta = value;
+    }
+    if let Some(value) = args.eta {
+        topostake_config.eta = value;
+    }
+    if let Some(value) = args.bonus_cap {
+        topostake_config.bonus_cap = value;
+    }
+    if let Some(value) = args.proposer_fee_ratio {
+        topostake_config.proposer_fee_ratio = value;
+    }
+    if let Some(value) = args.reward_settlement_depth {
+        topostake_config.reward_settlement_depth = value;
+    }
+    if let Some(value) = args.topostake_score_activation_delay_epochs {
+        topostake_config.score_activation_delay_epochs = value;
+    }
+    if let Some(value) = args.topostake_max_path_hops {
+        topostake_config.max_path_hops = value;
+    }
+    if let Some(value) = args.topostake_evidence_work_limit {
+        topostake_config.evidence_work_limit = value;
+    }
+    if let Some(value) = args.topostake_challenge_work_limit {
+        topostake_config.challenge_work_limit = value;
+    }
     topostake_config
         .validate()
         .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidInput, err))?;

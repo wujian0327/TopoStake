@@ -804,7 +804,9 @@ impl TransactionGenerator {
         }
         self.generated_tx_counter.fetch_add(1, Ordering::Relaxed);
         if let Ok(mut ledger) = self.fee_spent.lock() {
-            *ledger.entry(from).or_insert(0.0) += self.transaction_fee;
+            // `with_fee` models an equal-size distributable fee and irrecoverable
+            // protocol cost. Both are paid by the transaction originator.
+            *ledger.entry(from).or_insert(0.0) += 2.0 * self.transaction_fee;
         }
     }
 }
@@ -1052,7 +1054,7 @@ pub fn split_padding_stake(total_stake: f64, padding_identities: u32) -> Vec<f64
 }
 
 pub fn flooding_fee_spent(generated_tx: u64, transaction_fee: f64) -> f64 {
-    generated_tx as f64 * transaction_fee
+    generated_tx as f64 * 2.0 * transaction_fee
 }
 
 fn approximate_betweenness(graph: &Graph<String, ()>) -> HashMap<String, f64> {
@@ -1226,7 +1228,7 @@ mod tests {
 
     #[test]
     fn flooding_accounting_includes_fee_spending() {
-        assert!((super::flooding_fee_spent(25, 0.00001) - 0.00025).abs() < 1e-12);
+        assert!((super::flooding_fee_spent(25, 0.00001) - 0.0005).abs() < 1e-12);
     }
 
     #[test]

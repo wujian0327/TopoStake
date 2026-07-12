@@ -202,7 +202,7 @@ impl WorldState {
                 node_num,
                 trans_num,
                 topology,
-                topostake_config.initial_depth,
+                topostake_config.target_depth,
                 topostake_config.beta,
                 topostake_config.eta,
                 topostake_config.bonus_cap
@@ -735,12 +735,38 @@ impl WorldState {
         let adversary_real_stake_share = metrics::share_for(&self.adversarial_nodes, &stake_map);
         let adversary_score_share =
             metrics::share_for(&self.adversarial_nodes, &snapshot.normalized_score);
+        let adversary_damped_score_mass: f64 = self
+            .adversarial_nodes
+            .iter()
+            .map(|address| snapshot.normalized_score.get(address).copied().unwrap_or(0.0))
+            .sum();
         let adversary_proposer_weight_share =
             metrics::share_for(&self.adversarial_nodes, &proposer_weights);
-        let bound_factor = 1.0
-            + snapshot.topostake_eta.unwrap_or(0.0) * snapshot.topostake_bonus_cap.unwrap_or(0.0);
-        let theoretical_proposer_weight_bound =
-            (bound_factor * adversary_real_stake_share).min(1.0);
+        let eta = snapshot.topostake_eta.unwrap_or(0.0);
+        let bonus_cap = snapshot.topostake_bonus_cap.unwrap_or(0.0);
+        let zeta = snapshot.topostake_bonus_zeta.unwrap_or(1.0);
+        let a = adversary_real_stake_share;
+        let coalition_bonus = if a > 0.0 {
+            TopoStakeConsensus::propagation_bonus(
+                adversary_damped_score_mass / a,
+                bonus_cap,
+                zeta,
+            )
+        } else {
+            0.0
+        };
+        let coalition_weight = a * (1.0 + eta * coalition_bonus);
+        let score_dependent_proposer_weight_bound = if coalition_weight + 1.0 - a > 0.0 {
+            coalition_weight / (coalition_weight + 1.0 - a)
+        } else {
+            0.0
+        };
+        let c = eta * bonus_cap;
+        let theoretical_proposer_weight_bound = if 1.0 + a * c > 0.0 {
+            a * (1.0 + c) / (1.0 + a * c)
+        } else {
+            0.0
+        };
         let proposer_total: u64 = self.epoch_proposer_counts.values().sum();
         let adversary_proposers: u64 = self
             .adversarial_nodes
@@ -788,6 +814,14 @@ impl WorldState {
             valid_path_count,
             invalid_path_count,
             conflicting_receipt_count: conflict_count,
+            active_score_epoch: snapshot
+                .topostake_active_score_epoch
+                .map(|value| value as i64)
+                .unwrap_or(-1),
+            latest_score_epoch: snapshot
+                .topostake_latest_score_epoch
+                .map(|value| value as i64)
+                .unwrap_or(-1),
             total_proposer_reward: reward_report.total_proposer_reward,
             total_relay_reward: reward_report.total_relay_reward,
             burned_relay_fee: reward_report.burned_relay_fee,
@@ -797,11 +831,13 @@ impl WorldState {
             proposer_weight_hhi,
             adversary_real_stake_share,
             adversary_score_share,
+            adversary_damped_score_mass,
             adversary_proposer_weight_share,
+            score_dependent_proposer_weight_bound,
             theoretical_proposer_weight_bound,
             observed_adversary_proposer_share,
             bound_violation: adversary_proposer_weight_share
-                > theoretical_proposer_weight_bound + 1e-9,
+                > score_dependent_proposer_weight_bound + 1e-9,
         };
         self.write_epoch_metrics(&epoch_metrics);
 
@@ -992,7 +1028,7 @@ impl WorldState {
         let mut raw = HashMap::new();
         let depth = snapshot.topostake_depth.unwrap_or(1);
         for block in blocks {
-            for (idx, _tx) in block.body.transactions.iter().enumerate() {
+            for (idx, tx) in block.body.transactions.iter().enumerate() {
                 let Some(path) = block.body.paths.get(idx) else {
                     continue;
                 };
@@ -1009,7 +1045,11 @@ impl WorldState {
                     if validator_set.contains(relayer.as_str()) {
                         let gamma =
                             TopoStakeConsensus::gamma_for_depth(depth, position, path_length);
-                        *raw.entry(relayer.clone()).or_insert(0.0) += gamma;
+                        let q = TopoStakeConsensus::transaction_credit_weight(
+                            tx.irrecoverable_cost,
+                            snapshot.topostake_score_cost_reference.unwrap_or(1.0),
+                        );
+                        *raw.entry(relayer.clone()).or_insert(0.0) += q * gamma;
                     }
                 }
             }

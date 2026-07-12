@@ -11,41 +11,57 @@ use rand::{Rng, SeedableRng};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
 
+const FROZEN_V1_CONFIG_JSON: &str =
+    include_str!("../../experiments/configs/protocol_frozen_v1.yaml");
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TopoStakeConfig {
-    pub initial_depth: usize,
+    pub protocol_version: String,
+    pub target_depth: usize,
     pub beta: f64,
     pub saturation_k: f64,
+    pub score_cost_reference: f64,
+    pub score_floor_kappa: f64,
+    pub bonus_zeta: f64,
     pub eta: f64,
     pub bonus_cap: f64,
     pub proposer_fee_ratio: f64,
     pub reward_settlement_depth: u64,
+    pub score_activation_delay_epochs: u64,
+    pub max_path_hops: usize,
+    pub evidence_work_limit: usize,
+    pub challenge_work_limit: usize,
 }
 
 impl Default for TopoStakeConfig {
     fn default() -> Self {
-        TopoStakeConfig {
-            initial_depth: 4,
-            beta: 0.2,
-            saturation_k: 1.0,
-            eta: 0.5,
-            bonus_cap: 1.0,
-            proposer_fee_ratio: 0.7,
-            reward_settlement_depth: 2,
-        }
+        serde_json::from_str(FROZEN_V1_CONFIG_JSON)
+            .expect("embedded frozen-v1 TopoStake config must be valid JSON")
     }
 }
 
 impl TopoStakeConfig {
     pub fn validate(&self) -> Result<(), String> {
-        if self.initial_depth < 1 {
-            return Err("initial_depth must be >= 1".to_string());
+        if self.protocol_version.trim().is_empty() {
+            return Err("protocol_version must not be empty".to_string());
+        }
+        if self.target_depth < 1 {
+            return Err("target_depth must be >= 1".to_string());
         }
         if !(self.beta > 0.0 && self.beta <= 1.0) {
             return Err("beta must satisfy 0 < beta <= 1".to_string());
         }
         if self.saturation_k <= 0.0 {
             return Err("saturation_k must be > 0".to_string());
+        }
+        if self.score_cost_reference <= 0.0 {
+            return Err("score_cost_reference must be > 0".to_string());
+        }
+        if self.score_floor_kappa <= 0.0 {
+            return Err("score_floor_kappa must be > 0".to_string());
+        }
+        if self.bonus_zeta <= 0.0 {
+            return Err("bonus_zeta must be > 0".to_string());
         }
         if !(self.proposer_fee_ratio >= 0.0 && self.proposer_fee_ratio < 1.0) {
             return Err("proposer_fee_ratio must satisfy 0 <= theta < 1".to_string());
@@ -56,8 +72,20 @@ impl TopoStakeConfig {
         if self.bonus_cap < 0.0 {
             return Err("bonus_cap must be >= 0".to_string());
         }
-        if self.eta * self.bonus_cap > 0.5 + f64::EPSILON {
-            return Err("eta * bonus_cap must be <= 0.5".to_string());
+        if self.eta * self.bonus_cap > 1.0 + f64::EPSILON {
+            return Err("eta * bonus_cap must be <= 1".to_string());
+        }
+        if self.score_activation_delay_epochs < 1 {
+            return Err("score_activation_delay_epochs must be >= 1".to_string());
+        }
+        if self.max_path_hops < 2 {
+            return Err("max_path_hops must be >= 2".to_string());
+        }
+        if self.evidence_work_limit < self.max_path_hops {
+            return Err("evidence_work_limit must cover at least one maximum path".to_string());
+        }
+        if self.challenge_work_limit == 0 {
+            return Err("challenge_work_limit must be > 0".to_string());
         }
         Ok(())
     }
@@ -67,6 +95,13 @@ impl TopoStakeConfig {
 struct PendingRewardBatch {
     settle_at_block: u64,
     rewards: Vec<BalanceDelta>,
+}
+
+#[derive(Debug, Clone)]
+struct PendingScoreRoot {
+    produced_epoch: u64,
+    activates_at_epoch: u64,
+    scores: HashMap<String, f64>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -80,9 +115,15 @@ pub struct RewardPlan {
 
 pub struct TopoStakeConsensus {
     config: TopoStakeConfig,
-    current_depth: usize,
     base_reward: f64,
+    /// Latest produced EMA state, whether activated or not.
     score_history: HashMap<String, f64>,
+    /// Finalized score state used by the current proposer-weight snapshot.
+    active_score_history: HashMap<String, f64>,
+    active_score_epoch: Option<u64>,
+    next_epoch: u64,
+    pending_score_roots: VecDeque<PendingScoreRoot>,
+    /// Damped score mass, not a unit-sum normalization.
     normalized_score: HashMap<String, f64>,
     epoch_stake_snapshot: HashMap<String, f64>,
     unnormalized_proposer_weights: HashMap<String, f64>,
@@ -95,10 +136,13 @@ impl TopoStakeConsensus {
     pub fn new(base_reward: f64, config: TopoStakeConfig) -> Result<Self, String> {
         config.validate()?;
         Ok(TopoStakeConsensus {
-            current_depth: config.initial_depth,
             config,
             base_reward,
             score_history: HashMap::new(),
+            active_score_history: HashMap::new(),
+            active_score_epoch: None,
+            next_epoch: 0,
+            pending_score_roots: VecDeque::new(),
             normalized_score: HashMap::new(),
             epoch_stake_snapshot: HashMap::new(),
             unnormalized_proposer_weights: HashMap::new(),
@@ -113,11 +157,15 @@ impl TopoStakeConsensus {
     }
 
     pub fn current_depth(&self) -> usize {
-        self.current_depth
+        self.config.target_depth
     }
 
     pub fn score_history(&self) -> &HashMap<String, f64> {
         &self.score_history
+    }
+
+    pub fn active_score_epoch(&self) -> Option<u64> {
+        self.active_score_epoch
     }
 
     pub fn frozen_proposer_weights(&self) -> &HashMap<String, f64> {
@@ -168,15 +216,53 @@ impl TopoStakeConsensus {
     }
 
     pub fn path_budget(&self, path_length: usize) -> f64 {
-        Self::path_budget_for_depth(self.current_depth, path_length)
+        Self::path_budget_for_depth(self.config.target_depth, path_length)
     }
 
     pub fn gamma(&self, position: usize, path_length: usize) -> f64 {
-        Self::gamma_for_depth(self.current_depth, position, path_length)
+        Self::gamma_for_depth(self.config.target_depth, position, path_length)
+    }
+
+    pub fn transaction_credit_weight(irrecoverable_cost: f64, reference_cost: f64) -> f64 {
+        if irrecoverable_cost <= 0.0 || reference_cost <= 0.0 {
+            return 0.0;
+        }
+        (irrecoverable_cost / reference_cost).min(1.0)
+    }
+
+    pub fn propagation_bonus(score_to_stake: f64, bonus_cap: f64, zeta: f64) -> f64 {
+        if score_to_stake <= 0.0 || bonus_cap <= 0.0 || zeta <= 0.0 {
+            return 0.0;
+        }
+        bonus_cap * score_to_stake / (zeta + score_to_stake)
+    }
+
+    fn damped_score_for_active_set(
+        scores: &HashMap<String, f64>,
+        validators: &[Validator],
+        kappa: f64,
+    ) -> HashMap<String, f64> {
+        let score_sum: f64 = validators
+            .iter()
+            .map(|validator| scores.get(&validator.address).copied().unwrap_or(0.0).max(0.0))
+            .sum();
+        let denominator = kappa + score_sum;
+        validators
+            .iter()
+            .map(|validator| {
+                let score = scores.get(&validator.address).copied().unwrap_or(0.0).max(0.0);
+                (validator.address.clone(), score / denominator)
+            })
+            .collect()
     }
 
     pub fn freeze_proposer_weights(&mut self, validators: &[Validator]) {
         let normalized_stake = Self::normalized_stake(validators);
+        self.normalized_score = Self::damped_score_for_active_set(
+            &self.active_score_history,
+            validators,
+            self.config.score_floor_kappa,
+        );
         self.epoch_stake_snapshot = validators
             .iter()
             .map(|v| (v.address.clone(), v.stake))
@@ -191,7 +277,11 @@ impl TopoStakeConsensus {
                 .get(&validator.address)
                 .unwrap_or(&0.0);
             let bonus = if s_hat > 0.0 {
-                (c_hat / s_hat - 1.0).max(0.0).min(self.config.bonus_cap)
+                Self::propagation_bonus(
+                    c_hat / s_hat,
+                    self.config.bonus_cap,
+                    self.config.bonus_zeta,
+                )
             } else {
                 0.0
             };
@@ -222,7 +312,7 @@ impl TopoStakeConsensus {
                 burned_relay_fee += relay_budget;
                 continue;
             };
-            if !Self::valid_path_record(path, tx, &block.header.miner, block.header.epoch) {
+            if !self.valid_path_record(path, tx, &block.header.miner, block.header.epoch) {
                 burned_relay_fee += relay_budget;
                 continue;
             }
@@ -325,11 +415,32 @@ impl TopoStakeConsensus {
         }
 
         self.score_history = next_scores;
-        self.normalized_score = Self::normalize_map(&self.score_history);
         debug!(
             "TopoStake revised epoch scores: {}",
             serde_json::to_string(&self.score_history).unwrap_or_default()
         );
+    }
+
+    fn enqueue_score_root(&mut self, produced_epoch: u64) {
+        self.pending_score_roots.push_back(PendingScoreRoot {
+            produced_epoch,
+            activates_at_epoch: produced_epoch + self.config.score_activation_delay_epochs,
+            scores: self.score_history.clone(),
+        });
+    }
+
+    fn activate_score_roots_for_epoch(&mut self, target_epoch: u64) {
+        while self
+            .pending_score_roots
+            .front()
+            .map(|root| root.activates_at_epoch <= target_epoch)
+            .unwrap_or(false)
+        {
+            if let Some(root) = self.pending_score_roots.pop_front() {
+                self.active_score_epoch = Some(root.produced_epoch);
+                self.active_score_history = root.scores;
+            }
+        }
     }
 
     fn raw_epoch_contribution(
@@ -345,7 +456,7 @@ impl TopoStakeConsensus {
                 let Some(path) = block.body.paths.get(idx) else {
                     continue;
                 };
-                if !Self::valid_path_record(path, tx, &block.header.miner, block.header.epoch) {
+                if !self.valid_path_record(path, tx, &block.header.miner, block.header.epoch) {
                     continue;
                 }
                 let full_path = path.full_path(block.header.miner.clone());
@@ -357,44 +468,17 @@ impl TopoStakeConsensus {
                     let relayer = &full_path[position];
                     if validator_set.contains(relayer.as_str()) {
                         let gamma = self.gamma(position, path_length);
-                        *raw.entry(relayer.clone()).or_insert(0.0) += gamma;
+                        let q = Self::transaction_credit_weight(
+                            tx.irrecoverable_cost,
+                            self.config.score_cost_reference,
+                        );
+                        *raw.entry(relayer.clone()).or_insert(0.0) += q * gamma;
                     }
                 }
             }
         }
 
         raw
-    }
-
-    fn adjust_depth_from_epoch_paths(&mut self, blocks: &[Block]) {
-        let mut lengths = Vec::new();
-        for block in blocks {
-            for (idx, tx) in block.body.transactions.iter().enumerate() {
-                let Some(path) = block.body.paths.get(idx) else {
-                    continue;
-                };
-                if !Self::valid_path_record(path, tx, &block.header.miner, block.header.epoch) {
-                    continue;
-                }
-                let path_length = path
-                    .full_path(block.header.miner.clone())
-                    .len()
-                    .saturating_sub(1);
-                if path_length >= 2 {
-                    lengths.push(path_length);
-                }
-            }
-        }
-        if lengths.is_empty() {
-            return;
-        }
-        lengths.sort_unstable();
-        let median = lengths[lengths.len() / 2];
-        if median > self.current_depth {
-            self.current_depth += 1;
-        } else if median < self.current_depth {
-            self.current_depth = self.current_depth.saturating_sub(1).max(1);
-        }
     }
 
     pub fn saturated_contribution(raw: f64, normalized_stake: f64, saturation_k: f64) -> f64 {
@@ -421,12 +505,15 @@ impl TopoStakeConsensus {
     }
 
     fn valid_path_record(
+        &self,
         path: &AggregatedSignedPaths,
         tx: &Transaction,
         miner: &str,
         epoch: u64,
     ) -> bool {
-        path.verify_at_epoch(tx.clone(), miner.to_string(), epoch)
+        let path_length = path.full_path(miner.to_string()).len().saturating_sub(1);
+        path_length <= self.config.max_path_hops
+            && path.verify_at_epoch(tx.clone(), miner.to_string(), epoch)
     }
 
     fn settle_matured_rewards(&mut self, current_block_index: u64) -> Vec<BalanceDelta> {
@@ -460,31 +547,43 @@ impl Consensus for TopoStakeConsensus {
     }
 
     fn on_epoch_end(&mut self, blocks: &[Block], validators: &[Validator]) {
+        let produced_epoch = self.next_epoch;
         self.update_scores_from_epoch(blocks, validators);
-        self.adjust_depth_from_epoch_paths(blocks);
+        self.enqueue_score_root(produced_epoch);
+        self.next_epoch = produced_epoch + 1;
+        self.activate_score_roots_for_epoch(self.next_epoch);
         self.freeze_proposer_weights(validators);
     }
 
     fn state_summary(&self) -> String {
         format!(
-            "topostake-v2(D={}_beta={:.2}_eta={:.2}_cap={:.2}_pending={})",
-            self.current_depth,
+            "{}(D={}_beta={:.2}_eta={:.2}_cap={:.2}_score_epoch={:?}_pending_roots={}_pending_rewards={})",
+            self.config.protocol_version,
+            self.config.target_depth,
             self.config.beta,
             self.config.eta,
             self.config.bonus_cap,
+            self.active_score_epoch,
+            self.pending_score_roots.len(),
             self.pending_rewards.len()
         )
     }
 
     fn metrics_snapshot(&self) -> ConsensusMetricsSnapshot {
         ConsensusMetricsSnapshot {
-            topostake_depth: Some(self.current_depth),
+            topostake_depth: Some(self.config.target_depth),
             topostake_beta: Some(self.config.beta),
             topostake_eta: Some(self.config.eta),
             topostake_bonus_cap: Some(self.config.bonus_cap),
             topostake_saturation_k: Some(self.config.saturation_k),
             topostake_proposer_fee_ratio: Some(self.config.proposer_fee_ratio),
-            score_history: self.score_history.clone(),
+            topostake_score_floor_kappa: Some(self.config.score_floor_kappa),
+            topostake_bonus_zeta: Some(self.config.bonus_zeta),
+            topostake_score_cost_reference: Some(self.config.score_cost_reference),
+            topostake_active_score_epoch: self.active_score_epoch,
+            topostake_latest_score_epoch: self.next_epoch.checked_sub(1),
+            score_history: self.active_score_history.clone(),
+            latest_score_history: self.score_history.clone(),
             normalized_score: self.normalized_score.clone(),
             bonuses: self.epoch_bonuses.clone(),
             unnormalized_proposer_weights: self.unnormalized_proposer_weights.clone(),
@@ -522,6 +621,50 @@ mod tests {
     use crate::blockchain::Blockchain;
     use crate::consensus::Consensus;
     use crate::wallet::Wallet;
+
+    const FROZEN_V1_GOLDEN_VECTORS: &str =
+        include_str!("../../experiments/golden/frozen_v1_vectors.yaml");
+
+    #[derive(serde::Deserialize)]
+    struct CreditWeightVector {
+        irrecoverable_cost: f64,
+        reference_cost: f64,
+        expected: f64,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct BonusVector {
+        score_to_stake: f64,
+        bonus_cap: f64,
+        zeta: f64,
+        expected: f64,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct DampedScoreVector {
+        kappa: f64,
+        scores: Vec<f64>,
+        expected: Vec<f64>,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct ProposerWeightVector {
+        stakes: Vec<f64>,
+        damped_scores: Vec<f64>,
+        eta: f64,
+        bonus_cap: f64,
+        zeta: f64,
+        expected_unnormalized: Vec<f64>,
+        expected_normalized: Vec<f64>,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct GoldenVectors {
+        credit_weights: Vec<CreditWeightVector>,
+        bonuses: Vec<BonusVector>,
+        damped_score: DampedScoreVector,
+        proposer_weight: ProposerWeightVector,
+    }
 
     fn test_config() -> TopoStakeConfig {
         TopoStakeConfig {
@@ -565,6 +708,40 @@ mod tests {
         (block, validators)
     }
 
+    fn block_with_path_and_cost(
+        origin: &Wallet,
+        relay: &Wallet,
+        miner: &Wallet,
+        fee: f64,
+        irrecoverable_cost: f64,
+    ) -> (Block, Vec<Validator>) {
+        let tx = Transaction::with_costs(
+            "receiver".to_string(),
+            0,
+            fee,
+            irrecoverable_cost,
+            origin.clone(),
+        );
+        let mut tx_paths = TransactionPaths::new_with_epoch(tx.clone(), 0);
+        assert!(tx_paths.append_outgoing_hop(relay.address.clone(), origin.clone()));
+        assert!(tx_paths.complete_pending_hop(relay.clone()));
+        assert!(tx_paths.append_outgoing_hop(miner.address.clone(), relay.clone()));
+        assert!(tx_paths.complete_pending_hop(miner.clone()));
+        let path = AggregatedSignedPaths::from_transaction_paths(tx_paths);
+        let body = Body::new(vec![tx], vec![path]);
+        let block = Block::new(
+            1,
+            0,
+            0,
+            Block::gen_genesis_block().header.hash,
+            body,
+            miner.clone(),
+        )
+        .unwrap();
+        let validators = validators(&[origin, relay, miner]);
+        (block, validators)
+    }
+
     #[test]
     fn path_budget_sums_to_budget() {
         let depth = 4;
@@ -575,6 +752,73 @@ mod tests {
                 .sum();
             assert!((sum - budget).abs() < 1e-9);
             assert!(budget <= 1.0);
+        }
+    }
+
+    #[test]
+    fn embedded_frozen_profile_is_valid() {
+        let config = TopoStakeConfig::default();
+        assert_eq!(config.protocol_version, "frozen-v1");
+        config.validate().unwrap();
+    }
+
+    #[test]
+    fn frozen_v1_golden_vectors_match_rust_formulas() {
+        let vectors: GoldenVectors = serde_json::from_str(FROZEN_V1_GOLDEN_VECTORS).unwrap();
+        for vector in vectors.credit_weights {
+            let actual = TopoStakeConsensus::transaction_credit_weight(
+                vector.irrecoverable_cost,
+                vector.reference_cost,
+            );
+            assert!((actual - vector.expected).abs() < 1e-12);
+        }
+        for vector in vectors.bonuses {
+            let actual = TopoStakeConsensus::propagation_bonus(
+                vector.score_to_stake,
+                vector.bonus_cap,
+                vector.zeta,
+            );
+            assert!((actual - vector.expected).abs() < 1e-12);
+        }
+
+        let validators = vec![
+            Validator::new("validator-a".to_string(), 1.0, 1.0),
+            Validator::new("validator-b".to_string(), 1.0, 1.0),
+        ];
+        let scores = HashMap::from([
+            (validators[0].address.clone(), vectors.damped_score.scores[0]),
+            (validators[1].address.clone(), vectors.damped_score.scores[1]),
+        ]);
+        let damped = TopoStakeConsensus::damped_score_for_active_set(
+            &scores,
+            &validators,
+            vectors.damped_score.kappa,
+        );
+        for (index, validator) in validators.iter().enumerate() {
+            assert!(
+                (damped.get(&validator.address).copied().unwrap_or(0.0)
+                    - vectors.damped_score.expected[index])
+                    .abs()
+                    < 1e-12
+            );
+        }
+
+        let weight = vectors.proposer_weight;
+        let mut unnormalized = Vec::new();
+        for index in 0..weight.stakes.len() {
+            let bonus = TopoStakeConsensus::propagation_bonus(
+                weight.damped_scores[index] / weight.stakes[index],
+                weight.bonus_cap,
+                weight.zeta,
+            );
+            unnormalized.push(weight.stakes[index] * (1.0 + weight.eta * bonus));
+        }
+        let total: f64 = unnormalized.iter().sum();
+        for index in 0..unnormalized.len() {
+            assert!((unnormalized[index] - weight.expected_unnormalized[index]).abs() < 1e-12);
+            assert!(
+                (unnormalized[index] / total - weight.expected_normalized[index]).abs() < 1e-12
+            );
         }
     }
 
@@ -596,6 +840,73 @@ mod tests {
             let r = TopoStakeConsensus::r_for_depth(depth);
             assert!((lambda * (1.0 + r) - 1.0).abs() < 1e-12);
         }
+    }
+
+    #[test]
+    fn transaction_credit_weight_is_cost_backed_and_capped() {
+        let reference = 10.0;
+        assert_eq!(TopoStakeConsensus::transaction_credit_weight(0.0, reference), 0.0);
+        assert!((TopoStakeConsensus::transaction_credit_weight(2.5, reference) - 0.25).abs() < 1e-12);
+        assert_eq!(TopoStakeConsensus::transaction_credit_weight(20.0, reference), 1.0);
+    }
+
+    #[test]
+    fn raw_contribution_is_weighted_by_irrecoverable_cost() {
+        let origin = Wallet::new();
+        let relay = Wallet::new();
+        let miner = Wallet::new();
+        let mut config = test_config();
+        config.score_cost_reference = 10.0;
+        let consensus = TopoStakeConsensus::new(1.0, config).unwrap();
+        let (full_cost_block, validators) =
+            block_with_path_and_cost(&origin, &relay, &miner, 1.0, 10.0);
+        let (half_cost_block, _) =
+            block_with_path_and_cost(&origin, &relay, &miner, 1.0, 5.0);
+
+        let full = consensus.raw_epoch_contribution(&[full_cost_block], &validators);
+        let half = consensus.raw_epoch_contribution(&[half_cost_block], &validators);
+        let full_relay = full.get(&relay.address).copied().unwrap_or(0.0);
+        let half_relay = half.get(&relay.address).copied().unwrap_or(0.0);
+        assert!((half_relay - 0.5 * full_relay).abs() < 1e-12);
+    }
+
+    #[test]
+    fn score_floor_dampens_small_absolute_score() {
+        let a = Wallet::new();
+        let b = Wallet::new();
+        let validators = validators(&[&a, &b]);
+        let mut consensus = TopoStakeConsensus::new(1.0, test_config()).unwrap();
+        consensus.active_score_history.insert(a.address.clone(), 1e-9);
+        consensus.freeze_proposer_weights(&validators);
+
+        let damped = consensus.normalized_score.get(&a.address).copied().unwrap_or(0.0);
+        let bonus = consensus.epoch_bonuses.get(&a.address).copied().unwrap_or(0.0);
+        assert!(damped < 1e-8);
+        assert!(bonus < 1e-7);
+    }
+
+    #[test]
+    fn score_root_activates_only_after_fixed_delay() {
+        let origin = Wallet::new();
+        let relay = Wallet::new();
+        let miner = Wallet::new();
+        let (block, validators) = block_with_path(&origin, &relay, &miner, 10.0);
+        let mut config = test_config();
+        config.score_activation_delay_epochs = 2;
+        let mut consensus = TopoStakeConsensus::new(1.0, config).unwrap();
+
+        consensus.on_epoch_end(&[block], &validators);
+        assert_eq!(consensus.active_score_epoch(), None);
+        assert!(consensus.active_score_history.is_empty());
+
+        consensus.on_epoch_end(&[], &validators);
+        assert_eq!(consensus.active_score_epoch(), Some(0));
+        assert!(consensus
+            .active_score_history
+            .get(&relay.address)
+            .copied()
+            .unwrap_or(0.0)
+            > 0.0);
     }
 
     #[test]
@@ -640,8 +951,8 @@ mod tests {
             Validator::new(b.address.clone(), 3.0, 1.0),
         ];
         let mut consensus = TopoStakeConsensus::new(1.0, test_config()).unwrap();
-        consensus.normalized_score.insert(a.address.clone(), 1.0);
-        consensus.normalized_score.insert(b.address.clone(), 0.0);
+        consensus.active_score_history.insert(a.address.clone(), 100.0);
+        consensus.active_score_history.insert(b.address.clone(), 0.0);
         consensus.freeze_proposer_weights(&validators);
         let stake = TopoStakeConsensus::normalized_stake(&validators);
         let bound_factor = 1.0 + consensus.config.eta * consensus.config.bonus_cap;
