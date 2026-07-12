@@ -243,6 +243,8 @@ struct TopoStakeTxEvidence {
     tx_hash: Option<String>,
     #[serde(default)]
     priority_fee_wei: Option<String>,
+    #[serde(default)]
+    irrecoverable_cost_wei: Option<String>,
     metadata: TopoStakeTxMetadata,
 }
 
@@ -268,12 +270,18 @@ impl TopoStakeTxEvidence {
             .as_deref()
             .and_then(parse_u64_decimal)
             .unwrap_or(0);
+        let irrecoverable_cost_wei = self
+            .irrecoverable_cost_wei
+            .as_deref()
+            .and_then(parse_u64_decimal)
+            .unwrap_or(0);
         let relay_path = VariableList::new(path)
             .map_err(|e| format!("invalid TopoStake inline relay path: {e}"))?;
         Ok(Some(TopoStakeInlineEvidenceRecord {
             tx_hash: Hash256::from_slice(&tx_hash),
             epoch: self.metadata.epoch,
             priority_fee_wei,
+            irrecoverable_cost_wei,
             relay_path,
             aggregate_signature,
         }))

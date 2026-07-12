@@ -32,7 +32,7 @@ pub use chain_spec::{
     topostake_evidence_csv_snapshot, topostake_evidence_epoch_summary,
     topostake_evidence_score_for_epoch, topostake_fee_settlement_csv_snapshot,
     topostake_fee_settlement_epoch_summaries, topostake_settle_credits_through_epoch,
-    topostake_settle_scores_through_epoch,
+    topostake_settle_scores_through_epoch, topostake_transaction_credit_weight_scaled,
 };
 pub use config_and_preset::{
     ConfigAndPreset, ConfigAndPresetDeneb, ConfigAndPresetElectra, ConfigAndPresetFulu,

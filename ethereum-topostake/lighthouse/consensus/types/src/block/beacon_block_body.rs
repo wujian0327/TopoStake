@@ -63,6 +63,7 @@ pub struct TopoStakeInlineEvidenceRecord<E: EthSpec> {
     pub tx_hash: Hash256,
     pub epoch: u64,
     pub priority_fee_wei: u64,
+    pub irrecoverable_cost_wei: u64,
     pub relay_path: VariableList<u64, E::MaxValidatorsPerCommittee>,
     pub aggregate_signature: FixedVector<u8, U48>,
 }

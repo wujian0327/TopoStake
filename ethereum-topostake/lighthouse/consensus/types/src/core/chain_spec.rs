@@ -29,7 +29,6 @@ use crate::{
 };
 
 pub const TOPOSTAKE_FIXED_POINT_SCALE: u64 = 1_000_000_000;
-const TOPOSTAKE_PATH_DECAY_SCALED: u64 = 900_000_000;
 pub const TOPOSTAKE_GRAFFITI_EVIDENCE_PREFIX: &str = "TPS1:";
 
 /// Each of the BLS signature domains.
@@ -1852,9 +1851,21 @@ pub struct TopoStakeConfig {
     #[serde(default = "default_topostake_score_saturation_k_scaled")]
     #[serde(with = "serde_utils::quoted_u64")]
     pub score_saturation_k_scaled: u64,
-    #[serde(default = "default_topostake_score_initial_depth")]
+    #[serde(
+        default = "default_topostake_score_target_depth",
+        alias = "SCORE_INITIAL_DEPTH"
+    )]
     #[serde(with = "serde_utils::quoted_u64")]
-    pub score_initial_depth: u64,
+    pub score_target_depth: u64,
+    #[serde(default = "default_topostake_score_cost_reference_wei")]
+    #[serde(with = "serde_utils::quoted_u64")]
+    pub score_cost_reference_wei: u64,
+    #[serde(default = "default_topostake_score_floor_kappa_scaled")]
+    #[serde(with = "serde_utils::quoted_u64")]
+    pub score_floor_kappa_scaled: u64,
+    #[serde(default = "default_topostake_bonus_zeta_scaled")]
+    #[serde(with = "serde_utils::quoted_u64")]
+    pub bonus_zeta_scaled: u64,
     #[serde(default = "default_topostake_reward_settlement_depth")]
     #[serde(with = "serde_utils::quoted_u64")]
     pub reward_settlement_depth: u64,
@@ -1873,6 +1884,15 @@ pub struct TopoStakeConfig {
     #[serde(default = "default_topostake_evidence_finality_depth")]
     #[serde(with = "serde_utils::quoted_u64")]
     pub evidence_finality_depth: u64,
+    #[serde(default = "default_topostake_score_activation_delay_epochs")]
+    #[serde(with = "serde_utils::quoted_u64")]
+    pub score_activation_delay_epochs: u64,
+    #[serde(default = "default_topostake_evidence_work_limit")]
+    #[serde(with = "serde_utils::quoted_u64")]
+    pub evidence_work_limit: u64,
+    #[serde(default = "default_topostake_challenge_work_limit")]
+    #[serde(with = "serde_utils::quoted_u64")]
+    pub challenge_work_limit: u64,
     #[serde(default)]
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub score_fixture: Vec<TopoStakeScoreFixture>,
@@ -1886,13 +1906,19 @@ impl TopoStakeConfig {
             bonus_cap_scaled: default_topostake_bonus_cap_scaled(),
             score_ema_beta_scaled: default_topostake_score_ema_beta_scaled(),
             score_saturation_k_scaled: default_topostake_score_saturation_k_scaled(),
-            score_initial_depth: default_topostake_score_initial_depth(),
+            score_target_depth: default_topostake_score_target_depth(),
+            score_cost_reference_wei: default_topostake_score_cost_reference_wei(),
+            score_floor_kappa_scaled: default_topostake_score_floor_kappa_scaled(),
+            bonus_zeta_scaled: default_topostake_bonus_zeta_scaled(),
             reward_settlement_depth: default_topostake_reward_settlement_depth(),
             max_path_evidence_len: default_topostake_max_path_evidence_len(),
             max_path_evidence_bytes: default_topostake_max_path_evidence_bytes(),
             max_paths_per_block: default_topostake_max_paths_per_block(),
             proposer_fee_ratio_scaled: default_topostake_proposer_fee_ratio_scaled(),
             evidence_finality_depth: default_topostake_evidence_finality_depth(),
+            score_activation_delay_epochs: default_topostake_score_activation_delay_epochs(),
+            evidence_work_limit: default_topostake_evidence_work_limit(),
+            challenge_work_limit: default_topostake_challenge_work_limit(),
             score_fixture: vec![],
         }
     }
@@ -1919,6 +1945,12 @@ impl TopoStakeConfig {
             .unwrap_or(self.evidence_finality_depth)
     }
 
+    pub fn score_activation_delay_epochs(&self) -> u64 {
+        topostake_env_u64("TOPOSTAKE_SCORE_ACTIVATION_DELAY_EPOCHS")
+            .unwrap_or(self.score_activation_delay_epochs)
+            .max(1)
+    }
+
     pub fn score_for_validator(&self, validator_index: usize) -> u64 {
         self.score_fixture
             .iter()
@@ -1936,7 +1968,7 @@ impl TopoStakeConfig {
 
     pub fn score_for_validator_at_epoch(&self, epoch: Epoch, validator_index: usize) -> u64 {
         self.score_for_validator(validator_index).max(
-            topostake_evidence_scores_for_epoch(epoch, self.evidence_finality_depth())
+            topostake_evidence_scores_for_epoch(epoch, self.score_activation_delay_epochs())
                 .get(&validator_index)
                 .copied()
                 .unwrap_or(0),
@@ -1957,12 +1989,23 @@ impl TopoStakeConfig {
             *entry = (*entry).max(score);
         }
         for (validator_index, score) in
-            topostake_evidence_scores_for_epoch(epoch, self.evidence_finality_depth())
+            topostake_evidence_scores_for_epoch(epoch, self.score_activation_delay_epochs())
         {
             let entry = scores.entry(validator_index).or_insert(0);
             *entry = (*entry).max(score);
         }
         scores.values().copied().sum()
+    }
+
+    pub fn score_total_for_validators_at_epoch(
+        &self,
+        epoch: Epoch,
+        validator_indices: &[usize],
+    ) -> u64 {
+        validator_indices
+            .iter()
+            .map(|validator_index| self.score_for_validator_at_epoch(epoch, *validator_index))
+            .fold(0u64, u64::saturating_add)
     }
 
     pub fn bonus_scaled_at_epoch(
@@ -1972,23 +2015,56 @@ impl TopoStakeConfig {
         total_active_balance: u64,
         validator_index: usize,
     ) -> u64 {
-        let score = self.score_for_validator_at_epoch(epoch, validator_index);
         let score_total = self.score_total_at_epoch(epoch);
-        if score == 0 || score_total == 0 || effective_balance == 0 || total_active_balance == 0 {
+        self.bonus_scaled_at_epoch_with_score_total(
+            epoch,
+            effective_balance,
+            total_active_balance,
+            validator_index,
+            score_total,
+        )
+    }
+
+    pub fn bonus_scaled_at_epoch_with_score_total(
+        &self,
+        epoch: Epoch,
+        effective_balance: u64,
+        total_active_balance: u64,
+        validator_index: usize,
+        active_score_total: u64,
+    ) -> u64 {
+        let score = self.score_for_validator_at_epoch(epoch, validator_index);
+        if score == 0 || effective_balance == 0 || total_active_balance == 0 {
             return 0;
         }
         let scale = TOPOSTAKE_FIXED_POINT_SCALE as u128;
-        let score_share_scaled = u128::from(score).saturating_mul(scale) / u128::from(score_total);
+        let damped_denominator = u128::from(self.score_floor_kappa_scaled)
+            .saturating_add(u128::from(active_score_total));
+        if damped_denominator == 0 {
+            return 0;
+        }
+        let damped_score_scaled = u128::from(score).saturating_mul(scale) / damped_denominator;
         let stake_share_scaled =
             u128::from(effective_balance).saturating_mul(scale) / u128::from(total_active_balance);
         if stake_share_scaled == 0 {
             return 0;
         }
-        let contribution_ratio_scaled =
-            score_share_scaled.saturating_mul(scale) / stake_share_scaled;
-        let bonus_scaled = contribution_ratio_scaled.saturating_sub(scale);
-        bonus_scaled
-            .min(u128::from(self.bonus_cap_scaled))
+        let score_to_stake_scaled = damped_score_scaled.saturating_mul(scale) / stake_share_scaled;
+        self.concave_bonus_scaled(
+            score_to_stake_scaled.min(u128::from(u64::MAX)) as u64,
+        )
+    }
+
+    pub fn concave_bonus_scaled(&self, score_to_stake_scaled: u64) -> u64 {
+        let bonus_denominator =
+            u128::from(self.bonus_zeta_scaled).saturating_add(u128::from(score_to_stake_scaled));
+        if bonus_denominator == 0 {
+            return 0;
+        }
+        u128::from(self.bonus_cap_scaled)
+            .saturating_mul(u128::from(score_to_stake_scaled))
+            .checked_div(bonus_denominator)
+            .unwrap_or(0)
             .min(u128::from(u64::MAX)) as u64
     }
 
@@ -2031,6 +2107,25 @@ impl TopoStakeConfig {
             total_active_balance,
             validator_index,
         );
+        u128::from(effective_balance).saturating_mul(u128::from(multiplier))
+    }
+
+    pub fn proposer_weight_scaled_at_epoch_with_score_total(
+        &self,
+        epoch: Epoch,
+        effective_balance: u64,
+        total_active_balance: u64,
+        validator_index: usize,
+        active_score_total: u64,
+    ) -> u128 {
+        let bonus_scaled = self.bonus_scaled_at_epoch_with_score_total(
+            epoch,
+            effective_balance,
+            total_active_balance,
+            validator_index,
+            active_score_total,
+        );
+        let multiplier = self.bonus_multiplier_from_bonus_scaled(bonus_scaled);
         u128::from(effective_balance).saturating_mul(u128::from(multiplier))
     }
 
@@ -2120,6 +2215,7 @@ pub struct TopoStakePathEvidence {
     pub tx_hash: String,
     pub path: Vec<usize>,
     pub fee_budget_wei: u64,
+    pub irrecoverable_cost_wei: u64,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -2214,7 +2310,7 @@ struct TopoStakeEvidenceEpochRuntime {
 }
 
 impl TopoStakeEvidenceEpochRuntime {
-    fn summary(&self, epoch: Epoch, bonus_cap_scaled: u64) -> TopoStakeEvidenceEpochSummary {
+    fn summary(&self, epoch: Epoch, _bonus_cap_scaled: u64) -> TopoStakeEvidenceEpochSummary {
         let max_score_scaled = self
             .scores
             .values()
@@ -2234,7 +2330,9 @@ impl TopoStakeEvidenceEpochRuntime {
                 .collect::<HashSet<_>>()
                 .len(),
             max_score_scaled,
-            bound_violation: max_score_scaled > bonus_cap_scaled,
+            // Raw score is intentionally not capped. Influence is bounded only
+            // after kappa damping and the concave proposer bonus.
+            bound_violation: false,
         }
     }
 
@@ -2308,6 +2406,7 @@ struct TopoStakeEvidenceRuntime {
     epochs: HashMap<u64, TopoStakeEvidenceEpochRuntime>,
     latest_settled_epoch: Option<u64>,
     latest_scores: HashMap<usize, u64>,
+    activated_scores_by_proposer_epoch: HashMap<u64, HashMap<usize, u64>>,
     accepted_tx_hashes: HashSet<String>,
 }
 
@@ -2405,6 +2504,7 @@ pub fn record_topostake_graffiti_evidence(
             None,
             decoded.path,
             TOPOSTAKE_FIXED_POINT_SCALE,
+            0,
             proposer_index,
             spec,
         ),
@@ -2471,6 +2571,7 @@ pub fn record_topostake_tx_gossip_metadata_evidence(
                 Some(path.tx_hash),
                 path.path,
                 path.fee_budget_wei,
+                path.irrecoverable_cost_wei,
                 proposer_index,
                 spec,
             );
@@ -2552,6 +2653,7 @@ fn record_topostake_path(
     tx_hash: Option<String>,
     path: Vec<usize>,
     fee_budget_wei: u64,
+    irrecoverable_cost_wei: u64,
     proposer_index: usize,
     spec: &ChainSpec,
 ) -> TopoStakeEvidenceRecordOutcome {
@@ -2586,7 +2688,24 @@ fn record_topostake_path(
     }
 
     epoch_runtime.valid_paths = epoch_runtime.valid_paths.saturating_add(1);
-    let relay_contributions = topostake_path_relay_contributions(&path, spec);
+    let credit_weight_scaled = topostake_transaction_credit_weight_scaled(
+        irrecoverable_cost_wei,
+        spec.topostake_config.score_cost_reference_wei,
+    );
+    let relay_contributions = topostake_path_relay_contributions(&path, spec)
+        .into_iter()
+        .map(|(validator_index, contribution_scaled)| {
+            (
+                validator_index,
+                scaled_mul_div(
+                    contribution_scaled,
+                    credit_weight_scaled,
+                    TOPOSTAKE_FIXED_POINT_SCALE,
+                ),
+            )
+        })
+        .filter(|(_, contribution_scaled)| *contribution_scaled > 0)
+        .collect::<Vec<_>>();
     let mut score_updates = Vec::with_capacity(relay_contributions.len());
     for (validator_index, contribution_scaled) in relay_contributions {
         let raw_contribution = epoch_runtime
@@ -2613,6 +2732,21 @@ fn record_topostake_path(
     }
 }
 
+pub fn topostake_transaction_credit_weight_scaled(
+    irrecoverable_cost_wei: u64,
+    reference_cost_wei: u64,
+) -> u64 {
+    if irrecoverable_cost_wei == 0 || reference_cost_wei == 0 {
+        return 0;
+    }
+    scaled_mul_div(
+        irrecoverable_cost_wei,
+        TOPOSTAKE_FIXED_POINT_SCALE,
+        reference_cost_wei,
+    )
+    .min(TOPOSTAKE_FIXED_POINT_SCALE)
+}
+
 fn topostake_path_relay_contributions(path: &[usize], spec: &ChainSpec) -> Vec<(usize, u64)> {
     let Some(edge_count) = path.len().checked_sub(1) else {
         return vec![];
@@ -2627,8 +2761,12 @@ fn topostake_path_relay_contributions(path: &[usize], spec: &ChainSpec) -> Vec<(
     }
 
     let relay_count = edge_count.saturating_sub(1);
+    let depth = spec.topostake_config.score_target_depth.max(1) as u128;
+    let r_scaled = (depth.saturating_mul(u128::from(TOPOSTAKE_FIXED_POINT_SCALE))
+        / depth.saturating_mul(2).saturating_add(1))
+    .min(u128::from(u64::MAX)) as u64;
     let weights = (0..relay_count)
-        .map(|position| fixed_pow_scaled(TOPOSTAKE_PATH_DECAY_SCALED, position as u64))
+        .map(|position| fixed_pow_scaled(r_scaled, position as u64))
         .collect::<Vec<_>>();
     let weight_sum = weights.iter().copied().map(u128::from).sum::<u128>();
     if weight_sum == 0 {
@@ -2655,15 +2793,19 @@ fn topostake_path_budget_scaled(edge_count: usize, spec: &ChainSpec) -> u64 {
     if edge_count == 0 {
         return 0;
     }
-    let depth = spec.topostake_config.score_initial_depth.max(1) as u128;
+    let depth = spec.topostake_config.score_target_depth.max(1) as u128;
     let edge_count_u128 = edge_count as u128;
     let depth_factor = if depth >= edge_count_u128 {
         u128::from(TOPOSTAKE_FIXED_POINT_SCALE)
     } else {
         depth.saturating_mul(u128::from(TOPOSTAKE_FIXED_POINT_SCALE)) / edge_count_u128
     };
+    let lambda_scaled = ((depth.saturating_mul(2).saturating_add(1))
+        .saturating_mul(u128::from(TOPOSTAKE_FIXED_POINT_SCALE))
+        / depth.saturating_mul(3).saturating_add(1))
+    .min(u128::from(u64::MAX)) as u64;
     let decay = fixed_pow_scaled(
-        TOPOSTAKE_PATH_DECAY_SCALED,
+        lambda_scaled,
         edge_count.saturating_sub(1) as u64,
     );
     (depth_factor.saturating_mul(u128::from(decay)) / u128::from(TOPOSTAKE_FIXED_POINT_SCALE))
@@ -2949,9 +3091,9 @@ fn fixed_ln_1p_scaled(x_scaled: u64) -> u64 {
 pub fn topostake_evidence_score_for_epoch(
     proposer_epoch: Epoch,
     validator_index: usize,
-    evidence_finality_depth: u64,
+    activation_delay_epochs: u64,
 ) -> u64 {
-    topostake_evidence_scores_for_epoch(proposer_epoch, evidence_finality_depth)
+    topostake_evidence_scores_for_epoch(proposer_epoch, activation_delay_epochs)
         .get(&validator_index)
         .copied()
         .unwrap_or(0)
@@ -2959,49 +3101,63 @@ pub fn topostake_evidence_score_for_epoch(
 
 pub fn topostake_evidence_scores_for_epoch(
     proposer_epoch: Epoch,
-    evidence_finality_depth: u64,
+    activation_delay_epochs: u64,
 ) -> HashMap<usize, u64> {
+    let proposer_epoch_u64 = proposer_epoch.as_u64();
     let Some(eligible_epoch) = proposer_epoch
         .as_u64()
-        .checked_sub(evidence_finality_depth.saturating_add(1))
+        .checked_sub(activation_delay_epochs.max(1))
     else {
         return HashMap::new();
     };
 
-    let Ok(runtime) = topostake_evidence_runtime().read() else {
+    let Ok(mut runtime) = topostake_evidence_runtime().write() else {
         return HashMap::new();
     };
     if let Some(scores) = runtime
+        .activated_scores_by_proposer_epoch
+        .get(&proposer_epoch_u64)
+    {
+        return scores.clone();
+    }
+
+    let activated_scores = if let Some(scores) = runtime
         .epochs
         .get(&eligible_epoch)
         .filter(|epoch| epoch.score_settled && !epoch.scores.is_empty())
         .map(|epoch| epoch.scores.clone())
     {
-        return scores;
-    }
+        scores
+    } else {
+        let latest_eligible_epoch = runtime
+            .epochs
+            .iter()
+            .filter(|(epoch, epoch_runtime)| {
+                **epoch <= eligible_epoch
+                    && epoch_runtime.score_settled
+                    && !epoch_runtime.scores.is_empty()
+            })
+            .map(|(epoch, epoch_runtime)| (*epoch, epoch_runtime.scores.clone()))
+            .max_by_key(|(epoch, _)| *epoch);
 
-    let latest_eligible_epoch = runtime
-        .epochs
-        .iter()
-        .filter(|(epoch, epoch_runtime)| {
-            **epoch <= eligible_epoch
-                && epoch_runtime.score_settled
-                && !epoch_runtime.scores.is_empty()
-        })
-        .map(|(epoch, epoch_runtime)| (*epoch, epoch_runtime.scores.clone()))
-        .max_by_key(|(epoch, _)| *epoch);
-
-    if let Some((epoch, scores)) = latest_eligible_epoch {
-        if runtime
-            .latest_settled_epoch
-            .is_some_and(|latest_epoch| latest_epoch == epoch)
-        {
-            return runtime.latest_scores.clone();
+        if let Some((epoch, scores)) = latest_eligible_epoch {
+            if runtime
+                .latest_settled_epoch
+                .is_some_and(|latest_epoch| latest_epoch == epoch)
+            {
+                runtime.latest_scores.clone()
+            } else {
+                scores
+            }
+        } else {
+            HashMap::new()
         }
-        return scores;
-    }
+    };
 
-    HashMap::new()
+    runtime
+        .activated_scores_by_proposer_epoch
+        .insert(proposer_epoch_u64, activated_scores.clone());
+    activated_scores
 }
 
 pub fn topostake_evidence_epoch_summary(
@@ -3848,7 +4004,7 @@ const fn default_max_per_epoch_activation_churn_limit_gloas() -> u64 {
 }
 
 const fn default_topostake_eta_scaled() -> u64 {
-    TOPOSTAKE_FIXED_POINT_SCALE / 4
+    TOPOSTAKE_FIXED_POINT_SCALE / 2
 }
 
 const fn default_topostake_bonus_cap_scaled() -> u64 {
@@ -3863,8 +4019,20 @@ const fn default_topostake_score_saturation_k_scaled() -> u64 {
     TOPOSTAKE_FIXED_POINT_SCALE
 }
 
-const fn default_topostake_score_initial_depth() -> u64 {
+const fn default_topostake_score_target_depth() -> u64 {
     4
+}
+
+const fn default_topostake_score_cost_reference_wei() -> u64 {
+    21_000_000_000_000
+}
+
+const fn default_topostake_score_floor_kappa_scaled() -> u64 {
+    TOPOSTAKE_FIXED_POINT_SCALE
+}
+
+const fn default_topostake_bonus_zeta_scaled() -> u64 {
+    TOPOSTAKE_FIXED_POINT_SCALE
 }
 
 const fn default_topostake_reward_settlement_depth() -> u64 {
@@ -3872,7 +4040,7 @@ const fn default_topostake_reward_settlement_depth() -> u64 {
 }
 
 const fn default_topostake_max_path_evidence_len() -> u64 {
-    32
+    16
 }
 
 const fn default_topostake_max_path_evidence_bytes() -> u64 {
@@ -3889,6 +4057,18 @@ const fn default_topostake_proposer_fee_ratio_scaled() -> u64 {
 
 const fn default_topostake_evidence_finality_depth() -> u64 {
     1
+}
+
+const fn default_topostake_score_activation_delay_epochs() -> u64 {
+    2
+}
+
+const fn default_topostake_evidence_work_limit() -> u64 {
+    4096
+}
+
+const fn default_topostake_challenge_work_limit() -> u64 {
+    1024
 }
 
 const fn default_reorg_head_weight_threshold() -> u64 {
@@ -4990,7 +5170,7 @@ mod yaml_tests {
 
         assert!(spec.topostake_config.is_disabled());
         assert!(!spec.is_topostake_enabled_at_epoch(Epoch::new(0)));
-        assert_eq!(spec.topostake_config.eta_scaled, 250_000_000);
+        assert_eq!(spec.topostake_config.eta_scaled, 500_000_000);
         assert_eq!(
             spec.topostake_config.bonus_cap_scaled,
             TOPOSTAKE_FIXED_POINT_SCALE
@@ -5056,6 +5236,7 @@ mod yaml_tests {
                     .into(),
                 path: vec![0, 1],
                 fee_budget_wei: TOPOSTAKE_FIXED_POINT_SCALE,
+                irrecoverable_cost_wei: spec.topostake_config.score_cost_reference_wei,
             }],
             &spec,
         );
@@ -5093,6 +5274,7 @@ mod yaml_tests {
                     .into(),
                 path: vec![0, 1, 3],
                 fee_budget_wei,
+                irrecoverable_cost_wei: spec.topostake_config.score_cost_reference_wei,
             }],
             &spec,
         );
@@ -5143,6 +5325,20 @@ mod yaml_tests {
     }
 
     #[test]
+    fn topostake_score_credit_is_backed_by_irrecoverable_cost() {
+        let reference = 42_000;
+        assert_eq!(topostake_transaction_credit_weight_scaled(0, reference), 0);
+        assert_eq!(
+            topostake_transaction_credit_weight_scaled(reference / 2, reference),
+            TOPOSTAKE_FIXED_POINT_SCALE / 2
+        );
+        assert_eq!(
+            topostake_transaction_credit_weight_scaled(reference * 2, reference),
+            TOPOSTAKE_FIXED_POINT_SCALE
+        );
+    }
+
+    #[test]
     fn topostake_distinct_txs_with_same_receiver_are_not_duplicates() {
         let _guard = TOPOSTAKE_TEST_LOCK.lock().unwrap();
         reset_topostake_evidence_runtime();
@@ -5156,12 +5352,14 @@ mod yaml_tests {
                         .into(),
                     path: vec![0, 1, 3],
                     fee_budget_wei: TOPOSTAKE_FIXED_POINT_SCALE,
+                    irrecoverable_cost_wei: spec.topostake_config.score_cost_reference_wei,
                 },
                 TopoStakePathEvidence {
                     tx_hash: "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
                         .into(),
                     path: vec![2, 1, 3],
                     fee_budget_wei: TOPOSTAKE_FIXED_POINT_SCALE,
+                    irrecoverable_cost_wei: spec.topostake_config.score_cost_reference_wei,
                 },
             ],
             &spec,
@@ -5194,11 +5392,13 @@ mod yaml_tests {
                     tx_hash: tx_hash.clone(),
                     path: vec![0, 1, 3],
                     fee_budget_wei: TOPOSTAKE_FIXED_POINT_SCALE,
+                    irrecoverable_cost_wei: spec.topostake_config.score_cost_reference_wei,
                 },
                 TopoStakePathEvidence {
                     tx_hash,
                     path: vec![0, 2, 3],
                     fee_budget_wei: TOPOSTAKE_FIXED_POINT_SCALE,
+                    irrecoverable_cost_wei: spec.topostake_config.score_cost_reference_wei,
                 },
             ],
             &spec,
@@ -5232,6 +5432,7 @@ mod yaml_tests {
                 tx_hash: tx_hash.clone(),
                 path: vec![0, 1, 2, 3],
                 fee_budget_wei: TOPOSTAKE_FIXED_POINT_SCALE,
+                irrecoverable_cost_wei: spec.topostake_config.score_cost_reference_wei,
             }],
             &spec,
         );
@@ -5242,6 +5443,7 @@ mod yaml_tests {
                 tx_hash,
                 path: vec![0, 1, 2, 3],
                 fee_budget_wei: TOPOSTAKE_FIXED_POINT_SCALE,
+                irrecoverable_cost_wei: spec.topostake_config.score_cost_reference_wei,
             }],
             &spec,
         );
@@ -5348,6 +5550,7 @@ mod yaml_tests {
                     .into(),
                 path: vec![0, 1, 3],
                 fee_budget_wei: TOPOSTAKE_FIXED_POINT_SCALE,
+                irrecoverable_cost_wei: spec.topostake_config.score_cost_reference_wei,
             }],
             &spec,
         );
@@ -5417,6 +5620,7 @@ mod yaml_tests {
                     .into(),
                 path: vec![0, 1, 2],
                 fee_budget_wei: TOPOSTAKE_FIXED_POINT_SCALE,
+                irrecoverable_cost_wei: spec.topostake_config.score_cost_reference_wei,
             }],
             &spec,
         );

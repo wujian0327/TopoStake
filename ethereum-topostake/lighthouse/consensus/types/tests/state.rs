@@ -190,6 +190,7 @@ fn topostake_inline_evidence_record_changes_body_root() {
             tx_hash: Hash256::repeat_byte(0x11),
             epoch: 3,
             priority_fee_wei: 123_456,
+            irrecoverable_cost_wei: 654_321,
             relay_path: VariableList::new(vec![0, 1, 2]).expect("valid relay path"),
             aggregate_signature: FixedVector::new(vec![0x55; 48]).expect("valid signature bytes"),
         })
@@ -305,19 +306,19 @@ fn topostake_bonus_cap_bound() {
 
     let balance = 32_000_000_000;
     let total_active_balance = balance * 4;
-    let bounded_multiplier = TOPOSTAKE_FIXED_POINT_SCALE + TOPOSTAKE_FIXED_POINT_SCALE / 4;
+    let expected_multiplier = 1_196_078_431;
     assert_eq!(
         config.proposer_weight_scaled_at_epoch(Epoch::new(0), balance, total_active_balance, 0),
-        u128::from(balance) * u128::from(bounded_multiplier)
+        u128::from(balance) * u128::from(expected_multiplier)
     );
-    assert_eq!(
-        config.proposer_weight_scaled_at_epoch(Epoch::new(0), balance, total_active_balance, 0),
-        config.max_proposer_weight_scaled(balance)
+    assert!(
+        config.proposer_weight_scaled_at_epoch(Epoch::new(0), balance, total_active_balance, 0)
+            <= config.max_proposer_weight_scaled(balance)
     );
 }
 
 #[test]
-fn topostake_proposer_bonus_uses_score_share_over_stake_share() {
+fn topostake_proposer_bonus_uses_damped_score_over_stake_share() {
     let mut config = TopoStakeConfig::devnet_enabled_at(Epoch::new(0));
     config.eta_scaled = TOPOSTAKE_FIXED_POINT_SCALE;
     config.bonus_cap_scaled = TOPOSTAKE_FIXED_POINT_SCALE;
@@ -337,14 +338,91 @@ fn topostake_proposer_bonus_uses_score_share_over_stake_share() {
 
     assert_eq!(
         config.bonus_scaled_at_epoch(Epoch::new(0), balance, total_active_balance, 0),
-        0,
-        "20% score share is below 50% stake share"
+        249_999_999,
+        "damped score mass uses the concave bonus without a positive-part threshold"
     );
     assert_eq!(
         config.bonus_scaled_at_epoch(Epoch::new(0), balance, total_active_balance, 1),
-        TOPOSTAKE_FIXED_POINT_SCALE * 3 / 5,
-        "80% score share over 50% stake share yields a 60% bounded bonus"
+        571_428_571,
+        "larger damped score-to-stake ratio yields a larger concave bonus"
     );
+}
+
+#[test]
+fn topostake_bonus_denominator_excludes_inactive_validators() {
+    let mut config = TopoStakeConfig::devnet_enabled_at(Epoch::new(0));
+    config.score_fixture = vec![
+        TopoStakeScoreFixture {
+            validator_index: 0,
+            score_scaled: TOPOSTAKE_FIXED_POINT_SCALE,
+        },
+        TopoStakeScoreFixture {
+            validator_index: 2,
+            score_scaled: TOPOSTAKE_FIXED_POINT_SCALE * 100,
+        },
+    ];
+
+    let balance = 32_000_000_000;
+    let total_active_balance = balance * 2;
+    let active_score_total =
+        config.score_total_for_validators_at_epoch(Epoch::new(0), &[0, 1]);
+    let active_set_bonus = config.bonus_scaled_at_epoch_with_score_total(
+        Epoch::new(0),
+        balance,
+        total_active_balance,
+        0,
+        active_score_total,
+    );
+    let registry_wide_bonus =
+        config.bonus_scaled_at_epoch(Epoch::new(0), balance, total_active_balance, 0);
+
+    assert_eq!(active_score_total, TOPOSTAKE_FIXED_POINT_SCALE);
+    assert!(active_set_bonus > registry_wide_bonus);
+}
+
+#[test]
+fn topostake_frozen_v1_matches_shared_golden_vectors() {
+    let vectors: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../../experiments/golden/frozen_v1_vectors.yaml"
+    ))
+    .expect("shared frozen-v1 vectors should parse");
+    for vector in vectors["credit_weights"]
+        .as_array()
+        .expect("credit weight vectors should be an array")
+    {
+        let irrecoverable_cost = vector["irrecoverable_cost"]
+            .as_f64()
+            .expect("irrecoverable cost should be numeric");
+        let reference_cost = vector["reference_cost"]
+            .as_f64()
+            .expect("reference cost should be numeric");
+        let expected = vector["expected"]
+            .as_f64()
+            .expect("expected credit weight should be numeric");
+        let actual = topostake_transaction_credit_weight_scaled(
+            (irrecoverable_cost * 1_000.0).round() as u64,
+            (reference_cost * 1_000.0).round() as u64,
+        );
+        assert_eq!(actual, (expected * TOPOSTAKE_FIXED_POINT_SCALE as f64) as u64);
+    }
+
+    let config = TopoStakeConfig::devnet_enabled_at(Epoch::new(0));
+    for vector in vectors["bonuses"]
+        .as_array()
+        .expect("bonus vectors should be an array")
+    {
+        let ratio = vector["score_to_stake"]
+            .as_f64()
+            .expect("score-to-stake ratio should be numeric");
+        let expected = vector["expected"]
+            .as_f64()
+            .expect("expected bonus should be numeric");
+        let actual = config.concave_bonus_scaled(
+            (ratio * TOPOSTAKE_FIXED_POINT_SCALE as f64).round() as u64,
+        );
+        let expected_scaled = (expected * TOPOSTAKE_FIXED_POINT_SCALE as f64).round() as u64;
+        assert!(actual.abs_diff(expected_scaled) <= 1);
+    }
 }
 
 #[test]
@@ -364,6 +442,7 @@ fn topostake_unfinalized_path_score_does_not_affect_proposer_weight() {
                 .to_string(),
             path: vec![0, 1, 2],
             fee_budget_wei: TOPOSTAKE_FIXED_POINT_SCALE,
+            irrecoverable_cost_wei: spec.topostake_config.score_cost_reference_wei,
         }],
         &spec,
     );
@@ -378,7 +457,7 @@ fn topostake_unfinalized_path_score_does_not_affect_proposer_weight() {
             1,
         ),
         0,
-        "epoch 0 path evidence is not selectable before the finality depth has elapsed"
+        "epoch 0 path evidence is not selectable before its activation snapshot"
     );
 
     let early_settled = topostake_settle_scores_through_epoch(
@@ -396,7 +475,7 @@ fn topostake_unfinalized_path_score_does_not_affect_proposer_weight() {
             1,
         ),
         0,
-        "finalized epoch 0 is still inside the evidence finality depth"
+        "finalized epoch 0 has not reached its activation snapshot"
     );
 
     topostake_settle_scores_through_epoch(
@@ -405,14 +484,24 @@ fn topostake_unfinalized_path_score_does_not_affect_proposer_weight() {
         total_active_balance,
         &spec,
     );
-    assert!(
+    assert_eq!(
         spec.topostake_config.bonus_scaled_at_epoch(
             Epoch::new(2),
             balance,
             total_active_balance,
             1,
+        ),
+        0,
+        "the proposer-weight snapshot remains frozen for the rest of epoch 2"
+    );
+    assert!(
+        spec.topostake_config.bonus_scaled_at_epoch(
+            Epoch::new(3),
+            balance,
+            total_active_balance,
+            1,
         ) > 0,
-        "finalized and settled path evidence can affect later proposer selection"
+        "the settled root can affect the first later proposer snapshot that observes it"
     );
     reset_topostake_evidence_runtime();
 }
@@ -424,7 +513,7 @@ fn topostake_test_graffiti(value: &str) -> Graffiti {
 }
 
 #[test]
-fn topostake_graffiti_evidence_updates_future_scores() {
+fn topostake_costless_graffiti_evidence_does_not_purchase_score() {
     let _guard = TOPOSTAKE_EVIDENCE_TEST_LOCK.lock().unwrap();
     reset_topostake_evidence_runtime();
 
@@ -447,8 +536,8 @@ fn topostake_graffiti_evidence_updates_future_scores() {
     assert_eq!(summary.valid_paths, 1);
     assert_eq!(summary.invalid_paths, 0);
     assert_eq!(summary.duplicate_receiver_proofs, 0);
-    assert_eq!(summary.scored_validators, 2);
-    assert!(summary.max_score_scaled > 0);
+    assert_eq!(summary.scored_validators, 0);
+    assert_eq!(summary.max_score_scaled, 0);
     assert!(!summary.bound_violation);
 
     assert_eq!(
@@ -492,10 +581,11 @@ fn topostake_graffiti_evidence_updates_future_scores() {
         .len()
             == 1
     );
-    assert!(
+    assert_eq!(
         spec.topostake_config
-            .score_for_validator_at_epoch(Epoch::new(2), 1)
-            > 0
+            .score_for_validator_at_epoch(Epoch::new(2), 1),
+        0,
+        "evidence without a protocol-visible irrecoverable cost earns no score"
     );
     assert_eq!(
         spec.topostake_config
@@ -534,8 +624,8 @@ fn topostake_credit_ledger_records_valid_paths_only() {
         summary.proposer_credit_scaled,
         TOPOSTAKE_FIXED_POINT_SCALE / 2
     );
-    assert_eq!(summary.relay_credit_scaled, 404_999_999);
-    assert_eq!(summary.burned_credit_scaled, 95_000_001);
+    assert_eq!(summary.relay_credit_scaled, 239_644_969);
+    assert_eq!(summary.burned_credit_scaled, 260_355_031);
     assert!(!summary.conservation_violation);
     assert_eq!(
         summary.proposer_credits,
@@ -549,11 +639,11 @@ fn topostake_credit_ledger_records_valid_paths_only() {
         vec![
             TopoStakeValidatorCredit {
                 validator_index: 1,
-                credit_scaled: 213_157_894,
+                credit_scaled: 165_908_056,
             },
             TopoStakeValidatorCredit {
                 validator_index: 2,
-                credit_scaled: 191_842_105,
+                credit_scaled: 73_736_913,
             },
         ]
     );
@@ -574,11 +664,11 @@ fn topostake_credit_ledger_records_valid_paths_only() {
 
     let csv = topostake_credit_csv_snapshot();
     assert!(csv.contains("epoch,credit_records,pending_records"));
-    assert!(csv.contains("0,1,0,1,1000000000,500000000,404999999,95000001,false"));
+    assert!(csv.contains("0,1,0,1,1000000000,500000000,239644969,260355031,false"));
 
     let fee_csv = topostake_fee_settlement_csv_snapshot();
     assert!(fee_csv.contains("epoch,settlement_records,pending_records"));
-    assert!(fee_csv.contains("0,1,0,1,1000000000,500000000,404999999,95000001,false"));
+    assert!(fee_csv.contains("0,1,0,1,1000000000,500000000,239644969,260355031,false"));
 
     let fee_summary = topostake_fee_settlement_epoch_summaries()
         .pop()
@@ -590,8 +680,8 @@ fn topostake_credit_ledger_records_valid_paths_only() {
         fee_summary.proposer_amount_wei,
         TOPOSTAKE_FIXED_POINT_SCALE / 2
     );
-    assert_eq!(fee_summary.relay_amount_wei, 404_999_999);
-    assert_eq!(fee_summary.burned_amount_wei, 95_000_001);
+    assert_eq!(fee_summary.relay_amount_wei, 239_644_969);
+    assert_eq!(fee_summary.burned_amount_wei, 260_355_031);
     assert!(!fee_summary.conservation_violation);
 }
 

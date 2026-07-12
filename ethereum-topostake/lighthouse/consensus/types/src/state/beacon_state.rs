@@ -1183,11 +1183,12 @@ impl<E: EthSpec> BeaconState<E> {
         }
         let slot_label = slot.as_u64().to_string();
         let proposer_epoch_label = epoch.as_u64().to_string();
-        let score_epoch = epoch.as_u64().checked_sub(
-            spec.topostake_config
-                .evidence_finality_depth()
-                .saturating_add(1),
-        );
+        let score_epoch = epoch
+            .as_u64()
+            .checked_sub(spec.topostake_config.score_activation_delay_epochs());
+        let active_score_total = spec
+            .topostake_config
+            .score_total_for_validators_at_epoch(epoch, indices);
         let score_epoch_label = score_epoch
             .map(|epoch| epoch.to_string())
             .unwrap_or_else(|| "none".to_string());
@@ -1203,12 +1204,15 @@ impl<E: EthSpec> BeaconState<E> {
             let score = spec
                 .topostake_config
                 .score_for_validator_at_epoch(epoch, validator_index);
-            let weight = spec.topostake_config.proposer_weight_scaled_at_epoch(
-                epoch,
-                effective_balance,
-                total_active_balance,
-                validator_index,
-            );
+            let weight = spec
+                .topostake_config
+                .proposer_weight_scaled_at_epoch_with_score_total(
+                    epoch,
+                    effective_balance,
+                    total_active_balance,
+                    validator_index,
+                    active_score_total,
+                );
             let validator_label = validator_index.to_string();
             metrics::set_gauge_vec(
                 &TOPOSTAKE_PROPOSER_SCORE_SCALED,
@@ -1244,12 +1248,15 @@ impl<E: EthSpec> BeaconState<E> {
         let max_proposer_weight = indices
             .iter()
             .map(|&validator_index| {
-                Ok(spec.topostake_config.proposer_weight_scaled_at_epoch(
-                    epoch,
-                    self.get_effective_balance(validator_index)?,
-                    total_active_balance,
-                    validator_index,
-                ))
+                Ok(spec
+                    .topostake_config
+                    .proposer_weight_scaled_at_epoch_with_score_total(
+                        epoch,
+                        self.get_effective_balance(validator_index)?,
+                        total_active_balance,
+                        validator_index,
+                        active_score_total,
+                    ))
             })
             .collect::<Result<Vec<_>, BeaconStateError>>()?
             .into_iter()
@@ -1270,12 +1277,15 @@ impl<E: EthSpec> BeaconState<E> {
                 .ok_or(BeaconStateError::ShuffleIndexOutOfBounds(shuffled_index))?;
             let random_value = self.shuffling_random_value(i, seed)?;
             let effective_balance = self.get_effective_balance(candidate_index)?;
-            let candidate_weight = spec.topostake_config.proposer_weight_scaled_at_epoch(
-                epoch,
-                effective_balance,
-                total_active_balance,
-                candidate_index,
-            );
+            let candidate_weight = spec
+                .topostake_config
+                .proposer_weight_scaled_at_epoch_with_score_total(
+                    epoch,
+                    effective_balance,
+                    total_active_balance,
+                    candidate_index,
+                    active_score_total,
+                );
 
             if candidate_weight.saturating_mul(u128::from(max_random_value))
                 >= max_proposer_weight.saturating_mul(u128::from(random_value))
