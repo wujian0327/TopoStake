@@ -423,6 +423,7 @@ def summarize_resources(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {"error": "resource JSONL missing", "samples": 0}
     aggregates = []
+    observed_containers = set()
     for line in path.read_text().splitlines():
         if not line.strip():
             continue
@@ -441,7 +442,19 @@ def summarize_resources(path: Path) -> dict[str, Any]:
         }
         clients = 0
         for container in record.get("docker", []):
-            kind = client_kind(str(container.get("Name", "")))
+            observed_containers.add(
+                str(
+                    container.get("TopoStakeService")
+                    or container.get("Name")
+                    or container.get("ID")
+                    or "unknown"
+                )
+            )
+            kind = str(container.get("TopoStakeKind", "")) or client_kind(
+                str(container.get("TopoStakeService", ""))
+            )
+            if kind not in ("el", "cl"):
+                kind = client_kind(str(container.get("Name", "")))
             if kind is None:
                 continue
             clients += 1
@@ -457,6 +470,14 @@ def summarize_resources(path: Path) -> dict[str, Any]:
             row[f"{kind}_cpu_percent"] += cpu
         if clients:
             aggregates.append(row)
+    if not aggregates:
+        return {
+            "error": (
+                "no EL/CL Docker resource samples; observed="
+                + ",".join(sorted(observed_containers))
+            ),
+            "samples": 0,
+        }
     cpu = [row["cpu_percent"] for row in aggregates]
     memory = [row["memory_bytes"] for row in aggregates]
     rx = [row["network_rx_bytes"] for row in aggregates]

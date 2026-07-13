@@ -19,6 +19,11 @@ from run_frozen_devnet_experiments import (  # noqa: E402
     specs_from_config,
     summarize_resources,
 )
+from monitor_devnet_bottleneck import (  # noqa: E402
+    metadata_matches_target,
+    parse_client_services,
+    service_in_metadata,
+)
 
 
 def args(**overrides: str | None) -> argparse.Namespace:
@@ -53,6 +58,36 @@ def spec(variant: str = "topostake") -> RunSpec:
 
 
 class FrozenDevnetExperimentTests(unittest.TestCase):
+    def test_kurtosis_client_services_are_discovered_from_inspect(self) -> None:
+        inspect_text = """
+UUID: 72e82fd99b0f
+  aaaaaaaaaaaa el-1-geth-lighthouse rpc: 8545/tcp -> 127.0.0.1:12345
+  bbbbbbbbbbbb cl-1-lighthouse-geth http: 5052/tcp -> 127.0.0.1:23456
+  cccccccccccc prometheus http: 9090/tcp -> 127.0.0.1:34567
+"""
+        self.assertEqual(
+            parse_client_services(inspect_text),
+            ["cl-1-lighthouse-geth", "el-1-geth-lighthouse"],
+        )
+
+    def test_service_name_is_resolved_from_docker_labels(self) -> None:
+        row = {
+            "ID": "abc",
+            "Names": "opaque-container-name",
+            "Labels": "com.kurtosistech.user-service-name=el-1-geth-lighthouse",
+        }
+        self.assertEqual(
+            service_in_metadata(row, ["el-1-geth-lighthouse"]),
+            "el-1-geth-lighthouse",
+        )
+        self.assertTrue(
+            metadata_matches_target(
+                {"Labels": "com.kurtosistech.enclave-id=72e82fd99b0f"},
+                "ts-fv1-test",
+                "72e82fd99b0f",
+            )
+        )
+
     def test_pilot_matrix_has_all_five_variants_and_two_loads(self) -> None:
         config = load_config(ROOT / "experiments/configs/frozen_v1_devnet_pilot.yaml")
         specs = specs_from_config(config, args())
