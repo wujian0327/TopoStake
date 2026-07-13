@@ -96,8 +96,12 @@ def configure_style() -> None:
 
 def render_figure(rows: list[dict[str, str]], stem: Path) -> list[Path]:
     configure_style()
-    fig, axes = plt.subplots(1, 2, figsize=(7.15, 2.55))
-    timing = axes[0]
+    for suffix in ("pdf", "png"):
+        legacy = stem.with_suffix(f".{suffix}")
+        if legacy.exists():
+            legacy.unlink()
+    outputs = []
+    fig, timing = plt.subplots(figsize=(3.45, 2.55))
     for operation in LABELS:
         selected = operation_rows(rows, operation)
         if not selected:
@@ -118,8 +122,15 @@ def render_figure(rows: list[dict[str, str]], stem: Path) -> list[Path]:
     timing.set_yscale("log")
     timing.grid(axis="y", color="#E6E6E6", linewidth=0.7)
     timing.legend(frameon=False, loc="best")
+    fig.subplots_adjust(bottom=0.20, left=0.19, right=0.97, top=0.88)
+    for suffix in ("pdf", "png"):
+        output = stem.with_name(f"{stem.name}_a").with_suffix(f".{suffix}")
+        output.parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(output, dpi=300, facecolor="white")
+        outputs.append(output)
+    plt.close(fig)
 
-    sizes = axes[1]
+    fig, sizes = plt.subplots(figsize=(3.45, 2.55))
     base = operation_rows(rows, "verify_aggregate_cold")
     for field, label, color, marker in [
         ("evidence_bytes", "Path fields (hex/text)", "#0072B2", "o"),
@@ -141,21 +152,10 @@ def render_figure(rows: list[dict[str, str]], stem: Path) -> list[Path]:
     sizes.set_xticks([1, 2, 4, 8, 16])
     sizes.grid(axis="y", color="#E6E6E6", linewidth=0.7)
     sizes.legend(frameon=False, loc="best")
-
-    for index, axis in enumerate(axes):
-        axis.text(
-            -0.14,
-            1.06,
-            f"({chr(ord('a') + index)})",
-            transform=axis.transAxes,
-            fontsize=9,
-            fontweight="bold",
-        )
-    fig.subplots_adjust(wspace=0.31, bottom=0.20)
-    stem.parent.mkdir(parents=True, exist_ok=True)
-    outputs = []
+    fig.subplots_adjust(bottom=0.20, left=0.19, right=0.97, top=0.88)
     for suffix in ("pdf", "png"):
-        output = stem.with_suffix(f".{suffix}")
+        output = stem.with_name(f"{stem.name}_b").with_suffix(f".{suffix}")
+        output.parent.mkdir(parents=True, exist_ok=True)
         fig.savefig(output, dpi=300, facecolor="white")
         outputs.append(output)
     plt.close(fig)

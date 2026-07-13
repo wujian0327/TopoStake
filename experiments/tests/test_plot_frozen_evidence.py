@@ -10,7 +10,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "analysis"))
 
-from plot_frozen_evidence import read_summary, render_table  # noqa: E402
+from plot_frozen_evidence import read_summary, render_figure, render_table  # noqa: E402
 
 
 FIELDS = [
@@ -87,6 +87,15 @@ class FrozenEvidencePlotTests(unittest.TestCase):
             table = path.read_text()
             self.assertIn("1 & 0.090 & 0.180 & 0.270 & 0.360", table)
             self.assertIn("& 300", table)
+
+    def test_each_evidence_panel_is_a_separate_file(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            rows = [{key: str(value) for key, value in row.items()} for row in benchmark_rows()]
+            outputs = render_figure(rows, Path(directory) / "evidence")
+            self.assertEqual(
+                {path.name for path in outputs},
+                {"evidence_a.pdf", "evidence_a.png", "evidence_b.pdf", "evidence_b.png"},
+            )
 
 
 if __name__ == "__main__":

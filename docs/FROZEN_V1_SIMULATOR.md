@@ -120,7 +120,10 @@ The command writes PDF and PNG versions plus
 `figures/frozen_v1_security/figure_manifest.json`. The plotting code accepts a
 partial matrix while long runs are in progress, but labels figures with fewer
 than 20 seeds as preliminary. Re-run the same command after all seeds complete;
-no plotting-code or input-path change is required. Relay-participation figures
+no plotting-code or input-path change is required. Every panel is written as a
+separate single-axis PDF/PNG with an `_a`, `_b`, and so on suffix, so LaTeX
+`subfloat` environments can arrange and number them directly. The manifest maps
+every suffix to its metric. Relay-participation figures
 use focal-relayer metrics, while network-wide lazy-relay latency is reported in
 a separate stress figure. End-to-end padding stress is also kept distinct from
 the fixed-path non-amplification check.
@@ -140,7 +143,8 @@ budget, verifies that one extra maximum-length record is rejected before
 cryptographic processing, and checks malformed signature, wrong-epoch, and
 repeated-identity rejection. Outputs are written to
 `results/processed/frozen_v1_evidence_benchmark_*`; the paper figure is
-`figures/frozen_v1_evidence_overhead.pdf`.
+split into `figures/frozen_v1_evidence_overhead_a.pdf` for runtime and
+`figures/frozen_v1_evidence_overhead_b.pdf` for encoded size.
 
 The score-floor sweep crosses `kappa = {0.1, 1, 10}` with low-to-normal offered
 loads. This is intentional: at high score mass, changing `kappa` has little

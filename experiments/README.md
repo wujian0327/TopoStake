@@ -30,7 +30,7 @@ verification, aggregation, cold aggregate verification, and encoded evidence
 size for 1/2/4/8/16 hops. It also checks malformed-signature rejection and the
 consensus-defined maximum-path/work-limit boundary. Run it on an otherwise idle
 machine in release mode; the task writes raw samples, a summary CSV, an
-acceptance JSON, a PDF/PNG figure, and a generated LaTeX table.
+acceptance JSON, separate `_a`/`_b` PDF/PNG figures, and a generated LaTeX table.
 
 To run the lower-level scripts directly:
 

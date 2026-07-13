@@ -27,6 +27,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.axes import Axes
 from matplotlib.figure import Figure
+from matplotlib.lines import Line2D
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -46,6 +47,32 @@ PROFILE_COLORS = {"active": BLUE, "normal": GREEN, "lazy": RED}
 PROTOCOL_STYLES = {
     "topostake": ("TopoStake", "o", "-"),
     "topostake_eta0": (r"$\eta=0$", "s", "--"),
+}
+LEGACY_COMBINED_STEMS = [
+    "frozen_relay_participation",
+    "frozen_score_floor",
+    "frozen_flooding",
+    "frozen_padding",
+    "frozen_proposer_envelope",
+    "frozen_relay_network_stress",
+]
+FIGURE_CONTENTS = {
+    "frozen_relay_participation_a": "focal relay reward per stake",
+    "frozen_relay_participation_b": "focal raw propagation contribution",
+    "frozen_relay_participation_c": "focal propagation bonus",
+    "frozen_relay_participation_d": "focal proposer weight",
+    "frozen_score_floor_a": "damped adversarial score mass versus kappa",
+    "frozen_score_floor_b": "score-dependent proposer-bound lift versus kappa",
+    "frozen_flooding_a": "paired flooding cost and net income",
+    "frozen_flooding_b": "paired flooding score-mass change",
+    "frozen_flooding_c": "paired flooding proposer-weight change",
+    "frozen_flooding_d": "paired flooding p95-latency change",
+    "frozen_padding_a": "end-to-end padding stress",
+    "frozen_padding_b": "fixed-path padding non-amplification",
+    "frozen_proposer_envelope_a": "observed proposer weight versus score-dependent bound",
+    "frozen_proposer_envelope_b": "score-dependent bound versus score-independent cap",
+    "frozen_relay_network_stress_a": "network-wide relay-strategy latency stress",
+    "frozen_relay_network_stress_b": "network-wide evidence-eligibility stress",
 }
 
 
@@ -127,23 +154,10 @@ def style_axis(ax: Axes, grid: bool = True) -> None:
     ax.tick_params(direction="out", length=3)
 
 
-def add_panel_labels(axes: Sequence[Axes]) -> None:
-    for index, ax in enumerate(axes):
-        ax.text(
-            -0.14,
-            1.06,
-            f"({chr(ord('a') + index)})",
-            transform=ax.transAxes,
-            fontsize=9,
-            fontweight="bold",
-            va="bottom",
-        )
-
-
 def add_seed_note(fig: Figure, seed_count: int, expected_seeds: int) -> None:
     qualifier = "Preliminary; " if seed_count < expected_seeds else ""
     fig.text(
-        0.995,
+        0.985,
         0.005,
         f"{qualifier}n={seed_count} independent seeds; 95% CIs where shown",
         ha="right",
@@ -164,6 +178,14 @@ def save_figure(fig: Figure, output_dir: Path, stem: str) -> list[str]:
     return outputs
 
 
+def remove_legacy_combined_figures(output_dir: Path) -> None:
+    for stem in LEGACY_COMBINED_STEMS:
+        for suffix in ("pdf", "png"):
+            path = output_dir / f"{stem}.{suffix}"
+            if path.exists():
+                path.unlink()
+
+
 def figure_relay_participation(
     rows: list[dict[str, str]], output_dir: Path, seed_count: int, expected_seeds: int
 ) -> list[str]:
@@ -178,9 +200,9 @@ def figure_relay_participation(
     ]
     profiles = ["active", "normal", "lazy"]
     protocols = ["topostake", "topostake_eta0"]
-    fig, axes_grid = plt.subplots(2, 2, figsize=(7.15, 4.55))
-    axes = list(axes_grid.flat)
-    for ax, (metric, ylabel, title) in zip(axes, metrics):
+    outputs: list[str] = []
+    for letter, (metric, ylabel, title) in zip("abcd", metrics):
+        fig, ax = plt.subplots(figsize=(3.45, 2.55))
         stats = grouped_stats(selected, ["protocol_label", "relay_profile"], metric)
         for protocol_index, protocol in enumerate(protocols):
             label, marker, line_style = PROTOCOL_STYLES[protocol]
@@ -211,11 +233,11 @@ def figure_relay_participation(
         style_axis(ax)
         if metric == "focal_relay_reward_per_stake":
             ax.ticklabel_format(axis="y", style="sci", scilimits=(-2, 2))
-    axes[0].legend(frameon=False, ncol=2, loc="upper right")
-    add_panel_labels(axes)
-    add_seed_note(fig, seed_count, expected_seeds)
-    fig.subplots_adjust(wspace=0.31, hspace=0.40, bottom=0.12)
-    return save_figure(fig, output_dir, "frozen_relay_participation")
+        ax.legend(frameon=False, ncol=2, loc="best")
+        add_seed_note(fig, seed_count, expected_seeds)
+        fig.subplots_adjust(bottom=0.22, left=0.18, right=0.97, top=0.88)
+        outputs.extend(save_figure(fig, output_dir, f"frozen_relay_participation_{letter}"))
+    return outputs
 
 
 def figure_score_floor(
@@ -224,7 +246,6 @@ def figure_score_floor(
     selected = [row for row in rows if row.get("experiment") == "score_floor_sensitivity"]
     if not selected:
         return []
-    fig, axes = plt.subplots(1, 2, figsize=(7.15, 2.55))
     specifications = [
         ("adversary_damped_score_mass_mean", "Adversarial damped score mass", "Score-floor damping"),
         (None, "Bound lift above stake share", "Score-dependent influence lift"),
@@ -232,7 +253,9 @@ def figure_score_floor(
     rates = sorted({as_float(row.get("tx_rate")) for row in selected})
     colors = [BLUE, GREEN, ORANGE, RED]
     markers = ["o", "s", "^", "D"]
-    for ax, (metric, ylabel, title) in zip(axes, specifications):
+    outputs: list[str] = []
+    for letter, (metric, ylabel, title) in zip("ab", specifications):
+        fig, ax = plt.subplots(figsize=(3.45, 2.55))
         for rate, color, marker in zip(rates, colors, markers):
             points: list[tuple[float, float, float]] = []
             for kappa in sorted(
@@ -272,11 +295,11 @@ def figure_score_floor(
         ax.set_ylabel(ylabel)
         ax.set_title(title)
         style_axis(ax)
-    axes[0].legend(frameon=False, ncol=2, loc="best")
-    add_panel_labels(axes)
-    add_seed_note(fig, seed_count, expected_seeds)
-    fig.subplots_adjust(wspace=0.32, bottom=0.22)
-    return save_figure(fig, output_dir, "frozen_score_floor")
+        ax.legend(frameon=False, ncol=2, loc="best")
+        add_seed_note(fig, seed_count, expected_seeds)
+        fig.subplots_adjust(bottom=0.22, left=0.19, right=0.97, top=0.88)
+        outputs.extend(save_figure(fig, output_dir, f"frozen_score_floor_{letter}"))
+    return outputs
 
 
 def paired_metric(
@@ -325,48 +348,55 @@ def figure_flooding(
 ) -> list[str]:
     if not any(row.get("experiment") == "flooding_cost_to_influence" for row in paired):
         return []
-    fig, axes_grid = plt.subplots(2, 2, figsize=(7.15, 4.55))
-    axes = list(axes_grid.flat)
+    outputs: list[str] = []
+    fig, ax = plt.subplots(figsize=(3.45, 2.55))
     plot_paired_line(
-        axes[0],
+        ax,
         paired_metric(paired, "flooding_cost_to_influence", "adversary_fee_spent"),
         "Irrecoverable fee",
         BLUE,
         "o",
     )
     plot_paired_line(
-        axes[0],
+        ax,
         paired_metric(paired, "flooding_cost_to_influence", "adversary_net_income"),
         "Net income",
         RED,
         "s",
     )
+    ax.set_ylabel("Paired economic change")
+    ax.set_title("Attack cost and profitability")
+    ax.legend(frameon=False, loc="best")
+    ax.axhline(0.0, color=LIGHT_GRAY, linewidth=0.8, zorder=0)
+    ax.set_xlabel("Attack traffic multiplier")
+    style_axis(ax)
+    add_seed_note(fig, seed_count, expected_seeds)
+    fig.subplots_adjust(bottom=0.22, left=0.19, right=0.97, top=0.88)
+    outputs.extend(save_figure(fig, output_dir, "frozen_flooding_a"))
+
     panels = [
-        (1, "adversary_damped_score_mass_mean", "Change in damped score mass", "Purchased score"),
-        (2, "adversary_proposer_weight_share_mean", "Change in proposer-weight share", "Consensus influence"),
-        (3, "p95_inclusion_latency_s_pooled", "Change in pooled p95 latency (s)", "Network stress"),
+        ("b", "adversary_damped_score_mass_mean", "Change in damped score mass", "Purchased score", GREEN, "^"),
+        ("c", "adversary_proposer_weight_share_mean", "Change in proposer-weight share", "Consensus influence", PURPLE, "D"),
+        ("d", "p95_inclusion_latency_s_pooled", "Change in pooled p95 latency (s)", "Network stress", ORANGE, "o"),
     ]
-    for index, metric, ylabel, title in panels:
+    for letter, metric, ylabel, title, color, marker in panels:
+        fig, ax = plt.subplots(figsize=(3.45, 2.55))
         plot_paired_line(
-            axes[index],
+            ax,
             paired_metric(paired, "flooding_cost_to_influence", metric),
             "Paired change",
-            [GREEN, PURPLE, ORANGE][index - 1],
-            ["^", "D", "o"][index - 1],
+            color,
+            marker,
         )
-        axes[index].set_ylabel(ylabel)
-        axes[index].set_title(title)
-    axes[0].set_ylabel("Paired economic change")
-    axes[0].set_title("Attack cost and profitability")
-    axes[0].legend(frameon=False, loc="best")
-    for ax in axes:
         ax.axhline(0.0, color=LIGHT_GRAY, linewidth=0.8, zorder=0)
         ax.set_xlabel("Attack traffic multiplier")
+        ax.set_ylabel(ylabel)
+        ax.set_title(title)
         style_axis(ax)
-    add_panel_labels(axes)
-    add_seed_note(fig, seed_count, expected_seeds)
-    fig.subplots_adjust(wspace=0.32, hspace=0.42, bottom=0.13)
-    return save_figure(fig, output_dir, "frozen_flooding")
+        add_seed_note(fig, seed_count, expected_seeds)
+        fig.subplots_adjust(bottom=0.22, left=0.19, right=0.97, top=0.88)
+        outputs.extend(save_figure(fig, output_dir, f"frozen_flooding_{letter}"))
+    return outputs
 
 
 def figure_padding(
@@ -380,9 +410,8 @@ def figure_padding(
     if not selected:
         return [], "No completed path_padding_end_to_end runs"
     has_fixed = bool(fixed_rows)
-    fig, axes_array = plt.subplots(1, 2 if has_fixed else 1, figsize=(7.15 if has_fixed else 3.6, 2.65))
-    axes = list(axes_array) if has_fixed else [axes_array]
-    ax = axes[0]
+    outputs: list[str] = []
+    fig, ax = plt.subplots(figsize=(3.45, 2.55))
     stats = grouped_stats(selected, ["topostake_target_depth", "padding_identities"], "adversary_credit_share")
     depth_colors = {2.0: BLUE, 4.0: GREEN, 8.0: ORANGE}
     for depth in sorted({as_float(row.get("topostake_target_depth")) for row in selected}):
@@ -409,10 +438,13 @@ def figure_padding(
     ax.set_title("End-to-end network stress")
     ax.legend(frameon=False, ncol=3, loc="best")
     style_axis(ax)
+    add_seed_note(fig, seed_count, expected_seeds)
+    fig.subplots_adjust(bottom=0.22, left=0.19, right=0.97, top=0.88)
+    outputs.extend(save_figure(fig, output_dir, "frozen_padding_a"))
 
     warning = None
     if has_fixed:
-        ax = axes[1]
+        fig, ax = plt.subplots(figsize=(3.45, 2.55))
         fixed_buckets: dict[tuple[float, float], list[float]] = defaultdict(list)
         for row in fixed_rows:
             depth = as_float(row.get("depth", row.get("target_depth")))
@@ -440,12 +472,11 @@ def figure_padding(
         ax.set_title("Fixed-path theorem check")
         ax.legend(frameon=False, ncol=2, loc="best")
         style_axis(ax)
+        fig.subplots_adjust(bottom=0.20, left=0.19, right=0.97, top=0.88)
+        outputs.extend(save_figure(fig, output_dir, "frozen_padding_b"))
     else:
-        warning = "Fixed-path CSV absent; generated end-to-end padding panel only"
-    add_panel_labels(axes)
-    add_seed_note(fig, seed_count, expected_seeds)
-    fig.subplots_adjust(wspace=0.30, bottom=0.22)
-    return save_figure(fig, output_dir, "frozen_padding"), warning
+        warning = "Fixed-path CSV absent; generated end-to-end padding figure only"
+    return outputs, warning
 
 
 def figure_proposer_envelope(
@@ -454,13 +485,11 @@ def figure_proposer_envelope(
     selected = [row for row in rows if row.get("experiment") == "proposer_influence_envelope"]
     if not selected:
         return []
-    fig, axes = plt.subplots(1, 2, figsize=(7.15, 2.75))
-    placements = ["random", "high-degree", "high-betweenness"]
     markers = {"random": "o", "high-degree": "s", "high-betweenness": "^"}
     eta_colors = {0.25: BLUE, 0.5: RED}
-    for ax, x_field, y_field, title, x_label, y_label in [
+    outputs: list[str] = []
+    specifications = [
         (
-            axes[0],
             "score_dependent_proposer_weight_bound_mean",
             "adversary_proposer_weight_share_mean",
             "Observed weight vs. score-dependent bound",
@@ -468,15 +497,15 @@ def figure_proposer_envelope(
             "Observed proposer-weight share",
         ),
         (
-            axes[1],
             "theoretical_proposer_weight_bound_mean",
             "score_dependent_proposer_weight_bound_mean",
             "Score-dependent bound vs. cap envelope",
             "Score-independent cap bound",
             "Score-dependent bound",
         ),
-    ]:
-        plotted_labels: set[str] = set()
+    ]
+    for letter, (x_field, y_field, title, x_label, y_label) in zip("ab", specifications):
+        fig, ax = plt.subplots(figsize=(3.45, 2.95))
         finite_points: list[tuple[float, float]] = []
         for row in selected:
             x = as_float(row.get(x_field))
@@ -486,7 +515,6 @@ def figure_proposer_envelope(
             if not all(math.isfinite(value) for value in (x, y, eta)):
                 continue
             finite_points.append((x, y))
-            label = fr"$\eta={eta:g}$, {placement}"
             ax.scatter(
                 [x],
                 [y],
@@ -495,10 +523,8 @@ def figure_proposer_envelope(
                 s=20,
                 alpha=0.72,
                 edgecolors="none",
-                label=label if label not in plotted_labels else None,
                 zorder=3,
             )
-            plotted_labels.add(label)
         if finite_points:
             lower = min(min(x, y) for x, y in finite_points)
             upper = max(max(x, y) for x, y in finite_points)
@@ -510,12 +536,27 @@ def figure_proposer_envelope(
         ax.set_ylabel(y_label)
         ax.set_title(title)
         style_axis(ax)
-    handles, labels = axes[1].get_legend_handles_labels()
-    fig.legend(handles, labels, frameon=False, ncol=3, loc="lower center", bbox_to_anchor=(0.5, 0.04))
-    add_panel_labels(axes)
-    add_seed_note(fig, seed_count, expected_seeds)
-    fig.subplots_adjust(wspace=0.32, bottom=0.31)
-    return save_figure(fig, output_dir, "frozen_proposer_envelope")
+        legend_handles = [
+            Line2D([], [], color=eta_colors[eta], marker="o", linestyle="none", label=fr"$\eta={eta:g}$")
+            for eta in sorted(eta_colors)
+        ] + [
+            Line2D([], [], color=GRAY, marker=marker, linestyle="none", label=placement.replace("-", " "))
+            for placement, marker in markers.items()
+        ]
+        ax.legend(
+            handles=legend_handles,
+            frameon=False,
+            ncol=3,
+            loc="upper center",
+            bbox_to_anchor=(0.5, -0.18),
+            fontsize=6.2,
+            columnspacing=0.8,
+            handletextpad=0.3,
+        )
+        add_seed_note(fig, seed_count, expected_seeds)
+        fig.subplots_adjust(bottom=0.36, left=0.19, right=0.97, top=0.88)
+        outputs.extend(save_figure(fig, output_dir, f"frozen_proposer_envelope_{letter}"))
+    return outputs
 
 
 def figure_relay_network_stress(
@@ -524,13 +565,14 @@ def figure_relay_network_stress(
     selected = [row for row in rows if row.get("experiment") == "relay_network_stress"]
     if not selected:
         return []
-    fig, axes = plt.subplots(1, 2, figsize=(7.15, 2.5))
     panels = [
         ("p95_inclusion_latency_s_pooled", "Pooled p95 inclusion latency (s)", "End-to-end latency"),
         ("credit_ineligible_path_rate", "Credit-ineligible path rate", "Evidence eligibility"),
     ]
     profiles = ["active", "lazy"]
-    for ax, (metric, ylabel, title) in zip(axes, panels):
+    outputs: list[str] = []
+    for letter, (metric, ylabel, title) in zip("ab", panels):
+        fig, ax = plt.subplots(figsize=(3.45, 2.5))
         stats = grouped_stats(selected, ["relay_profile"], metric)
         means, cis = [], []
         for profile in profiles:
@@ -550,10 +592,10 @@ def figure_relay_network_stress(
         ax.set_ylabel(ylabel)
         ax.set_title(title)
         style_axis(ax)
-    add_panel_labels(axes)
-    add_seed_note(fig, seed_count, expected_seeds)
-    fig.subplots_adjust(wspace=0.32, bottom=0.20)
-    return save_figure(fig, output_dir, "frozen_relay_network_stress")
+        add_seed_note(fig, seed_count, expected_seeds)
+        fig.subplots_adjust(bottom=0.22, left=0.19, right=0.97, top=0.88)
+        outputs.extend(save_figure(fig, output_dir, f"frozen_relay_network_stress_{letter}"))
+    return outputs
 
 
 def parse_args() -> argparse.Namespace:
@@ -569,6 +611,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     configure_style()
+    remove_legacy_combined_figures(args.output_dir)
     all_runs = read_csv(args.runs)
     runs = complete_runs(all_runs)
     paired = read_csv(args.paired)
@@ -601,6 +644,7 @@ def main() -> int:
         "preliminary": len(seeds) < args.expected_seeds,
         "confidence_intervals": "normal-approximation 95% CI across independent seeds",
         "outputs": outputs,
+        "figure_contents": FIGURE_CONTENTS,
         "warnings": warnings,
     }
     args.output_dir.mkdir(parents=True, exist_ok=True)
