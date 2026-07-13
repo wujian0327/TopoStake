@@ -570,8 +570,10 @@ def build_row(spec: RunSpec, run_dir: Path, status: str, error: str = "") -> dic
             "measurement_quality_passed": formal.get("measurement_quality", {}).get(
                 "passed", False
             ),
+            "block_ssz_count": formal.get("block_sizes", {}).get("count", 0),
             "block_ssz_mean_bytes": formal.get("block_sizes", {}).get("mean_bytes", 0.0),
             "block_ssz_p95_bytes": formal.get("block_sizes", {}).get("p95_bytes", 0.0),
+            "resource_samples": formal.get("resources", {}).get("samples", 0),
             "cpu_mean_percent": formal.get("resources", {}).get("cpu_mean_percent", 0.0),
             "cpu_p95_percent": formal.get("resources", {}).get("cpu_p95_percent", 0.0),
             "memory_max_bytes": formal.get("resources", {}).get("memory_max_bytes", 0.0),

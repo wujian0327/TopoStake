@@ -68,6 +68,8 @@ and inline-evidence verification timing. Per-run artifacts live under
 `experiment_manifest.json`, and the flat analysis table is written to
 `results/processed/<suite>.csv`. Failed runs retain their artifacts and can be
 repeated with `--resume` after the underlying issue is fixed.
+The aggregate table includes `block_ssz_count` and `resource_samples` so every
+block-size and resource result retains its measurement denominator.
 
 ## Frozen-v1 Devnet Acceptance
 

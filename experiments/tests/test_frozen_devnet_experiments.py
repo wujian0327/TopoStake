@@ -14,6 +14,7 @@ sys.path.insert(0, str(ROOT / "experiments"))
 
 from run_frozen_devnet_experiments import (  # noqa: E402
     RunSpec,
+    build_row,
     load_config,
     measurement_quality_checks,
     parse_bytes,
@@ -60,6 +61,22 @@ def spec(variant: str = "topostake") -> RunSpec:
 
 
 class FrozenDevnetExperimentTests(unittest.TestCase):
+    def test_aggregate_row_carries_measurement_sample_counts(self) -> None:
+        summary = {
+            "formal_experiment": {
+                "acceptance": {"passed": True},
+                "measurement_quality": {"passed": True},
+                "block_sizes": {"count": 17},
+                "resources": {"samples": 31},
+            }
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            run_dir = Path(directory)
+            (run_dir / "summary.json").write_text(json.dumps(summary))
+            row = build_row(spec(), run_dir, "ok")
+        self.assertEqual(row["block_ssz_count"], 17)
+        self.assertEqual(row["resource_samples"], 31)
+
     def test_kurtosis_client_services_are_discovered_from_inspect(self) -> None:
         inspect_text = """
 UUID: 72e82fd99b0f
