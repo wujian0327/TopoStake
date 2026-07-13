@@ -16,7 +16,7 @@ use std::{
     io::{Read, Write},
     net::{IpAddr, TcpStream, ToSocketAddrs, UdpSocket},
     sync::{OnceLock, RwLock},
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tree_hash::TreeHash;
 use typenum::Unsigned;
@@ -271,7 +271,14 @@ fn record_topostake_tx_gossip_metadata_for_block<E: EthSpec, Payload: AbstractEx
         );
     }
     let registry = topostake_relay_public_registry();
-    if !verify_topostake_inline_block_aggregate(inline_records.as_ref(), registry, spec) {
+    let verify_started = Instant::now();
+    let verified =
+        verify_topostake_inline_block_aggregate(inline_records.as_ref(), registry, spec);
+    metrics::observe_duration(
+        &state_processing_metrics::TOPOSTAKE_INLINE_EVIDENCE_VERIFY_SECONDS,
+        verify_started.elapsed(),
+    );
+    if !verified {
         return record_topostake_invalid_tx_gossip_metadata_evidence(
             epoch,
             inline_records.len(),

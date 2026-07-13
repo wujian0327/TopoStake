@@ -54,6 +54,11 @@ def parse_ports(inspect_text: str) -> dict[str, list[tuple[int, int]]]:
     return ports
 
 
+def parse_enclave_uuid(inspect_text: str) -> str:
+    match = re.search(r"^UUID:\s+([0-9a-f]+)\s*$", inspect_text, re.MULTILINE | re.IGNORECASE)
+    return match.group(1).lower() if match else ""
+
+
 def rpc(port: int, method: str, params: list[Any] | None = None) -> Any:
     response = requests.post(
         f"http://127.0.0.1:{port}",
@@ -73,7 +78,7 @@ def get_json(url: str) -> dict[str, Any]:
     return response.json()
 
 
-def docker_stats() -> list[dict[str, str]]:
+def docker_stats(enclave_uuid: str) -> list[dict[str, str]]:
     output = subprocess.check_output(
         ["docker", "stats", "--no-stream", "--format", "{{json .}}"],
         text=True,
@@ -82,15 +87,24 @@ def docker_stats() -> list[dict[str, str]]:
     for line in output.splitlines():
         if not line.strip():
             continue
-        rows.append(json.loads(line))
+        row = json.loads(line)
+        identity = f"{row.get('Name', '')} {row.get('ID', '')}".lower()
+        if not enclave_uuid or enclave_uuid in identity:
+            rows.append(row)
     return rows
 
 
-def sample(enclave: str, ports: dict[str, list[tuple[int, int]]]) -> dict[str, Any]:
+def sample(
+    enclave: str,
+    enclave_uuid: str,
+    ports: dict[str, list[tuple[int, int]]],
+) -> dict[str, Any]:
     now = time.time()
     out: dict[str, Any] = {
         "ts": now,
-        "docker": docker_stats(),
+        "enclave": enclave,
+        "enclave_uuid": enclave_uuid,
+        "docker": docker_stats(enclave_uuid),
         "el": [],
         "cl": [],
     }
@@ -138,12 +152,15 @@ def main() -> int:
 
     inspect_text = kurtosis_inspect(args.enclave)
     ports = parse_ports(inspect_text)
+    enclave_uuid = parse_enclave_uuid(inspect_text)
+    if not enclave_uuid:
+        raise RuntimeError("failed to identify enclave UUID for Docker resource isolation")
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
     deadline = time.monotonic() + args.duration
     with output.open("w") as handle:
         while time.monotonic() < deadline:
-            record = sample(args.enclave, ports)
+            record = sample(args.enclave, enclave_uuid, ports)
             handle.write(json.dumps(record, sort_keys=True) + "\n")
             handle.flush()
             time.sleep(args.interval)

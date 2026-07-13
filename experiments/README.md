@@ -10,6 +10,7 @@ Python standard library; if PyYAML is installed, normal YAML is also accepted.
 python scripts/task.py experiments-smoke
 python scripts/task.py frozen-smoke
 python scripts/task.py frozen-devnet-check
+python scripts/task.py frozen-devnet-pilot --dry-run
 python scripts/task.py tdsc-fast
 python scripts/task.py experiments-main
 python scripts/task.py figures
@@ -32,6 +33,41 @@ python analysis/plot_performance.py
 `experiments/configs/frozen_v1_smoke.yaml` is the first migration smoke test for
 the frozen TDSC formulas. It is a correctness check, not a paper experiment.
 Its protocol defaults come from `experiments/configs/protocol_frozen_v1.yaml`.
+
+`frozen_v1_devnet_pilot.yaml` and `frozen_v1_devnet_main.yaml` drive the formal
+Kurtosis evaluation. They compare five variants with the same frozen profile:
+
+- `baseline`: unmodified PoS path with no TopoStake evidence;
+- `pathobs`: evidence and score observability with no fee or proposer bonus;
+- `fee_only`: evidence, scoring, and relay-fee settlement with `eta=0`;
+- `bonus_only`: evidence, scoring, and proposer bonus without fee settlement;
+- `topostake`: the complete mechanism.
+
+Run the 10-run pilot before starting the 75-run main matrix:
+
+```bash
+python scripts/task.py frozen-devnet-pilot \
+  --package /home/wujian/ethereum-package \
+  --resume --stop-on-failure
+
+python scripts/task.py frozen-devnet-main \
+  --package /home/wujian/ethereum-package \
+  --resume
+```
+
+The pilot uses one seed, four nodes, a ring, and two offered loads. The main
+matrix uses five seeds, eight nodes, a BA topology, and 8/32/64 transactions per
+slot. Use `--seeds`, `--variants`, `--nodes`, `--loads`, or `--topologies` for a
+comma-separated subset. `--dry-run` prints the exact matrix without launching
+Kurtosis.
+
+Each formal run must pass both the frozen-v1 protocol checks and a measurement
+quality gate for SSZ block bytes, resource samples, Prometheus availability,
+and inline-evidence verification timing. Per-run artifacts live under
+`results/raw/<suite>/<run-id>/`; the suite manifest is
+`experiment_manifest.json`, and the flat analysis table is written to
+`results/processed/<suite>.csv`. Failed runs retain their artifacts and can be
+repeated with `--resume` after the underlying issue is fixed.
 
 ## Frozen-v1 Devnet Acceptance
 

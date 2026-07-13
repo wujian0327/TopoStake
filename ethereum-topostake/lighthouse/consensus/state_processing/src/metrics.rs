@@ -75,6 +75,14 @@ pub static TOPOSTAKE_EVIDENCE_SOURCES_TOTAL: LazyLock<Result<IntCounterVec>> =
         )
     });
 
+pub static TOPOSTAKE_INLINE_EVIDENCE_VERIFY_SECONDS: LazyLock<Result<Histogram>> =
+    LazyLock::new(|| {
+        try_create_histogram(
+            "topostake_inline_evidence_verify_seconds",
+            "Time required to validate one block's inline TopoStake evidence",
+        )
+    });
+
 pub static TOPOSTAKE_EVIDENCE_EPOCH_VALID_PATHS: LazyLock<Result<IntGaugeVec>> =
     LazyLock::new(|| {
         try_create_int_gauge_vec(

@@ -21,7 +21,7 @@ ROOT = Path(__file__).resolve().parents[1]
 PROFILE_PATH = ROOT / "experiments" / "configs" / "protocol_frozen_v1.yaml"
 GOLDEN_PATH = ROOT / "experiments" / "golden" / "frozen_v1_vectors.yaml"
 DEFAULT_REPORT = ROOT / "results" / "processed" / "frozen_v1_devnet_acceptance.json"
-MODES = ("baseline", "pathobs", "topostake")
+MODES = ("baseline", "pathobs", "fee_only", "bonus_only", "topostake")
 
 
 @dataclass(frozen=True)
@@ -318,8 +318,25 @@ def artifact_checks(summary: dict[str, Any], mode: str) -> list[Check]:
     checks.extend(activation_checks(summary, int(fixed["score_activation_delay_epochs"])))
     checks.extend(frozen_weight_checks(summary))
 
-    max_weight = 32_000_000_000 * int(fixed["scale"]) * (1.0 + float(profile["eta"]) * float(profile["bonus_cap"]))
     observed_weight = metric_max(summary, "topostake_proposer_weight_scaled")
+    if mode == "fee_only":
+        checks.append(
+            check(
+                "fee-only-disables-proposer-bonus",
+                observed_weight <= 32_000_000_000 * int(fixed["scale"]),
+                f"observed={observed_weight:.0f}",
+            )
+        )
+    if mode in ("fee_only", "topostake"):
+        checks.append(
+            check(
+                "fee-settlement-positive",
+                metric_max(summary, "topostake_fee_settlement_amount_wei") > 0.0,
+                str(metric_max(summary, "topostake_fee_settlement_amount_wei")),
+            )
+        )
+
+    max_weight = 32_000_000_000 * int(fixed["scale"]) * (1.0 + float(profile["eta"]) * float(profile["bonus_cap"]))
     checks.append(check("proposer-weight-cap", observed_weight <= max_weight, f"observed={observed_weight:.0f}, cap={max_weight:.0f}"))
     return checks
 

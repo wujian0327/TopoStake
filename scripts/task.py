@@ -44,13 +44,6 @@ def task_test(_args: argparse.Namespace) -> None:
     run(["cargo", "test"])
 
 
-def task_bench(_args: argparse.Namespace) -> None:
-    run(
-        ["cargo", "bench", "--bench", "bls_path", "--", "--quiet"],
-        env={"CRITERION_QUICK": "1"},
-    )
-
-
 def task_run_experiments(config: str, force: bool = False, check: bool = True) -> subprocess.CompletedProcess[str]:
     cmd = [PYTHON, "experiments/run_experiments.py", "--config", config]
     if force:
@@ -117,19 +110,52 @@ def task_frozen_devnet_smoke(args: argparse.Namespace) -> None:
     run(cmd)
 
 
+def task_frozen_devnet_matrix(args: argparse.Namespace, config: str) -> None:
+    cmd = [
+        PYTHON,
+        "experiments/run_frozen_devnet_experiments.py",
+        "--config",
+        config,
+    ]
+    if args.package:
+        cmd.extend(["--package", args.package])
+    for option in ("seeds", "variants", "nodes", "loads", "topologies"):
+        value = getattr(args, option)
+        if value:
+            cmd.extend([f"--{option}", value])
+    if args.resume:
+        cmd.append("--resume")
+    if args.keep_enclaves:
+        cmd.append("--keep-enclaves")
+    if args.stop_on_failure:
+        cmd.append("--stop-on-failure")
+    if args.dry_run:
+        cmd.append("--dry-run")
+    run(cmd)
+
+
+def task_frozen_devnet_pilot(args: argparse.Namespace) -> None:
+    task_frozen_devnet_matrix(args, "experiments/configs/frozen_v1_devnet_pilot.yaml")
+
+
+def task_frozen_devnet_main(args: argparse.Namespace) -> None:
+    task_frozen_devnet_matrix(args, "experiments/configs/frozen_v1_devnet_main.yaml")
+
+
 def task_summarize(_args: argparse.Namespace) -> None:
     run([PYTHON, "experiments/summarize.py"])
 
 
 TASKS: Dict[str, Callable[[argparse.Namespace], None]] = {
     "test": task_test,
-    "bench": task_bench,
     "experiments-smoke": task_experiments_smoke,
     "experiments-main": task_experiments_main,
     "tdsc-fast": task_tdsc_fast,
     "frozen-smoke": task_frozen_smoke,
     "frozen-devnet-check": task_frozen_devnet_check,
     "frozen-devnet-smoke": task_frozen_devnet_smoke,
+    "frozen-devnet-pilot": task_frozen_devnet_pilot,
+    "frozen-devnet-main": task_frozen_devnet_main,
     "summarize": task_summarize,
     "figures": task_figures,
 }
@@ -144,11 +170,23 @@ def main() -> int:
         help="Rerun experiment tasks even when existing summaries are present.",
     )
     parser.add_argument("--artifact", help="Devnet summary.json for frozen-devnet-check.")
-    parser.add_argument("--mode", choices=["baseline", "pathobs", "topostake"], default="topostake")
+    parser.add_argument(
+        "--mode",
+        choices=["baseline", "pathobs", "fee_only", "bonus_only", "topostake"],
+        default="topostake",
+    )
     parser.add_argument("--modes", default="baseline,pathobs,topostake", help="Modes for frozen-devnet-smoke.")
     parser.add_argument("--package", help="Path to the local ethereum-package checkout.")
     parser.add_argument("--skip-existing", action="store_true", help="Reuse existing devnet summary artifacts.")
     parser.add_argument("--keep-enclaves", action="store_true", help="Leave smoke enclaves running after collection.")
+    parser.add_argument("--seeds", help="Comma-separated seed override for formal devnet runs.")
+    parser.add_argument("--variants", help="Comma-separated variant override for formal devnet runs.")
+    parser.add_argument("--nodes", help="Comma-separated node-count override for formal devnet runs.")
+    parser.add_argument("--loads", help="Comma-separated tx-per-slot override for formal devnet runs.")
+    parser.add_argument("--topologies", help="Comma-separated topology override for formal devnet runs.")
+    parser.add_argument("--resume", action="store_true", help="Skip completed formal devnet runs.")
+    parser.add_argument("--stop-on-failure", action="store_true", help="Stop a formal matrix at its first failure.")
+    parser.add_argument("--dry-run", action="store_true", help="Print the formal matrix without launching Kurtosis.")
     args = parser.parse_args()
 
     TASKS[args.target](args)

@@ -50,8 +50,8 @@ def participant_service_number(index: int, count: int) -> str:
 
 def write_args(args: argparse.Namespace) -> None:
     lines: List[str] = []
-    topostake_features = args.mode in ("pathobs", "topostake")
-    fee_escrow_enabled = args.mode == "topostake" and not args.disable_fee_settlement
+    topostake_features = args.mode != "baseline"
+    fee_escrow_enabled = args.mode in ("fee_only", "topostake") and not args.disable_fee_settlement
     scale = int(DEVNET_PROFILE["scale"])
 
     lines.extend(
@@ -96,7 +96,7 @@ def write_args(args: argparse.Namespace) -> None:
     if topostake_features:
         public_registry = load_json(args.public_registry)
         rpc_registry = el_rpc_registry(args.count)
-        eta_scaled = 0 if args.mode == "pathobs" else args.eta_scaled
+        eta_scaled = args.eta_scaled if args.mode in ("bonus_only", "topostake") else 0
         lines.extend(
             [
                 "    cl_extra_env_vars:",
@@ -132,7 +132,7 @@ def write_args(args: argparse.Namespace) -> None:
         ]
     )
     if topostake_features:
-        eta_scaled = 0 if args.mode == "pathobs" else args.eta_scaled
+        eta_scaled = args.eta_scaled if args.mode in ("bonus_only", "topostake") else 0
         lines.extend(
             [
                 "",
@@ -193,7 +193,11 @@ def write_args(args: argparse.Namespace) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--mode", choices=["baseline", "pathobs", "topostake"], required=True)
+    parser.add_argument(
+        "--mode",
+        choices=["baseline", "pathobs", "fee_only", "bonus_only", "topostake"],
+        required=True,
+    )
     parser.add_argument("--count", type=int, default=8)
     parser.add_argument("--validator-count", type=int, default=16)
     parser.add_argument("--chain-id", type=int, default=7_032_030)

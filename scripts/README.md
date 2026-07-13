@@ -20,3 +20,20 @@ LIGHTHOUSE_BINARY=/home/wujian/pog-rs/ethereum-topostake/lighthouse/target/relea
 
 ./scripts/lighthouse_image.sh verify
 ```
+
+The formal devnet runner also records inline evidence verification time, so
+rebuild and repackage Lighthouse after instrumentation changes before running:
+
+```bash
+python scripts/task.py frozen-devnet-pilot \
+  --package /home/wujian/ethereum-package \
+  --resume --stop-on-failure
+
+python scripts/task.py frozen-devnet-main \
+  --package /home/wujian/ethereum-package \
+  --resume
+```
+
+Use `--dry-run` first to inspect the matrix. Formal run directories contain the
+Kurtosis args, workload summary, raw resource JSONL, acceptance report, and
+runner status; aggregate CSVs are placed in `results/processed/`.

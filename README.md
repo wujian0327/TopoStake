@@ -86,9 +86,9 @@ The reproducible paper pipeline lives under `experiments/` and `analysis/`.
 Use the cross-platform Python runner on Windows, Linux, or macOS:
 
 - `python scripts/task.py test`: formatting, check, and unit tests
-- `python scripts/task.py bench`: quick BLS path benchmark
 - `python scripts/task.py experiments-smoke`: reduced end-to-end pipeline
 - `python scripts/task.py frozen-devnet-check`: frozen-v1 profile and devnet-artifact acceptance gate
+- `python scripts/task.py frozen-devnet-pilot --dry-run`: inspect the formal five-variant pilot matrix
 - `python scripts/task.py experiments-main`: full paper experiment matrix
 - `python scripts/task.py figures`: regenerate SVG figures from processed/raw outputs
 

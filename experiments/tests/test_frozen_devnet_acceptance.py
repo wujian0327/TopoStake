@@ -35,6 +35,7 @@ def base_summary() -> dict:
         ],
         "prometheus": {
             "topostake_fee_conservation_violation": [sample(0)],
+            "topostake_fee_settlement_amount_wei": [sample(1)],
             "topostake_epoch_score_scaled": [sample(0)],
         },
     }
@@ -81,6 +82,44 @@ class FrozenDevnetAcceptanceTests(unittest.TestCase):
         )
         failures = [item for item in artifact_checks(summary, "topostake") if not item.passed]
         self.assertEqual(failures, [])
+
+    def test_fee_only_requires_fee_settlement_but_no_bonus(self) -> None:
+        summary = base_summary()
+        summary["blocks"]["records"] = [
+            {
+                "slot": 32,
+                "epoch": 4,
+                "path_len": 2,
+                "path": [0, 1],
+                "irrecoverable_cost_wei": 1,
+            }
+        ]
+        summary["prometheus"].update(
+            {
+                "topostake_evidence_epoch_valid_paths": [sample(1)],
+                "topostake_epoch_score_scaled": [sample(1)],
+                "topostake_proposer_score_scaled": [sample(1)],
+                "topostake_selection_score_epoch": [sample(2, proposer_epoch="4")],
+                "topostake_proposer_weight_scaled": [
+                    sample(
+                        32_000_000_000_000_000_000,
+                        instance="cl-1",
+                        slot="32",
+                        proposer_epoch="4",
+                        validator_index="0",
+                    )
+                ],
+                "topostake_selected_proposer": [
+                    sample(1, slot="32", proposer_epoch="4", validator_index="0")
+                ],
+            }
+        )
+        failures = [item for item in artifact_checks(summary, "fee_only") if not item.passed]
+        self.assertEqual(failures, [])
+
+        summary["prometheus"]["topostake_fee_settlement_amount_wei"] = [sample(0)]
+        by_name = {item.name: item for item in artifact_checks(summary, "fee_only")}
+        self.assertFalse(by_name["fee-settlement-positive"].passed)
 
     def test_stale_evidence_is_rejected_by_acceptance(self) -> None:
         summary = base_summary()
