@@ -231,6 +231,8 @@ def run_workload(spec: RunSpec, output_root: Path) -> None:
             "--wait-receipts-after-send",
             "--seconds-per-slot",
             str(spec.seconds_per_slot),
+            "--slots-per-epoch",
+            str(spec.slots_per_epoch),
             "--warmup-finality-epochs",
             str(spec.warmup_epochs),
             "--wait-finality",

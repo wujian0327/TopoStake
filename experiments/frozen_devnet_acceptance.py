@@ -285,7 +285,16 @@ def artifact_checks(summary: dict[str, Any], mode: str) -> list[Check]:
         ]
     )
 
-    stale = [record for record in records if int(record.get("epoch", -1)) != int(record.get("slot", 0)) // slots_per_epoch]
+    stale = [
+        record
+        for record in records
+        if int(record.get("epoch", -1)) < int(record.get("slot", 0)) // slots_per_epoch
+    ]
+    future = [
+        record
+        for record in records
+        if int(record.get("epoch", -1)) > int(record.get("slot", 0)) // slots_per_epoch
+    ]
     oversized = [record for record in records if int(record.get("path_len", len(record.get("path", [])))) > max_path]
     missing_cost = [record for record in records if "irrecoverable_cost_wei" not in record]
     positive_cost_records = [record for record in records if int(record.get("irrecoverable_cost_wei", 0)) > 0]
@@ -297,7 +306,17 @@ def artifact_checks(summary: dict[str, Any], mode: str) -> list[Check]:
     checks.extend(
         [
             check("evidence-present", bool(records), f"records={len(records)}"),
-            check("evidence-epoch-current", not stale, f"stale={len(stale)}"),
+            check("evidence-epoch-not-future", not future, f"future={len(future)}"),
+            check(
+                "stale-evidence-no-credit",
+                not stale
+                or metric_sum(summary, "topostake_evidence_epoch_invalid_paths") > 0.0,
+                (
+                    f"stale={len(stale)}, "
+                    "invalid_metric="
+                    f"{metric_sum(summary, 'topostake_evidence_epoch_invalid_paths')}"
+                ),
+            ),
             check("path-length-cap", not oversized, f"oversized={len(oversized)}"),
             check("evidence-work-cap", not excess_work, f"excess_slots={excess_work}"),
             check("irrecoverable-cost-carried", not missing_cost, f"missing={len(missing_cost)}"),

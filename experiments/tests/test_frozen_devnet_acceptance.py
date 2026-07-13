@@ -37,6 +37,7 @@ def base_summary() -> dict:
             "topostake_fee_conservation_violation": [sample(0)],
             "topostake_fee_settlement_amount_wei": [sample(1)],
             "topostake_epoch_score_scaled": [sample(0)],
+            "topostake_evidence_epoch_invalid_paths": [sample(0)],
         },
     }
 
@@ -121,7 +122,7 @@ class FrozenDevnetAcceptanceTests(unittest.TestCase):
         by_name = {item.name: item for item in artifact_checks(summary, "fee_only")}
         self.assertFalse(by_name["fee-settlement-positive"].passed)
 
-    def test_stale_evidence_is_rejected_by_acceptance(self) -> None:
+    def test_stale_evidence_is_allowed_only_when_excluded_from_credit(self) -> None:
         summary = base_summary()
         summary["blocks"]["records"] = [
             {
@@ -133,8 +134,29 @@ class FrozenDevnetAcceptanceTests(unittest.TestCase):
             }
         ]
         summary["prometheus"]["topostake_evidence_epoch_valid_paths"] = [sample(1)]
+        summary["prometheus"]["topostake_evidence_epoch_invalid_paths"] = [sample(1)]
         by_name = {item.name: item for item in artifact_checks(summary, "pathobs")}
-        self.assertFalse(by_name["evidence-epoch-current"].passed)
+        self.assertTrue(by_name["evidence-epoch-not-future"].passed)
+        self.assertTrue(by_name["stale-evidence-no-credit"].passed)
+
+        summary["prometheus"]["topostake_evidence_epoch_invalid_paths"] = [sample(0)]
+        by_name = {item.name: item for item in artifact_checks(summary, "pathobs")}
+        self.assertFalse(by_name["stale-evidence-no-credit"].passed)
+
+    def test_future_epoch_evidence_is_rejected_by_acceptance(self) -> None:
+        summary = base_summary()
+        summary["blocks"]["records"] = [
+            {
+                "slot": 32,
+                "epoch": 5,
+                "path_len": 2,
+                "path": [0, 1],
+                "irrecoverable_cost_wei": 1,
+            }
+        ]
+        summary["prometheus"]["topostake_evidence_epoch_valid_paths"] = [sample(1)]
+        by_name = {item.name: item for item in artifact_checks(summary, "pathobs")}
+        self.assertFalse(by_name["evidence-epoch-not-future"].passed)
 
     def test_live_block_cost_is_copied_into_artifact(self) -> None:
         summary = base_summary()

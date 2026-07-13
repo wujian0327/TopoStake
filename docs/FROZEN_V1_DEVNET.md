@@ -77,14 +77,18 @@ reorganization observations cannot change that epoch's weights.
 
 Path length is checked before signature verification. The aggregate verifier
 also rejects evidence whose total path work exceeds `evidence_work_limit`.
-Stale records whose tagged epoch differs from the containing block epoch are
-recorded as invalid evidence and earn neither score nor relay credit.
+Records from a past tagged epoch may remain attached when a transaction crosses
+an epoch boundary. Their signatures are verified against the tagged epoch, but
+they are recorded as stale evidence and earn neither score nor relay credit.
+Fresh records in the same aggregate remain eligible; records tagged with a
+future epoch invalidate the aggregate.
 
 ## Automated acceptance
 
 `experiments/frozen_devnet_acceptance.py` validates the shared fixed-point
 profile and golden vectors without a running network. Given a devnet
-`summary.json`, it also checks finality progress, evidence epoch freshness,
+`summary.json`, it also checks finality progress, rejects future-epoch evidence,
+checks that observed stale evidence is excluded from credit,
 path and block work limits, positive irrecoverable cost carriage, score
 activation delay, within-epoch proposer-weight stability, and the proposer
 weight cap.

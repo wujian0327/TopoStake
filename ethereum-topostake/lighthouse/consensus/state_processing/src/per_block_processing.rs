@@ -262,7 +262,7 @@ fn record_topostake_tx_gossip_metadata_for_block<E: EthSpec, Payload: AbstractEx
     }
     if inline_records
         .iter()
-        .any(|record| record.epoch != epoch.as_u64())
+        .any(|record| record.epoch > epoch.as_u64())
     {
         return record_topostake_invalid_tx_gossip_metadata_evidence(
             epoch,
@@ -286,19 +286,29 @@ fn record_topostake_tx_gossip_metadata_for_block<E: EthSpec, Payload: AbstractEx
         );
     }
 
+    let stale_count = inline_records
+        .iter()
+        .filter(|record| record.epoch < epoch.as_u64())
+        .count();
     let inline_paths = inline_records
         .iter()
+        .filter(|record| record.epoch == epoch.as_u64())
         .filter_map(topostake_path_evidence_from_inline_record)
         .collect::<Vec<_>>();
+    let mut outcomes = record_topostake_invalid_tx_gossip_metadata_evidence(
+        epoch,
+        stale_count,
+        spec,
+    );
     if !inline_paths.is_empty() {
-        return record_topostake_tx_gossip_metadata_evidence(
+        outcomes.extend(record_topostake_tx_gossip_metadata_evidence(
             epoch,
             proposer_index,
             inline_paths,
             spec,
-        );
+        ));
     }
-    vec![]
+    outcomes
 }
 
 fn topostake_path_evidence_from_inline_record<E: EthSpec>(
