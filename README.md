@@ -90,6 +90,7 @@ Use the cross-platform Python runner on Windows, Linux, or macOS:
 - `python scripts/task.py frozen-security-pilot`: frozen-v1 simulator security gate
 - `python scripts/task.py frozen-padding-check`: exhaustive fixed-path non-amplification check
 - `python scripts/task.py frozen-security-main --dry-run`: inspect the formal 20-seed security matrix
+- `python scripts/task.py frozen-security-figures`: render frozen-v1 security figures and their manifest
 - `python scripts/task.py frozen-devnet-check`: frozen-v1 profile and devnet-artifact acceptance gate
 - `python scripts/task.py frozen-devnet-pilot --dry-run`: inspect the formal five-variant pilot matrix
 - `python scripts/task.py experiments-main`: full paper experiment matrix

@@ -107,6 +107,24 @@ identities, exhaustively enumerates all other coalition relay positions up to
 python scripts/task.py frozen-padding-check
 ```
 
+## Frozen-v1 paper figures
+
+After `frozen-security-report` has refreshed the processed run and paired CSVs,
+generate all security figures with:
+
+```bash
+python scripts/task.py frozen-security-figures
+```
+
+The command writes PDF and PNG versions plus
+`figures/frozen_v1_security/figure_manifest.json`. The plotting code accepts a
+partial matrix while long runs are in progress, but labels figures with fewer
+than 20 seeds as preliminary. Re-run the same command after all seeds complete;
+no plotting-code or input-path change is required. Relay-participation figures
+use focal-relayer metrics, while network-wide lazy-relay latency is reported in
+a separate stress figure. End-to-end padding stress is also kept distinct from
+the fixed-path non-amplification check.
+
 The score-floor sweep crosses `kappa = {0.1, 1, 10}` with low-to-normal offered
 loads. This is intentional: at high score mass, changing `kappa` has little
 effect and does not test the startup/idle small-denominator case.

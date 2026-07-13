@@ -12,6 +12,7 @@ python scripts/task.py frozen-smoke
 python scripts/task.py frozen-padding-check
 python scripts/task.py frozen-security-pilot
 python scripts/task.py frozen-security-main --dry-run
+python scripts/task.py frozen-security-figures
 python scripts/task.py frozen-devnet-check
 python scripts/task.py frozen-devnet-pilot --dry-run
 python scripts/task.py tdsc-fast
