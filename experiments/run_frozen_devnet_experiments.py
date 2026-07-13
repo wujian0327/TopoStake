@@ -154,8 +154,17 @@ def generate_args(spec: RunSpec, public_registry: Path, private_registry: Path, 
     )
 
 
+def monitor_log_tail(path: Path, limit: int = 4000) -> str:
+    if not path.exists():
+        return "monitor log missing"
+    text = path.read_text(errors="replace")
+    return text[-limit:]
+
+
 def start_monitor(spec: RunSpec, output: Path) -> tuple[subprocess.Popen[str], Any]:
     log_path = output.with_suffix(".log")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text("")
     log_handle = log_path.open("w")
     duration = spec.finality_timeout + (
         spec.warmup_epochs + spec.measurement_epochs + 4
@@ -179,7 +188,30 @@ def start_monitor(spec: RunSpec, output: Path) -> tuple[subprocess.Popen[str], A
         stdout=log_handle,
         stderr=subprocess.STDOUT,
     )
-    return process, log_handle
+    deadline = time.monotonic() + 30.0
+    while time.monotonic() < deadline:
+        returncode = process.poll()
+        if returncode is not None:
+            log_handle.close()
+            raise RuntimeError(
+                f"resource monitor failed during startup (exit={returncode}): "
+                + monitor_log_tail(log_path)
+            )
+        if output.exists() and output.stat().st_size > 0:
+            return process, log_handle
+        time.sleep(0.25)
+
+    process.terminate()
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=5)
+    log_handle.close()
+    raise RuntimeError(
+        "resource monitor did not produce its first sample within 30 seconds: "
+        + monitor_log_tail(log_path)
+    )
 
 
 def stop_monitor(process: subprocess.Popen[str] | None, log_handle: Any | None) -> None:
@@ -617,6 +649,12 @@ def execute_run(
         )
         monitor, monitor_log = start_monitor(spec, run_dir / "resources.jsonl")
         run_workload(spec, args.output_root)
+        monitor_returncode = monitor.poll()
+        if monitor_returncode not in (None, 0):
+            raise RuntimeError(
+                f"resource monitor exited during workload (exit={monitor_returncode}): "
+                + monitor_log_tail(run_dir / "resources.log")
+            )
         stop_monitor(monitor, monitor_log)
         monitor = monitor_log = None
         summary_path = run_dir / "summary.json"

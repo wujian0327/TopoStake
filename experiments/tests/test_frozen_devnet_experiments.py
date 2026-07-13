@@ -6,6 +6,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -20,9 +21,10 @@ from run_frozen_devnet_experiments import (  # noqa: E402
     summarize_resources,
 )
 from monitor_devnet_bottleneck import (  # noqa: E402
-    metadata_matches_target,
+    container_label_values,
+    discover_client_containers,
+    parse_client_service_ids,
     parse_client_services,
-    service_in_metadata,
 )
 
 
@@ -69,23 +71,73 @@ UUID: 72e82fd99b0f
             parse_client_services(inspect_text),
             ["cl-1-lighthouse-geth", "el-1-geth-lighthouse"],
         )
+        self.assertEqual(
+            parse_client_service_ids(inspect_text),
+            {
+                "cl-1-lighthouse-geth": "bbbbbbbbbbbb",
+                "el-1-geth-lighthouse": "aaaaaaaaaaaa",
+            },
+        )
 
-    def test_service_name_is_resolved_from_docker_labels(self) -> None:
-        row = {
-            "ID": "abc",
-            "Names": "opaque-container-name",
-            "Labels": "com.kurtosistech.user-service-name=el-1-geth-lighthouse",
+    def test_only_exact_docker_label_values_are_used(self) -> None:
+        metadata = {
+            "Config": {
+                "Labels": {
+                    "service-id": "aaaaaaaaaaaa",
+                    "unrelated-config": "cl-1-lighthouse-geth,cl-2-lighthouse-geth",
+                }
+            }
         }
         self.assertEqual(
-            service_in_metadata(row, ["el-1-geth-lighthouse"]),
-            "el-1-geth-lighthouse",
+            container_label_values(metadata),
+            {
+                "aaaaaaaaaaaa",
+                "cl-1-lighthouse-geth,cl-2-lighthouse-geth",
+            },
         )
-        self.assertTrue(
-            metadata_matches_target(
-                {"Labels": "com.kurtosistech.enclave-id=72e82fd99b0f"},
+
+    def test_container_discovery_uses_exact_service_uuid_labels(self) -> None:
+        docker_ps = "\n".join(
+            [
+                json.dumps({"ID": "container-el"}),
+                json.dumps({"ID": "container-cl"}),
+            ]
+        )
+        docker_inspect = json.dumps(
+            [
+                {
+                    "Id": "container-el",
+                    "Config": {
+                        "Labels": {
+                            "service-id": "aaaaaaaaaaaa",
+                            "config": "cl-1-lighthouse-geth,cl-2-lighthouse-geth",
+                        }
+                    },
+                },
+                {
+                    "Id": "container-cl",
+                    "Config": {"Labels": {"service-id": "bbbbbbbbbbbb"}},
+                },
+            ]
+        )
+        with patch(
+            "monitor_devnet_bottleneck.subprocess.check_output",
+            side_effect=[docker_ps, docker_inspect],
+        ):
+            containers = discover_client_containers(
+                {
+                    "el-1-geth-lighthouse": "aaaaaaaaaaaa",
+                    "cl-1-lighthouse-geth": "bbbbbbbbbbbb",
+                },
                 "ts-fv1-test",
                 "72e82fd99b0f",
             )
+        self.assertEqual(
+            containers,
+            {
+                "container-el": "el-1-geth-lighthouse",
+                "container-cl": "cl-1-lighthouse-geth",
+            },
         )
 
     def test_pilot_matrix_has_all_five_variants_and_two_loads(self) -> None:

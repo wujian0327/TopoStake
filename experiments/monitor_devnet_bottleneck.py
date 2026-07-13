@@ -62,14 +62,21 @@ def parse_enclave_uuid(inspect_text: str) -> str:
     return match.group(1).lower() if match else ""
 
 
-def parse_client_services(inspect_text: str) -> list[str]:
-    services = []
-    service_re = re.compile(r"^\s*[0-9a-f]{12}\s+(\S+)\s+", re.IGNORECASE)
+def parse_client_service_ids(inspect_text: str) -> dict[str, str]:
+    services = {}
+    service_re = re.compile(
+        r"^\s*([0-9a-f]{12})\s+(\S+)\s+",
+        re.IGNORECASE,
+    )
     for line in inspect_text.splitlines():
         match = service_re.match(line)
-        if match and CLIENT_SERVICE_RE.fullmatch(match.group(1)):
-            services.append(match.group(1))
-    return sorted(set(services))
+        if match and CLIENT_SERVICE_RE.fullmatch(match.group(2)):
+            services[match.group(2)] = match.group(1).lower()
+    return dict(sorted(services.items()))
+
+
+def parse_client_services(inspect_text: str) -> list[str]:
+    return list(parse_client_service_ids(inspect_text))
 
 
 def client_kind(service_name: str) -> str:
@@ -80,19 +87,15 @@ def client_kind(service_name: str) -> str:
     return "unknown"
 
 
-def service_in_metadata(metadata: Any, service_names: list[str]) -> str | None:
-    encoded = json.dumps(metadata, sort_keys=True).lower()
-    return next((name for name in service_names if name.lower() in encoded), None)
-
-
-def metadata_matches_target(metadata: Any, enclave: str, enclave_uuid: str) -> bool:
-    encoded = json.dumps(metadata, sort_keys=True).lower()
-    identities = [value.lower() for value in (enclave, enclave_uuid) if value]
-    return any(identity in encoded for identity in identities)
+def container_label_values(metadata: dict[str, Any]) -> set[str]:
+    labels = metadata.get("Config", {}).get("Labels", {})
+    if not isinstance(labels, dict):
+        return set()
+    return {str(value).strip().lower() for value in labels.values()}
 
 
 def discover_client_containers(
-    service_names: list[str],
+    service_ids: dict[str, str],
     enclave: str,
     enclave_uuid: str,
 ) -> dict[str, str]:
@@ -102,51 +105,53 @@ def discover_client_containers(
     )
     rows = [json.loads(line) for line in output.splitlines() if line.strip()]
     ids = [str(row.get("ID", "")) for row in rows if row.get("ID")]
-    inspected_by_id = {}
+    inspected = []
     if ids:
         inspected = json.loads(
             subprocess.check_output(["docker", "inspect", *ids], text=True)
         )
-        inspected_by_id = {
-            str(row.get("Id", "")): row for row in inspected if row.get("Id")
-        }
-
-    candidates: dict[str, list[tuple[str, dict[str, Any]]]] = {
-        service_name: [] for service_name in service_names
-    }
-    for row in rows:
-        container_id = str(row.get("ID", ""))
-        inspected = next(
-            (
-                value
-                for key, value in inspected_by_id.items()
-                if key.startswith(container_id) or container_id.startswith(key)
-            ),
-            {},
-        )
-        metadata = {"docker_ps": row, "docker_inspect": inspected}
-        service_name = service_in_metadata(metadata, service_names)
-        if container_id and service_name:
-            candidates[service_name].append((container_id, metadata))
 
     containers: dict[str, str] = {}
     errors = []
-    for service_name, service_candidates in candidates.items():
-        target_candidates = [
-            item
-            for item in service_candidates
-            if metadata_matches_target(item[1], enclave, enclave_uuid)
-        ]
-        selected = target_candidates or service_candidates
+    target_values = {
+        value.lower() for value in (enclave, enclave_uuid) if value
+    }
+    for service_name, service_id in service_ids.items():
+        id_candidates = []
+        name_candidates = []
+        for metadata in inspected:
+            container_id = str(metadata.get("Id", ""))
+            labels = container_label_values(metadata)
+            if not container_id:
+                continue
+            if service_id in labels:
+                id_candidates.append(container_id)
+            if service_name.lower() in labels and labels.intersection(target_values):
+                name_candidates.append(container_id)
+        selected = id_candidates or name_candidates
         if len(selected) != 1:
-            errors.append(f"{service_name}={len(selected)} candidates")
+            errors.append(
+                f"{service_name}[{service_id}]="
+                f"{len(id_candidates)} uuid candidates/"
+                f"{len(name_candidates)} name+enclave candidates"
+            )
             continue
-        containers[selected[0][0]] = service_name
+        containers[selected[0]] = service_name
 
     if errors:
+        label_keys = sorted(
+            {
+                str(key)
+                for metadata in inspected
+                for key in (
+                    metadata.get("Config", {}).get("Labels", {}) or {}
+                )
+            }
+        )
         raise RuntimeError(
             "failed to map Kurtosis client services to Docker containers: "
             + ",".join(errors)
+            + f"; available_label_keys={label_keys}"
         )
     return containers
 
@@ -269,14 +274,17 @@ def main() -> int:
     parser.add_argument("--duration", type=float, default=420.0)
     args = parser.parse_args()
 
+    output = Path(args.output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text("")
     inspect_text = kurtosis_inspect(args.enclave)
     ports = parse_ports(inspect_text)
     enclave_uuid = parse_enclave_uuid(inspect_text)
-    service_names = parse_client_services(inspect_text)
-    if not service_names:
-        raise RuntimeError("failed to discover EL/CL service names from Kurtosis inspect")
+    service_ids = parse_client_service_ids(inspect_text)
+    if not service_ids:
+        raise RuntimeError("failed to discover EL/CL service UUIDs from Kurtosis inspect")
     containers = discover_client_containers(
-        service_names,
+        service_ids,
         args.enclave,
         enclave_uuid,
     )
@@ -285,14 +293,13 @@ def main() -> int:
             {
                 "enclave": args.enclave,
                 "enclave_uuid": enclave_uuid,
+                "client_service_ids": service_ids,
                 "client_containers": containers,
             },
             sort_keys=True,
         ),
         flush=True,
     )
-    output = Path(args.output)
-    output.parent.mkdir(parents=True, exist_ok=True)
     deadline = time.monotonic() + args.duration
     with output.open("w") as handle:
         while time.monotonic() < deadline:
