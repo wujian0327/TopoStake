@@ -69,7 +69,7 @@ score-floor sensitivity, and relay participation. Run the small gate first:
 python scripts/task.py frozen-security-pilot
 ```
 
-After it passes, launch the 20-seed matrix (1120 resumable runs):
+After it passes, launch the 20-seed matrix (1300 resumable runs):
 
 ```bash
 python scripts/task.py frozen-security-main
@@ -95,3 +95,18 @@ transaction crosses an epoch boundary. The transaction remains valid, while
 the shared eligibility predicate excludes that path from relay reward and
 score. The report therefore checks `valid + ineligible == included_tx` and
 retains the ineligible count as a descriptive measurement.
+
+The network-level padding sweep is named `path_padding_end_to_end`: it allows
+propagation timing and first-path selection to change and is therefore a stress
+test, not a direct replay of Theorem 4. `frozen-padding-check` separately holds
+the path fixed, replaces one coalition-controlled relay with consecutive
+identities, exhaustively enumerates all other coalition relay positions up to
+`M_max=16`, and checks that coalition credit never increases:
+
+```bash
+python scripts/task.py frozen-padding-check
+```
+
+The score-floor sweep crosses `kappa = {0.1, 1, 10}` with low-to-normal offered
+loads. This is intentional: at high score mass, changing `kappa` has little
+effect and does not test the startup/idle small-denominator case.

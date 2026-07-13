@@ -21,8 +21,11 @@ from run_experiments import DIMENSION_KEYS, PROCESSED_ROOT, ROOT, expand_runs, l
 
 
 BOUND_TOLERANCE = 2e-6  # CSV values are emitted with six decimal places.
+FIXED_PADDING_REPORT = (
+    PROCESSED_ROOT / "frozen_v1_padding_fixed_path_acceptance.json"
+)
 REFERENCE_FIELDS = {
-    "padding_non_amplification": ("padding_identities", 0),
+    "path_padding_end_to_end": ("padding_identities", 0),
     "flooding_cost_to_influence": ("attack_tx_rate_multiplier", 0),
     "relay_participation": ("relay_profile", "lazy"),
     "score_floor_sensitivity": ("topostake_score_floor_kappa", 1.0),
@@ -37,6 +40,7 @@ PAIR_METRICS = [
     "adversary_net_income",
     "adversary_credit_share",
     "adversary_relay_reward_share",
+    "credit_ineligible_path_rate",
     "relay_reward_per_stake",
     "p95_inclusion_latency_s_mean",
 ]
@@ -167,8 +171,19 @@ def aggregate_run(run: dict[str, Any]) -> dict[str, Any]:
     out["max_score_bound_excess"] = max(score_excess, default=0.0)
     out["max_cap_bound_excess"] = max(cap_excess, default=0.0)
     out["max_bound_order_excess"] = max(bound_order_excess, default=0.0)
+    out["eligible_path_count"] = sum(
+        int(to_float(row.get("valid_path_count"))) for row in epochs
+    )
     out["credit_ineligible_path_count"] = sum(
         int(to_float(row.get("invalid_path_count"))) for row in epochs
+    )
+    out["included_tx_total"] = sum(
+        int(to_float(row.get("included_tx"))) for row in epochs
+    )
+    out["credit_ineligible_path_rate"] = (
+        out["credit_ineligible_path_count"] / out["included_tx_total"]
+        if out["included_tx_total"] > 0
+        else 0.0
     )
     out["evidence_accounting_mismatch"] = sum(
         abs(
@@ -208,6 +223,7 @@ def aggregate_run(run: dict[str, Any]) -> dict[str, Any]:
             "adversary_relay_reward_total",
             "adversary_credit_share",
             "adversary_relay_reward_share",
+            "credit_ineligible_path_rate",
             "relay_reward_per_stake",
         ]
     )
@@ -231,6 +247,7 @@ def group_runs(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         "max_cap_bound_excess",
         "max_bound_order_excess",
         "credit_ineligible_path_count",
+        "credit_ineligible_path_rate",
         "evidence_accounting_mismatch",
     ]
     for key, group in sorted(groups.items()):
@@ -286,6 +303,19 @@ def check(name: str, passed: bool, detail: str) -> dict[str, Any]:
     return {"name": name, "passed": bool(passed), "detail": detail}
 
 
+def fixed_padding_check(path: Path = FIXED_PADDING_REPORT) -> dict[str, Any]:
+    report = read_json(path)
+    return check(
+        "fixed-path-padding-non-amplification",
+        bool(report.get("passed")) and int(report.get("violations", -1)) == 0,
+        "cases={}, coalition assignments={}, maximum ratio={}".format(
+            report.get("cases", 0),
+            report.get("coalition_assignments", 0),
+            report.get("maximum_ratio", "missing"),
+        ),
+    )
+
+
 def validation(rows: list[dict[str, Any]], expected_seeds: int) -> list[dict[str, Any]]:
     complete = [row for row in rows if row["complete"]]
     scenario_counts: dict[tuple[Any, ...], int] = defaultdict(int)
@@ -318,8 +348,14 @@ def validation(rows: list[dict[str, Any]], expected_seeds: int) -> list[dict[str
         check(
             "evidence-eligibility-accounting",
             all(row["evidence_accounting_mismatch"] == 0 for row in complete),
-            "credit-ineligible={} (excluded from score/reward), accounting mismatches={}".format(
+            "credit-ineligible={} ({:.2%}), accounting mismatches={}".format(
                 sum(int(row["credit_ineligible_path_count"]) for row in complete),
+                (
+                    sum(int(row["credit_ineligible_path_count"]) for row in complete)
+                    / sum(int(row["included_tx_total"]) for row in complete)
+                    if sum(int(row["included_tx_total"]) for row in complete) > 0
+                    else 0.0
+                ),
                 sum(int(row["evidence_accounting_mismatch"]) for row in complete),
             ),
         ),
@@ -357,6 +393,7 @@ def markdown_report(
             f"- run-level records: `{suite}_runs.csv`",
             f"- scenario summaries: `{suite}_groups.csv` ({len(groups)} metric rows)",
             f"- paired differences: `{suite}_paired.csv` ({len(pairs)} comparisons)",
+            "- fixed-path padding cases: `frozen_v1_padding_fixed_path.csv`",
             "",
             "A paired confidence interval is descriptive evidence, not a replacement for the deterministic protocol bound.",
         ]
@@ -382,6 +419,7 @@ def main() -> int:
     groups = group_runs(rows)
     pairs = paired_differences(rows)
     checks = validation(rows, len(spec.get("seeds", [0])))
+    checks.append(fixed_padding_check())
     suite = str(spec["suite"])
     prefix = PROCESSED_ROOT / suite
 

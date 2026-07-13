@@ -98,6 +98,7 @@ def task_frozen_security(args: argparse.Namespace, config: str) -> None:
     task_run_experiments(config, force=args.force, dry_run=args.dry_run)
     if args.dry_run:
         return
+    task_frozen_padding_check(args)
     cmd = [PYTHON, "experiments/frozen_security_report.py", "--config", config]
     if args.allow_incomplete:
         cmd.append("--allow-incomplete")
@@ -114,10 +115,15 @@ def task_frozen_security_main(args: argparse.Namespace) -> None:
 
 def task_frozen_security_report(args: argparse.Namespace) -> None:
     config = args.config or "experiments/configs/frozen_v1_security_main.yaml"
+    task_frozen_padding_check(args)
     cmd = [PYTHON, "experiments/frozen_security_report.py", "--config", config]
     if args.allow_incomplete:
         cmd.append("--allow-incomplete")
     run(cmd)
+
+
+def task_frozen_padding_check(_args: argparse.Namespace) -> None:
+    run(["cargo", "run", "--release", "--bin", "frozen_padding_check"])
 
 
 def task_frozen_devnet_check(args: argparse.Namespace) -> None:
@@ -188,6 +194,7 @@ TASKS: Dict[str, Callable[[argparse.Namespace], None]] = {
     "frozen-security-pilot": task_frozen_security_pilot,
     "frozen-security-main": task_frozen_security_main,
     "frozen-security-report": task_frozen_security_report,
+    "frozen-padding-check": task_frozen_padding_check,
     "frozen-devnet-check": task_frozen_devnet_check,
     "frozen-devnet-smoke": task_frozen_devnet_smoke,
     "frozen-devnet-pilot": task_frozen_devnet_pilot,

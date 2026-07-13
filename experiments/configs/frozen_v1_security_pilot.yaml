@@ -39,7 +39,7 @@
   },
   "experiments": [
     {
-      "name": "padding_non_amplification",
+      "name": "path_padding_end_to_end",
       "protocols": ["topostake"],
       "padding_identities": [0, 8],
       "adversary_stake_fraction": [0.1],
@@ -64,6 +64,7 @@
     {
       "name": "score_floor_sensitivity",
       "protocols": ["topostake"],
+      "tx_rate": [1, 30],
       "topostake_score_floor_kappa": [0.1, 1.0, 10.0],
       "adversary_stake_fraction": [0.1],
       "attack_mode": "max-score"

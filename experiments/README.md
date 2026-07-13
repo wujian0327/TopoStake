@@ -9,6 +9,7 @@ Python standard library; if PyYAML is installed, normal YAML is also accepted.
 ```bash
 python scripts/task.py experiments-smoke
 python scripts/task.py frozen-smoke
+python scripts/task.py frozen-padding-check
 python scripts/task.py frozen-security-pilot
 python scripts/task.py frozen-security-main --dry-run
 python scripts/task.py frozen-devnet-check
@@ -36,13 +37,15 @@ python analysis/plot_performance.py
 the frozen TDSC formulas. It is a correctness check, not a paper experiment.
 Its protocol defaults come from `experiments/configs/protocol_frozen_v1.yaml`.
 
-`frozen_v1_security_pilot.yaml` is a 32-run correctness and reporting gate.
+`frozen_v1_security_pilot.yaml` is a 38-run correctness and reporting gate.
 `frozen_v1_security_main.yaml` is the formal 20-seed Rust-simulator matrix. It
-contains 1120 resumable runs covering path-padding non-amplification, the two
-proposer-influence bounds, flooding economics, score-floor sensitivity, and
-relay participation. The security report writes run-level, grouped, paired-CI,
-and acceptance artifacts under `results/processed/`. Run the pilot before the
-main matrix; use `--dry-run` to inspect exact commands.
+contains 1300 resumable runs covering end-to-end path-padding stress, the two
+proposer-influence bounds, flooding economics, low-load score-floor
+sensitivity, and relay participation. A separate deterministic fixed-path
+check exhaustively validates padding non-amplification against the Rust reward
+formulas. The security report writes run-level, grouped, paired-CI, and
+acceptance artifacts under `results/processed/`. Run the pilot before the main
+matrix; use `--dry-run` to inspect exact commands.
 
 `frozen_v1_devnet_pilot.yaml` and `frozen_v1_devnet_main.yaml` drive the formal
 Kurtosis evaluation. They compare five variants with the same frozen profile:

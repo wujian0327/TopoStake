@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -11,6 +13,8 @@ sys.path.insert(0, str(ROOT / "experiments"))
 from frozen_security_report import (  # noqa: E402
     PAIR_METRICS,
     SCENARIO_FIELDS,
+    aggregate_run,
+    fixed_padding_check,
     paired_differences,
     validation,
 )
@@ -23,7 +27,7 @@ def synthetic_run(seed: int, padding: int, contribution: float) -> dict[str, obj
         {
             "suite": "test",
             "protocol_version": "frozen-v1",
-            "experiment": "padding_non_amplification",
+            "experiment": "path_padding_end_to_end",
             "protocol_label": "topostake",
             "protocol": "topostake",
             "padding_identities": padding,
@@ -34,6 +38,8 @@ def synthetic_run(seed: int, padding: int, contribution: float) -> dict[str, obj
             "max_cap_bound_excess": 0.0,
             "max_bound_order_excess": 0.0,
             "credit_ineligible_path_count": 0,
+            "credit_ineligible_path_rate": 0.0,
+            "included_tx_total": 1,
             "evidence_accounting_mismatch": 0,
             "finite_metrics": True,
             "adversary_raw_contribution_total": contribution,
@@ -47,8 +53,8 @@ def synthetic_run(seed: int, padding: int, contribution: float) -> dict[str, obj
 class FrozenSecurityReportTests(unittest.TestCase):
     def test_security_configs_expand_to_unique_runs(self) -> None:
         expected = {
-            "frozen_v1_security_pilot.yaml": 32,
-            "frozen_v1_security_main.yaml": 1120,
+            "frozen_v1_security_pilot.yaml": 38,
+            "frozen_v1_security_main.yaml": 1300,
         }
         for filename, count in expected.items():
             spec = load_yaml(ROOT / "experiments" / "configs" / filename)
@@ -84,6 +90,51 @@ class FrozenSecurityReportTests(unittest.TestCase):
         rows[1]["max_cap_bound_excess"] = 0.01
         checks = {item["name"]: item for item in validation(rows, expected_seeds=2)}
         self.assertFalse(checks["score-independent-proposer-cap"]["passed"])
+
+    def test_fixed_padding_report_is_required_and_validated(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "padding.json"
+            self.assertFalse(fixed_padding_check(path)["passed"])
+            path.write_text(
+                json.dumps(
+                    {
+                        "passed": True,
+                        "violations": 0,
+                        "cases": 10,
+                        "coalition_assignments": 20,
+                        "maximum_ratio": 0.99,
+                    }
+                )
+            )
+            self.assertTrue(fixed_padding_check(path)["passed"])
+
+    def test_credit_ineligible_rate_uses_included_transactions(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            (output / "runner_status.json").write_text(json.dumps({"status": "ok"}))
+            (output / "run_summary.json").write_text(json.dumps({"completed_epochs": 1}))
+            (output / "epoch_metrics.csv").write_text(
+                "epoch,included_tx,valid_path_count,invalid_path_count,"
+                "adversary_proposer_weight_share,score_dependent_proposer_weight_bound,"
+                "theoretical_proposer_weight_bound,bound_violation\n"
+                "0,10,7,3,0.1,0.2,0.3,false\n"
+            )
+            (output / "node_epoch_metrics.csv").write_text(
+                "epoch,adversarial,raw_contribution,relay_reward,economic_stake\n"
+                "0,false,1.0,0.1,1.0\n"
+            )
+            run = {
+                "output_dir": str(output),
+                "run_id": "rate-test",
+                "seed_index": 0,
+                "seed_value": 0,
+                "max_epochs": 1,
+                "warmup_epochs": 0,
+            }
+            result = aggregate_run(run)
+            self.assertTrue(result["complete"])
+            self.assertEqual(result["evidence_accounting_mismatch"], 0)
+            self.assertAlmostEqual(result["credit_ineligible_path_rate"], 0.3)
 
 
 if __name__ == "__main__":
