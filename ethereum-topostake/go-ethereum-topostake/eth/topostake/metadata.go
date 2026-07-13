@@ -31,9 +31,9 @@ import (
 )
 
 const (
-	Domain          = "TOPOSTAKE_TX_PATH_V1"
-	DefaultChainID  = uint64(7_032_030)
-	DefaultMaxBytes = 64 * 1024
+	Domain                = "TOPOSTAKE_TX_PATH_V1"
+	DefaultChainID        = uint64(7_032_030)
+	DefaultMaxBytes       = 64 * 1024
 	DefaultSecondsPerSlot = uint64(12)
 	DefaultSlotsPerEpoch  = uint64(32)
 
