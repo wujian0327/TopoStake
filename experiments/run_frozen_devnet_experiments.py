@@ -27,6 +27,7 @@ from run_frozen_devnet_smoke import (
     command_env,
     enrich_irrecoverable_costs,
     ensure_registry,
+    query_geth_statuses,
     remove_enclave,
 )
 
@@ -152,6 +153,72 @@ def generate_args(spec: RunSpec, public_registry: Path, private_registry: Path, 
             str(output),
         ]
     )
+
+
+def parse_el_rpc_endpoints(inspect_text: str) -> list[str]:
+    current = ""
+    endpoints: dict[str, str] = {}
+    service_re = re.compile(r"^\s*[0-9a-f]{12}\s+(\S+)\s+(.*)$")
+    port_re = re.compile(
+        r"rpc:\s+\d+/(?:tcp|udp)\s+->\s+(?:http://)?127\.0\.0\.1:(\d+)"
+    )
+    for line in inspect_text.splitlines():
+        match = service_re.match(line)
+        if match:
+            current = match.group(1)
+            tail = match.group(2)
+        elif current:
+            tail = line.strip()
+        else:
+            continue
+        port_match = port_re.search(tail)
+        if current.startswith("el-") and port_match:
+            endpoints[current] = f"http://127.0.0.1:{port_match.group(1)}"
+    return [endpoints[name] for name in sorted(endpoints)]
+
+
+def preflight_geth(spec: RunSpec) -> list[dict[str, Any]]:
+    inspected = subprocess.check_output(
+        ["kurtosis", "enclave", "inspect", spec.enclave],
+        cwd=ROOT,
+        env=command_env(),
+        text=True,
+    )
+    endpoints = parse_el_rpc_endpoints(inspected)
+    if len(endpoints) != spec.nodes:
+        raise RuntimeError(
+            f"Geth preflight discovered {len(endpoints)} EL endpoints, expected {spec.nodes}"
+        )
+
+    deadline = time.monotonic() + 30.0
+    last_error = "unknown error"
+    while time.monotonic() < deadline:
+        try:
+            statuses = query_geth_statuses(endpoints)
+            break
+        except Exception as exc:
+            last_error = str(exc)
+            if "-32601" in last_error or "does not exist" in last_error:
+                raise RuntimeError(
+                    "Geth frozen-v1 preflight failed; rebuild topostake/geth:dev: "
+                    + last_error
+                ) from exc
+            time.sleep(1.0)
+    else:
+        raise RuntimeError("Geth frozen-v1 preflight timed out: " + last_error)
+
+    violations = [
+        status
+        for status in statuses
+        if status.get("enabled") is not True
+        or status.get("dynamic_relay_epoch") is not True
+        or int(status.get("seconds_per_slot", 0)) != spec.seconds_per_slot
+        or int(status.get("slots_per_epoch", 0)) != spec.slots_per_epoch
+    ]
+    if violations:
+        raise RuntimeError(f"Geth frozen-v1 preflight configuration mismatch: {violations}")
+    print(f"Geth frozen-v1 preflight passed for {len(statuses)} EL nodes", flush=True)
+    return statuses
 
 
 def monitor_log_tail(path: Path, limit: int = 4000) -> str:
@@ -649,6 +716,8 @@ def execute_run(
                 str(args_file),
             ]
         )
+        if spec.variant != "baseline":
+            preflight_geth(spec)
         monitor, monitor_log = start_monitor(spec, run_dir / "resources.jsonl")
         run_workload(spec, args.output_root)
         monitor_returncode = monitor.poll()

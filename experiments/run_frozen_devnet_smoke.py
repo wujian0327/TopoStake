@@ -185,10 +185,9 @@ def enrich_irrecoverable_costs(summary_path: Path) -> None:
             writer.writerows(rows)
 
 
-def collect_geth_statuses(summary_path: Path) -> None:
-    summary = json.loads(summary_path.read_text())
+def query_geth_statuses(endpoints: list[str]) -> list[dict]:
     statuses = []
-    for endpoint in summary.get("endpoints", {}).get("el_rpcs", []):
+    for endpoint in endpoints:
         request = urllib.request.Request(
             endpoint,
             data=json.dumps(
@@ -201,6 +200,12 @@ def collect_geth_statuses(summary_path: Path) -> None:
         if "error" in payload:
             raise RuntimeError(f"topostake_status failed on {endpoint}: {payload['error']}")
         statuses.append({"endpoint": endpoint, **payload["result"]})
+    return statuses
+
+
+def collect_geth_statuses(summary_path: Path) -> None:
+    summary = json.loads(summary_path.read_text())
+    statuses = query_geth_statuses(summary.get("endpoints", {}).get("el_rpcs", []))
     summary["geth_topostake_status"] = statuses
     summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
 

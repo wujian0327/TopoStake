@@ -18,6 +18,7 @@ from run_frozen_devnet_experiments import (  # noqa: E402
     load_config,
     measurement_quality_checks,
     parse_bytes,
+    parse_el_rpc_endpoints,
     specs_from_config,
     summarize_resources,
 )
@@ -61,6 +62,17 @@ def spec(variant: str = "topostake") -> RunSpec:
 
 
 class FrozenDevnetExperimentTests(unittest.TestCase):
+    def test_geth_preflight_endpoints_are_parsed_from_kurtosis_inspect(self) -> None:
+        inspect_text = """
+aaaaaaaaaaaa el-2-geth-lighthouse rpc: 8545/tcp -> 127.0.0.1:22222
+bbbbbbbbbbbb el-1-geth-lighthouse rpc: 8545/tcp -> 127.0.0.1:11111
+cccccccccccc cl-1-lighthouse-geth http: 5052/tcp -> 127.0.0.1:33333
+"""
+        self.assertEqual(
+            parse_el_rpc_endpoints(inspect_text),
+            ["http://127.0.0.1:11111", "http://127.0.0.1:22222"],
+        )
+
     def test_aggregate_row_carries_measurement_sample_counts(self) -> None:
         summary = {
             "formal_experiment": {
