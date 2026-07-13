@@ -125,6 +125,23 @@ use focal-relayer metrics, while network-wide lazy-relay latency is reported in
 a separate stress figure. End-to-end padding stress is also kept distinct from
 the fixed-path non-amplification check.
 
+## Path-evidence microbenchmark
+
+Run the frozen path-evidence benchmark on an otherwise idle machine:
+
+```bash
+python scripts/task.py frozen-evidence-bench
+```
+
+The release-mode benchmark measures path construction, individual verification,
+signature aggregation, cold aggregate verification, and encoding size for
+1/2/4/8/16 hops. It additionally measures a block containing the maximum work
+budget, verifies that one extra maximum-length record is rejected before
+cryptographic processing, and checks malformed signature, wrong-epoch, and
+repeated-identity rejection. Outputs are written to
+`results/processed/frozen_v1_evidence_benchmark_*`; the paper figure is
+`figures/frozen_v1_evidence_overhead.pdf`.
+
 The score-floor sweep crosses `kappa = {0.1, 1, 10}` with low-to-normal offered
 loads. This is intentional: at high score mass, changing `kappa` has little
 effect and does not test the startup/idle small-denominator case.

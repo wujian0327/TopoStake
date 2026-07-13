@@ -89,6 +89,7 @@ Use the cross-platform Python runner on Windows, Linux, or macOS:
 - `python scripts/task.py experiments-smoke`: reduced end-to-end pipeline
 - `python scripts/task.py frozen-security-pilot`: frozen-v1 simulator security gate
 - `python scripts/task.py frozen-padding-check`: exhaustive fixed-path non-amplification check
+- `python scripts/task.py frozen-evidence-bench`: benchmark path-evidence time, size, and rejection cost
 - `python scripts/task.py frozen-security-main --dry-run`: inspect the formal 20-seed security matrix
 - `python scripts/task.py frozen-security-figures`: render frozen-v1 security figures and their manifest
 - `python scripts/task.py frozen-devnet-check`: frozen-v1 profile and devnet-artifact acceptance gate

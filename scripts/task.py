@@ -126,6 +126,11 @@ def task_frozen_padding_check(_args: argparse.Namespace) -> None:
     run(["cargo", "run", "--release", "--bin", "frozen_padding_check"])
 
 
+def task_frozen_evidence_bench(_args: argparse.Namespace) -> None:
+    run(["cargo", "run", "--release", "--bin", "frozen_evidence_bench"])
+    run([PYTHON, "analysis/plot_frozen_evidence.py"])
+
+
 def task_frozen_security_figures(_args: argparse.Namespace) -> None:
     run([PYTHON, "analysis/plot_frozen_security.py"])
 
@@ -199,6 +204,7 @@ TASKS: Dict[str, Callable[[argparse.Namespace], None]] = {
     "frozen-security-main": task_frozen_security_main,
     "frozen-security-report": task_frozen_security_report,
     "frozen-security-figures": task_frozen_security_figures,
+    "frozen-evidence-bench": task_frozen_evidence_bench,
     "frozen-padding-check": task_frozen_padding_check,
     "frozen-devnet-check": task_frozen_devnet_check,
     "frozen-devnet-smoke": task_frozen_devnet_smoke,

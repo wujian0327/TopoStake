@@ -10,6 +10,7 @@ Python standard library; if PyYAML is installed, normal YAML is also accepted.
 python scripts/task.py experiments-smoke
 python scripts/task.py frozen-smoke
 python scripts/task.py frozen-padding-check
+python scripts/task.py frozen-evidence-bench
 python scripts/task.py frozen-security-pilot
 python scripts/task.py frozen-security-main --dry-run
 python scripts/task.py frozen-security-figures
@@ -23,6 +24,13 @@ python scripts/task.py figures
 The Python task runner is the recommended cross-platform entry point,
 especially on Windows where `make` is usually not installed. The Makefile keeps
 equivalent shortcuts for environments that already have `make`.
+
+`frozen-evidence-bench` measures path construction, individual BLS
+verification, aggregation, cold aggregate verification, and encoded evidence
+size for 1/2/4/8/16 hops. It also checks malformed-signature rejection and the
+consensus-defined maximum-path/work-limit boundary. Run it on an otherwise idle
+machine in release mode; the task writes raw samples, a summary CSV, an
+acceptance JSON, a PDF/PNG figure, and a generated LaTeX table.
 
 To run the lower-level scripts directly:
 
