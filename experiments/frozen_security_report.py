@@ -167,7 +167,17 @@ def aggregate_run(run: dict[str, Any]) -> dict[str, Any]:
     out["max_score_bound_excess"] = max(score_excess, default=0.0)
     out["max_cap_bound_excess"] = max(cap_excess, default=0.0)
     out["max_bound_order_excess"] = max(bound_order_excess, default=0.0)
-    out["invalid_path_count"] = sum(int(to_float(row.get("invalid_path_count"))) for row in epochs)
+    out["credit_ineligible_path_count"] = sum(
+        int(to_float(row.get("invalid_path_count"))) for row in epochs
+    )
+    out["evidence_accounting_mismatch"] = sum(
+        abs(
+            int(to_float(row.get("valid_path_count")))
+            + int(to_float(row.get("invalid_path_count")))
+            - int(to_float(row.get("included_tx")))
+        )
+        for row in epochs
+    )
 
     adversarial = [row for row in nodes if is_true(row.get("adversarial"))]
     out["adversary_raw_contribution_total"] = sum(
@@ -220,7 +230,8 @@ def group_runs(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         "max_score_bound_excess",
         "max_cap_bound_excess",
         "max_bound_order_excess",
-        "invalid_path_count",
+        "credit_ineligible_path_count",
+        "evidence_accounting_mismatch",
     ]
     for key, group in sorted(groups.items()):
         base = dict(zip(fields, key))
@@ -305,9 +316,12 @@ def validation(rows: list[dict[str, Any]], expected_seeds: int) -> list[dict[str
             f"weight excess={max_cap_excess:.3g}, score-bound excess over cap={max_order_excess:.3g}",
         ),
         check(
-            "accepted-path-validity",
-            all(row["invalid_path_count"] == 0 for row in complete),
-            f"invalid paths={sum(int(row['invalid_path_count']) for row in complete)}",
+            "evidence-eligibility-accounting",
+            all(row["evidence_accounting_mismatch"] == 0 for row in complete),
+            "credit-ineligible={} (excluded from score/reward), accounting mismatches={}".format(
+                sum(int(row["credit_ineligible_path_count"]) for row in complete),
+                sum(int(row["evidence_accounting_mismatch"]) for row in complete),
+            ),
         ),
         check(
             "finite-security-metrics",

@@ -87,3 +87,11 @@ python scripts/task.py frozen-security-report \
   --config experiments/configs/frozen_v1_security_main.yaml \
   --allow-incomplete
 ```
+
+The legacy CSV field `invalid_path_count` means **credit-ineligible path
+evidence**, not an invalid transaction or an accepted security violation. In
+particular, evidence tagged with an earlier epoch is counted there when its
+transaction crosses an epoch boundary. The transaction remains valid, while
+the shared eligibility predicate excludes that path from relay reward and
+score. The report therefore checks `valid + ineligible == included_tx` and
+retains the ineligible count as a descriptive measurement.

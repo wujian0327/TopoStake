@@ -33,7 +33,8 @@ def synthetic_run(seed: int, padding: int, contribution: float) -> dict[str, obj
             "max_score_bound_excess": 0.0,
             "max_cap_bound_excess": 0.0,
             "max_bound_order_excess": 0.0,
-            "invalid_path_count": 0,
+            "credit_ineligible_path_count": 0,
+            "evidence_accounting_mismatch": 0,
             "finite_metrics": True,
             "adversary_raw_contribution_total": contribution,
         }
