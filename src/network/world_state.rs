@@ -54,6 +54,8 @@ pub struct WorldState {
     epoch_metrics_file: Option<std::fs::File>,
     node_epoch_metrics_filename: PathBuf,
     node_epoch_metrics_file: Option<std::fs::File>,
+    inclusion_samples_filename: PathBuf,
+    inclusion_samples_file: Option<std::fs::File>,
     run_summary_filename: PathBuf,
     run_id: String,
     slot_duration: Duration,
@@ -66,6 +68,7 @@ pub struct WorldState {
     fee_spent: Arc<std::sync::Mutex<HashMap<String, f64>>>,
     pub nodes_index: HashMap<String, u32>,
     pub adversarial_nodes: HashSet<String>,
+    pub focal_relayer_nodes: HashSet<String>,
     pub node_degrees: HashMap<String, usize>,
     pub node_betweenness: HashMap<String, f64>,
     epoch_proposer_counts: HashMap<String, u64>,
@@ -215,10 +218,12 @@ impl WorldState {
         let metrics_path = output_dir.join(metrics_filename);
         let epoch_metrics_filename = output_dir.join("epoch_metrics.csv");
         let node_epoch_metrics_filename = output_dir.join("node_epoch_metrics.csv");
+        let inclusion_samples_filename = output_dir.join("inclusion_samples.csv");
         let run_summary_filename = output_dir.join("run_summary.json");
         let _ = std::fs::remove_file(&metrics_path);
         let _ = std::fs::remove_file(&epoch_metrics_filename);
         let _ = std::fs::remove_file(&node_epoch_metrics_filename);
+        let _ = std::fs::remove_file(&inclusion_samples_filename);
         let _ = std::fs::remove_file(&run_summary_filename);
         let metrics_slots_file = std::fs::OpenOptions::new()
             .create(true)
@@ -234,6 +239,11 @@ impl WorldState {
             .create(true)
             .append(true)
             .open(&node_epoch_metrics_filename)
+            .ok();
+        let inclusion_samples_file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&inclusion_samples_filename)
             .ok();
 
         (
@@ -261,6 +271,8 @@ impl WorldState {
                 epoch_metrics_file,
                 node_epoch_metrics_filename,
                 node_epoch_metrics_file,
+                inclusion_samples_filename,
+                inclusion_samples_file,
                 run_summary_filename,
                 run_id,
                 slot_duration,
@@ -273,6 +285,7 @@ impl WorldState {
                 fee_spent,
                 nodes_index: HashMap::new(),
                 adversarial_nodes: HashSet::new(),
+                focal_relayer_nodes: HashSet::new(),
                 node_degrees: HashMap::new(),
                 node_betweenness: HashMap::new(),
                 epoch_proposer_counts: HashMap::new(),
@@ -682,14 +695,25 @@ impl WorldState {
         let mut valid_path_count = 0u64;
         let mut invalid_path_count = 0u64;
         let mut conflict_count = 0u64;
+        let mut inclusion_samples = Vec::new();
         for block in &epoch_blocks {
             for (idx, tx) in block.body.transactions.iter().enumerate() {
                 let included_slot = block.header.epoch * self.slot_per_epoch + block.header.slot;
+                let evidence_eligible = block.verify_path_evidence(idx);
                 if let Some(created_slot) = tx_logical_slot(tx, self.slot_per_epoch) {
                     let slots = included_slot.saturating_sub(created_slot);
                     let latency = slots as f64 * self.slot_duration.as_secs_f64()
                         + self.confirmation_latency_adjustment_s;
-                    latencies.push(latency.max(0.0));
+                    let latency = latency.max(0.0);
+                    latencies.push(latency);
+                    inclusion_samples.push((
+                        block.header.epoch,
+                        tx.hash.clone(),
+                        created_slot,
+                        included_slot,
+                        latency,
+                        evidence_eligible,
+                    ));
                 }
                 if let Some(path) = block.body.paths.get(idx) {
                     let full_path = path.full_path(block.header.miner.clone());
@@ -699,13 +723,14 @@ impl WorldState {
                             conflicting_receipt_count(&tx.hash, path.epoch, receiver) as u64;
                     }
                 }
-                if block.verify_path_evidence(idx) {
+                if evidence_eligible {
                     valid_path_count += 1;
                 } else {
                     invalid_path_count += 1;
                 }
             }
         }
+        self.write_inclusion_samples(&inclusion_samples);
 
         let reward_report = self.estimate_epoch_rewards(&epoch_blocks, validators, &snapshot);
         for (address, reward) in reward_report.total_by_address() {
@@ -887,6 +912,7 @@ impl WorldState {
                     .get(&validator.address)
                     .cloned()
                     .unwrap_or_else(|| "normal".to_string()),
+                focal_relayer: self.focal_relayer_nodes.contains(&validator.address),
                 adversarial: self.adversarial_nodes.contains(&validator.address),
                 economic_stake: validator.stake,
                 balance: balances.get(&validator.address).copied().unwrap_or(0.0),
@@ -979,6 +1005,38 @@ impl WorldState {
                 let _ = writeln!(file, "{}", NodeEpochMetrics::to_csv_header());
             }
             let _ = writeln!(file, "{}", metrics.to_csv_row());
+            let _ = file.flush();
+        }
+    }
+
+    fn write_inclusion_samples(
+        &mut self,
+        samples: &[(u64, String, u64, u64, f64, bool)],
+    ) {
+        if samples.is_empty() {
+            return;
+        }
+        if self.inclusion_samples_file.is_none() {
+            self.inclusion_samples_file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&self.inclusion_samples_filename)
+                .ok();
+        }
+        if let Some(file) = self.inclusion_samples_file.as_mut() {
+            if file.metadata().map(|metadata| metadata.len()).unwrap_or(0) == 0 {
+                let _ = writeln!(
+                    file,
+                    "included_epoch,tx_hash,created_slot,included_slot,latency_s,evidence_eligible"
+                );
+            }
+            for (epoch, tx_hash, created_slot, included_slot, latency, eligible) in samples {
+                let _ = writeln!(
+                    file,
+                    "{},{},{},{},{:.6},{}",
+                    epoch, tx_hash, created_slot, included_slot, latency, eligible
+                );
+            }
             let _ = file.flush();
         }
     }

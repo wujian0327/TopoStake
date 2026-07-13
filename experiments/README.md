@@ -39,13 +39,22 @@ Its protocol defaults come from `experiments/configs/protocol_frozen_v1.yaml`.
 
 `frozen_v1_security_pilot.yaml` is a 38-run correctness and reporting gate.
 `frozen_v1_security_main.yaml` is the formal 20-seed Rust-simulator matrix. It
-contains 1300 resumable runs covering end-to-end path-padding stress, the two
+contains 1340 resumable runs covering end-to-end path-padding stress, the two
 proposer-influence bounds, flooding economics, low-load score-floor
-sensitivity, and relay participation. A separate deterministic fixed-path
+sensitivity, focal-relayer participation, and a separate network-wide relay
+stress test. In the focal experiment, all non-focal validators keep the normal
+strategy and the same deterministic validator changes only its forwarding
+probability; relay strategy never changes the topology-derived link delay.
+A separate deterministic fixed-path
 check exhaustively validates padding non-amplification against the Rust reward
 formulas. The security report writes run-level, grouped, paired-CI, and
 acceptance artifacts under `results/processed/`. Run the pilot before the main
 matrix; use `--dry-run` to inspect exact commands.
+
+Every simulator run also writes `inclusion_samples.csv`. The security report
+uses those transaction-level samples for pooled p50/p95/p99 latency. The older
+`p95_inclusion_latency_s_mean` field is retained for compatibility but is only
+the mean of per-epoch p95 values and is not the paper latency statistic.
 
 `frozen_v1_devnet_pilot.yaml` and `frozen_v1_devnet_main.yaml` drive the formal
 Kurtosis evaluation. They compare five variants with the same frozen profile:

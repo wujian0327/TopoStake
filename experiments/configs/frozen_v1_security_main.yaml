@@ -7,6 +7,7 @@
   "timeout_seconds": 1800,
   "seeds": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19],
   "defaults": {
+    "run_revision": "relay-focal-v2",
     "node_num": 100,
     "sybil_node_num": 0,
     "fake_node_num": 0,
@@ -35,7 +36,8 @@
     "topostake_score_activation_delay_epochs": 2,
     "topostake_max_path_hops": 16,
     "topostake_evidence_work_limit": 4096,
-    "topostake_challenge_work_limit": 1024
+    "topostake_challenge_work_limit": 1024,
+    "relay_profile": "active"
   },
   "experiments": [
     {
@@ -74,6 +76,19 @@
       "name": "relay_participation",
       "protocols": ["topostake_eta0", "topostake"],
       "relay_profile": ["active", "normal", "lazy"],
+      "relay_background_profile": "normal",
+      "focal_relayer_count": 1,
+      "tx_rate": 20,
+      "transaction_fee": 0.001,
+      "max_epochs": 30,
+      "warmup_epochs": 10
+    },
+    {
+      "name": "relay_network_stress",
+      "protocols": ["topostake"],
+      "relay_profile": ["active", "lazy"],
+      "focal_relayer_count": 0,
+      "tx_rate": 100,
       "transaction_fee": 0.001,
       "max_epochs": 30,
       "warmup_epochs": 10

@@ -27,6 +27,8 @@ DIMENSION_KEYS = [
     "tx_rate",
     "stake_gini",
     "relay_profile",
+    "relay_background_profile",
+    "focal_relayer_count",
     "adversary_stake_fraction",
     "adversary_placement",
     "eta_bonus_product",
@@ -82,6 +84,8 @@ CLI_KEYS = {
     "topostake_scale_latency_reduction": "--topostake-scale-latency-reduction",
     "topostake_latency_reduction_s": "--topostake-latency-reduction-s",
     "relay_profile": "--relay-profile",
+    "relay_background_profile": "--relay-background-profile",
+    "focal_relayer_count": "--focal-relayer-count",
     "unstable_fraction": "--unstable-fraction",
     "offline_probability": "--offline-probability",
     "adversary_stake_fraction": "--adversary-stake-fraction",
@@ -212,6 +216,8 @@ def expand_runs(spec: Dict[str, Any], only: Iterable[str] | None = None) -> List
                         protocol_version,
                         f"seed{seed_index}",
                     ]
+                    if run.get("run_revision"):
+                        varied.append(f"revision-{slug(run['run_revision'])}")
                     for key in keys:
                         varied.append(f"{key}-{slug(run[key])}")
                     for key in sorted(experiment_overrides):

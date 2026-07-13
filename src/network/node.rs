@@ -243,21 +243,22 @@ impl Node {
 
     pub fn set_relay_profile(&mut self, relay_profile: RelayProfile) {
         self.relay_profile = relay_profile;
-        self.tx_propagation_delay = match relay_profile {
-            RelayProfile::Active => 5,
-            RelayProfile::Normal | RelayProfile::Mixed => 80,
-            RelayProfile::Lazy => 200,
-        };
         for sybil in self.sybil_nodes.iter_mut() {
             sybil.set_relay_profile(relay_profile);
         }
     }
 
-    fn should_forward_relay_path(&mut self) -> bool {
+    fn relay_forward_probability(&self) -> f64 {
         match self.relay_profile {
-            RelayProfile::Active | RelayProfile::Normal | RelayProfile::Mixed => true,
-            RelayProfile::Lazy => self.failure_rng.gen_bool(0.2),
+            RelayProfile::Active => 1.0,
+            RelayProfile::Normal | RelayProfile::Mixed => 0.75,
+            RelayProfile::Lazy => 0.25,
         }
+    }
+
+    fn should_forward_relay_path(&mut self) -> bool {
+        self.failure_rng
+            .gen_bool(self.relay_forward_probability())
     }
 
     pub fn set_failure_seed(&mut self, seed: u64) {
@@ -1551,5 +1552,25 @@ mod tests {
 
         assert!(!node.deduct_balance(10.0));
         assert_eq!(node.get_balance(), 0.0);
+    }
+
+    #[test]
+    fn relay_profiles_change_forwarding_probability_not_delay() {
+        let (world_tx, _world_rx) = tokio::sync::mpsc::channel::<Message>(8);
+        let bc = Blockchain::new(Block::gen_genesis_block());
+        let mut node = Node::new(0, 0, 0, bc, world_tx, 1000, ConsensusType::TopoStake, 0);
+        node.set_tx_propagation_delay(123);
+
+        node.set_relay_profile(RelayProfile::Active);
+        assert_eq!(node.tx_propagation_delay, 123);
+        assert_eq!(node.relay_forward_probability(), 1.0);
+
+        node.set_relay_profile(RelayProfile::Normal);
+        assert_eq!(node.tx_propagation_delay, 123);
+        assert_eq!(node.relay_forward_probability(), 0.75);
+
+        node.set_relay_profile(RelayProfile::Lazy);
+        assert_eq!(node.tx_propagation_delay, 123);
+        assert_eq!(node.relay_forward_probability(), 0.25);
     }
 }

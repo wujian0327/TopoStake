@@ -220,6 +220,14 @@ struct Args {
     #[arg(long, default_value_t = RelayProfile::Normal)]
     relay_profile: RelayProfile,
 
+    /// Relay behavior used by non-focal validators in participation experiments
+    #[arg(long, default_value_t = RelayProfile::Normal)]
+    relay_background_profile: RelayProfile,
+
+    /// Number of deterministic focal relayers whose strategy is --relay-profile
+    #[clap(long, default_value = "0")]
+    focal_relayer_count: u32,
+
     /// Target corrupted real-stake fraction
     #[clap(long, default_value = "0.0")]
     adversary_stake_fraction: f64,
@@ -334,6 +342,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         topostake_scale_latency_reduction: args.topostake_scale_latency_reduction,
         topostake_latency_reduction_s: args.topostake_latency_reduction_s,
         relay_profile: args.relay_profile,
+        relay_background_profile: args.relay_background_profile,
+        focal_relayer_count: args.focal_relayer_count,
         adversary_stake_fraction: args.adversary_stake_fraction,
         adversary_placement: args.adversary_placement,
         attack_mode: args.attack_mode,

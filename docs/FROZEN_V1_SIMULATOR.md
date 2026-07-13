@@ -69,7 +69,7 @@ score-floor sensitivity, and relay participation. Run the small gate first:
 python scripts/task.py frozen-security-pilot
 ```
 
-After it passes, launch the 20-seed matrix (1300 resumable runs):
+After it passes, launch the 20-seed matrix (1340 resumable runs):
 
 ```bash
 python scripts/task.py frozen-security-main
@@ -110,3 +110,13 @@ python scripts/task.py frozen-padding-check
 The score-floor sweep crosses `kappa = {0.1, 1, 10}` with low-to-normal offered
 loads. This is intentional: at high score mass, changing `kappa` has little
 effect and does not test the startup/idle small-denominator case.
+
+The primary participation experiment uses one deterministic focal relayer.
+All other validators remain `normal`, the offered load is below block capacity,
+and active/normal/lazy correspond to forwarding probabilities 1.0/0.75/0.25.
+All three strategies use the same topology-derived link delay. A separate
+`relay_network_stress` experiment retains the all-active versus all-lazy
+comparison, but it is interpreted only as network-wide participation collapse,
+not as a TopoStake latency improvement. Transaction-level records in
+`inclusion_samples.csv` provide pooled latency quantiles and sample coverage;
+the report does not use a mean of epoch-level p95 values as its primary latency.

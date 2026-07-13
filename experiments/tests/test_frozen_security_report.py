@@ -54,7 +54,7 @@ class FrozenSecurityReportTests(unittest.TestCase):
     def test_security_configs_expand_to_unique_runs(self) -> None:
         expected = {
             "frozen_v1_security_pilot.yaml": 38,
-            "frozen_v1_security_main.yaml": 1300,
+            "frozen_v1_security_main.yaml": 1340,
         }
         for filename, count in expected.items():
             spec = load_yaml(ROOT / "experiments" / "configs" / filename)
@@ -91,6 +91,27 @@ class FrozenSecurityReportTests(unittest.TestCase):
         checks = {item["name"]: item for item in validation(rows, expected_seeds=2)}
         self.assertFalse(checks["score-independent-proposer-cap"]["passed"])
 
+    def test_focal_relayer_isolation_is_validated(self) -> None:
+        row = synthetic_run(0, 0, 10.0)
+        row.update(
+            {
+                "experiment": "relay_participation",
+                "relay_profile": "active",
+                "relay_background_profile": "normal",
+                "focal_relayer_count": 1,
+                "usable_epoch_count": 4,
+                "focal_node_rows": 4,
+                "focal_profile_mismatch_count": 0,
+                "background_profile_mismatch_count": 0,
+                "inclusion_latency_sample_coverage": 1.0,
+            }
+        )
+        checks = {item["name"]: item for item in validation([row], expected_seeds=1)}
+        self.assertTrue(checks["focal-relayer-isolation"]["passed"])
+        row["background_profile_mismatch_count"] = 1
+        checks = {item["name"]: item for item in validation([row], expected_seeds=1)}
+        self.assertFalse(checks["focal-relayer-isolation"]["passed"])
+
     def test_fixed_padding_report_is_required_and_validated(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "padding.json"
@@ -120,8 +141,22 @@ class FrozenSecurityReportTests(unittest.TestCase):
                 "0,10,7,3,0.1,0.2,0.3,false\n"
             )
             (output / "node_epoch_metrics.csv").write_text(
-                "epoch,adversarial,raw_contribution,relay_reward,economic_stake\n"
-                "0,false,1.0,0.1,1.0\n"
+                "epoch,focal_relayer,adversarial,raw_contribution,relay_reward,"
+                "economic_stake,bonus,normalized_proposer_weight\n"
+                "0,true,false,1.0,0.1,1.0,0.2,0.01\n"
+            )
+            (output / "inclusion_samples.csv").write_text(
+                "included_epoch,tx_hash,created_slot,included_slot,latency_s,evidence_eligible\n"
+                "0,a,0,1,1.0,true\n"
+                "0,b,0,2,2.0,true\n"
+                "0,c,0,3,3.0,false\n"
+                "0,d,0,4,4.0,true\n"
+                "0,e,0,5,5.0,true\n"
+                "0,f,0,6,6.0,true\n"
+                "0,g,0,7,7.0,true\n"
+                "0,h,0,8,8.0,true\n"
+                "0,i,0,9,9.0,true\n"
+                "0,j,0,10,10.0,true\n"
             )
             run = {
                 "output_dir": str(output),
@@ -135,6 +170,10 @@ class FrozenSecurityReportTests(unittest.TestCase):
             self.assertTrue(result["complete"])
             self.assertEqual(result["evidence_accounting_mismatch"], 0)
             self.assertAlmostEqual(result["credit_ineligible_path_rate"], 0.3)
+            self.assertAlmostEqual(result["p50_inclusion_latency_s_pooled"], 5.5)
+            self.assertAlmostEqual(result["p95_inclusion_latency_s_pooled"], 9.55)
+            self.assertAlmostEqual(result["inclusion_latency_sample_coverage"], 1.0)
+            self.assertAlmostEqual(result["focal_relay_reward_per_stake"], 0.1)
 
 
 if __name__ == "__main__":

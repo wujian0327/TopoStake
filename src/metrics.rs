@@ -73,6 +73,7 @@ pub struct NodeEpochMetrics {
     pub epoch: u64,
     pub validator_id: String,
     pub relay_profile: String,
+    pub focal_relayer: bool,
     pub adversarial: bool,
     pub economic_stake: f64,
     pub balance: f64,
@@ -188,7 +189,7 @@ impl EpochMetrics {
 
 impl NodeEpochMetrics {
     pub fn to_csv_header() -> String {
-        "epoch,validator_id,relay_profile,adversarial,economic_stake,balance,raw_contribution,saturated_contribution,ema_score,normalized_score,\
+        "epoch,validator_id,relay_profile,focal_relayer,adversarial,economic_stake,balance,raw_contribution,saturated_contribution,ema_score,normalized_score,\
          bonus,unnormalized_proposer_weight,normalized_proposer_weight,proposer_count,relay_reward,proposer_reward,fee_spent,\
          net_income,degree,betweenness"
             .to_string()
@@ -196,10 +197,11 @@ impl NodeEpochMetrics {
 
     pub fn to_csv_row(&self) -> String {
         format!(
-            "{},{},{},{},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{},{:.6},{:.6},{:.6},{:.6},{},{}",
+            "{},{},{},{},{},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{},{:.6},{:.6},{:.6},{:.6},{},{}",
             self.epoch,
             self.validator_id,
             self.relay_profile,
+            self.focal_relayer,
             self.adversarial,
             self.economic_stake,
             self.balance,

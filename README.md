@@ -77,7 +77,7 @@ Each run writes `output.log` in the project root and a reproducibility bundle to
 
 `epoch_metrics.csv` includes generated/included transactions, logical throughput, p50/p95/p99 inclusion latency, block success ratio, path length and validity counts, conflicting receipt count, proposer/relay/burned rewards, stake and proposer-weight Gini/HHI, adversary stake/score/weight shares, theoretical proposer-weight bound, observed adversary proposer share, and a bound-violation flag.
 
-`node_epoch_metrics.csv` includes validator id, adversarial flag, economic stake, balance, raw/saturated contribution, EMA and normalized score, bonus, proposer weights, proposer count, relay/proposer reward, fee spent, net income, degree, and betweenness.
+`node_epoch_metrics.csv` includes validator id, relay profile, focal-relayer and adversarial flags, economic stake, balance, raw/saturated contribution, EMA and normalized score, bonus, proposer weights, proposer count, relay/proposer reward, fee spent, net income, degree, and betweenness. `inclusion_samples.csv` records transaction-level logical inclusion latency for pooled quantiles.
 
 ## Paper Experiment Pipeline
 

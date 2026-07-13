@@ -28,6 +28,7 @@ REFERENCE_FIELDS = {
     "path_padding_end_to_end": ("padding_identities", 0),
     "flooding_cost_to_influence": ("attack_tx_rate_multiplier", 0),
     "relay_participation": ("relay_profile", "lazy"),
+    "relay_network_stress": ("relay_profile", "lazy"),
     "score_floor_sensitivity": ("topostake_score_floor_kappa", 1.0),
 }
 PAIR_METRICS = [
@@ -42,7 +43,15 @@ PAIR_METRICS = [
     "adversary_relay_reward_share",
     "credit_ineligible_path_rate",
     "relay_reward_per_stake",
-    "p95_inclusion_latency_s_mean",
+    "focal_raw_contribution_total",
+    "focal_relay_reward_total",
+    "focal_relay_reward_per_stake",
+    "focal_bonus_mean",
+    "focal_proposer_weight_mean",
+    "p50_inclusion_latency_s_pooled",
+    "p95_inclusion_latency_s_pooled",
+    "p99_inclusion_latency_s_pooled",
+    "inclusion_ratio",
 ]
 RUN_METRICS = [
     "throughput",
@@ -100,6 +109,19 @@ def mean_ci95(values: Iterable[float]) -> tuple[float, float, int]:
     )
 
 
+def percentile(values: Iterable[float], quantile: float) -> float:
+    ordered = sorted(value for value in values if math.isfinite(value))
+    if not ordered:
+        return math.nan
+    position = (len(ordered) - 1) * quantile
+    lower = math.floor(position)
+    upper = math.ceil(position)
+    if lower == upper:
+        return ordered[lower]
+    fraction = position - lower
+    return ordered[lower] * (1.0 - fraction) + ordered[upper] * fraction
+
+
 def write_csv(path: Path, rows: list[dict[str, Any]], fields: list[str]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", newline="") as handle:
@@ -119,9 +141,15 @@ def aggregate_run(run: dict[str, Any]) -> dict[str, Any]:
     summary = read_json(output_dir / "run_summary.json")
     epochs = read_csv(output_dir / "epoch_metrics.csv")
     nodes = read_csv(output_dir / "node_epoch_metrics.csv")
+    inclusion_samples = read_csv(output_dir / "inclusion_samples.csv")
     warmup = int(run.get("warmup_epochs", 0))
     epochs = usable_rows(epochs, warmup)
     nodes = usable_rows(nodes, warmup)
+    inclusion_samples = [
+        row
+        for row in inclusion_samples
+        if int(to_float(row.get("included_epoch"))) >= warmup
+    ]
 
     out = {field: run.get(field, "") for field in SCENARIO_FIELDS}
     out.update(
@@ -180,6 +208,28 @@ def aggregate_run(run: dict[str, Any]) -> dict[str, Any]:
     out["included_tx_total"] = sum(
         int(to_float(row.get("included_tx"))) for row in epochs
     )
+    out["generated_tx_total"] = sum(
+        int(to_float(row.get("generated_tx"))) for row in epochs
+    )
+    out["inclusion_ratio"] = (
+        out["included_tx_total"] / out["generated_tx_total"]
+        if out["generated_tx_total"] > 0
+        else 0.0
+    )
+    latency_samples = [
+        to_float(row.get("latency_s"), math.nan) for row in inclusion_samples
+    ]
+    out["inclusion_latency_sample_count"] = sum(
+        math.isfinite(value) for value in latency_samples
+    )
+    out["inclusion_latency_sample_coverage"] = (
+        out["inclusion_latency_sample_count"] / out["included_tx_total"]
+        if out["included_tx_total"] > 0
+        else 0.0
+    )
+    out["p50_inclusion_latency_s_pooled"] = percentile(latency_samples, 0.50)
+    out["p95_inclusion_latency_s_pooled"] = percentile(latency_samples, 0.95)
+    out["p99_inclusion_latency_s_pooled"] = percentile(latency_samples, 0.99)
     out["credit_ineligible_path_rate"] = (
         out["credit_ineligible_path_count"] / out["included_tx_total"]
         if out["included_tx_total"] > 0
@@ -213,6 +263,38 @@ def aggregate_run(run: dict[str, Any]) -> dict[str, Any]:
     )
     stake_exposure = sum(to_float(row.get("economic_stake")) for row in nodes)
     out["relay_reward_per_stake"] = relay_reward / stake_exposure if stake_exposure > 0 else 0.0
+    focal = [row for row in nodes if is_true(row.get("focal_relayer"))]
+    background = [row for row in nodes if not is_true(row.get("focal_relayer"))]
+    out["focal_node_rows"] = len(focal)
+    out["focal_profile_mismatch_count"] = sum(
+        str(row.get("relay_profile")) != str(run.get("relay_profile")) for row in focal
+    )
+    out["background_profile_mismatch_count"] = (
+        sum(
+            str(row.get("relay_profile")) != str(run.get("relay_background_profile"))
+            for row in background
+        )
+        if int(to_float(run.get("focal_relayer_count"))) > 0
+        else 0
+    )
+    out["focal_raw_contribution_total"] = sum(
+        to_float(row.get("raw_contribution")) for row in focal
+    )
+    out["focal_relay_reward_total"] = sum(
+        to_float(row.get("relay_reward")) for row in focal
+    )
+    focal_stake_exposure = sum(to_float(row.get("economic_stake")) for row in focal)
+    out["focal_relay_reward_per_stake"] = (
+        out["focal_relay_reward_total"] / focal_stake_exposure
+        if focal_stake_exposure > 0
+        else 0.0
+    )
+    out["focal_bonus_mean"] = mean_ci95(
+        to_float(row.get("bonus"), math.nan) for row in focal
+    )[0]
+    out["focal_proposer_weight_mean"] = mean_ci95(
+        to_float(row.get("normalized_proposer_weight"), math.nan) for row in focal
+    )[0]
     out["finite_metrics"] = all(
         math.isfinite(to_float(out.get(field), math.nan))
         for field in [
@@ -225,6 +307,8 @@ def aggregate_run(run: dict[str, Any]) -> dict[str, Any]:
             "adversary_relay_reward_share",
             "credit_ineligible_path_rate",
             "relay_reward_per_stake",
+            "inclusion_ratio",
+            "p95_inclusion_latency_s_pooled",
         ]
     )
     return out
@@ -357,6 +441,42 @@ def validation(rows: list[dict[str, Any]], expected_seeds: int) -> list[dict[str
                     else 0.0
                 ),
                 sum(int(row["evidence_accounting_mismatch"]) for row in complete),
+            ),
+        ),
+        check(
+            "transaction-latency-sample-coverage",
+            all(
+                to_float(row.get("inclusion_latency_sample_coverage")) >= 1.0 - 1e-9
+                for row in complete
+            ),
+            "minimum sample coverage={:.2%}".format(
+                min(
+                    (
+                        to_float(row.get("inclusion_latency_sample_coverage"))
+                        for row in complete
+                    ),
+                    default=0.0,
+                )
+            ),
+        ),
+        check(
+            "focal-relayer-isolation",
+            all(
+                int(row.get("focal_node_rows", 0))
+                == int(to_float(row.get("focal_relayer_count")))
+                * int(row.get("usable_epoch_count", 0))
+                and int(row.get("focal_profile_mismatch_count", 0)) == 0
+                and int(row.get("background_profile_mismatch_count", 0)) == 0
+                for row in complete
+                if row.get("experiment") == "relay_participation"
+            ),
+            "profile or focal-row mismatches={}".format(
+                sum(
+                    int(row.get("focal_profile_mismatch_count", 0))
+                    + int(row.get("background_profile_mismatch_count", 0))
+                    for row in complete
+                    if row.get("experiment") == "relay_participation"
+                )
             ),
         ),
         check(
