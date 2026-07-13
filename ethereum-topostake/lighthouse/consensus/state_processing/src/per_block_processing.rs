@@ -295,11 +295,11 @@ fn record_topostake_tx_gossip_metadata_for_block<E: EthSpec, Payload: AbstractEx
         .filter(|record| record.epoch == epoch.as_u64())
         .filter_map(topostake_path_evidence_from_inline_record)
         .collect::<Vec<_>>();
-    let mut outcomes = record_topostake_invalid_tx_gossip_metadata_evidence(
-        epoch,
-        stale_count,
-        spec,
-    );
+    let mut outcomes = if stale_count == 0 {
+        Vec::new()
+    } else {
+        record_topostake_invalid_tx_gossip_metadata_evidence(epoch, stale_count, spec)
+    };
     if !inline_paths.is_empty() {
         outcomes.extend(record_topostake_tx_gossip_metadata_evidence(
             epoch,
