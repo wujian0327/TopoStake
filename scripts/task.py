@@ -44,10 +44,17 @@ def task_test(_args: argparse.Namespace) -> None:
     run(["cargo", "test"])
 
 
-def task_run_experiments(config: str, force: bool = False, check: bool = True) -> subprocess.CompletedProcess[str]:
+def task_run_experiments(
+    config: str,
+    force: bool = False,
+    check: bool = True,
+    dry_run: bool = False,
+) -> subprocess.CompletedProcess[str]:
     cmd = [PYTHON, "experiments/run_experiments.py", "--config", config]
     if force:
         cmd.append("--force")
+    if dry_run:
+        cmd.append("--dry-run")
     return run(cmd, check=check)
 
 
@@ -85,6 +92,32 @@ def task_frozen_smoke(args: argparse.Namespace) -> None:
     config = "experiments/configs/frozen_v1_smoke.yaml"
     task_run_experiments(config, force=args.force)
     task_summarize_config(config)
+
+
+def task_frozen_security(args: argparse.Namespace, config: str) -> None:
+    task_run_experiments(config, force=args.force, dry_run=args.dry_run)
+    if args.dry_run:
+        return
+    cmd = [PYTHON, "experiments/frozen_security_report.py", "--config", config]
+    if args.allow_incomplete:
+        cmd.append("--allow-incomplete")
+    run(cmd)
+
+
+def task_frozen_security_pilot(args: argparse.Namespace) -> None:
+    task_frozen_security(args, "experiments/configs/frozen_v1_security_pilot.yaml")
+
+
+def task_frozen_security_main(args: argparse.Namespace) -> None:
+    task_frozen_security(args, "experiments/configs/frozen_v1_security_main.yaml")
+
+
+def task_frozen_security_report(args: argparse.Namespace) -> None:
+    config = args.config or "experiments/configs/frozen_v1_security_main.yaml"
+    cmd = [PYTHON, "experiments/frozen_security_report.py", "--config", config]
+    if args.allow_incomplete:
+        cmd.append("--allow-incomplete")
+    run(cmd)
 
 
 def task_frozen_devnet_check(args: argparse.Namespace) -> None:
@@ -152,6 +185,9 @@ TASKS: Dict[str, Callable[[argparse.Namespace], None]] = {
     "experiments-main": task_experiments_main,
     "tdsc-fast": task_tdsc_fast,
     "frozen-smoke": task_frozen_smoke,
+    "frozen-security-pilot": task_frozen_security_pilot,
+    "frozen-security-main": task_frozen_security_main,
+    "frozen-security-report": task_frozen_security_report,
     "frozen-devnet-check": task_frozen_devnet_check,
     "frozen-devnet-smoke": task_frozen_devnet_smoke,
     "frozen-devnet-pilot": task_frozen_devnet_pilot,
@@ -170,6 +206,12 @@ def main() -> int:
         help="Rerun experiment tasks even when existing summaries are present.",
     )
     parser.add_argument("--artifact", help="Devnet summary.json for frozen-devnet-check.")
+    parser.add_argument("--config", help="Config override for frozen-security-report.")
+    parser.add_argument(
+        "--allow-incomplete",
+        action="store_true",
+        help="Write a partial frozen-security report while a matrix is still running.",
+    )
     parser.add_argument(
         "--mode",
         choices=["baseline", "pathobs", "fee_only", "bonus_only", "topostake"],

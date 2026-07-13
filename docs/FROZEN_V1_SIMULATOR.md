@@ -58,3 +58,32 @@ python scripts/task.py frozen-smoke
 ```
 
 The frozen smoke profile is intentionally small and is not paper evidence.
+
+## Formal security evaluation
+
+The security evaluation is separate from the Kurtosis performance matrix. It
+uses paired deterministic seeds for path padding, proposer influence, flooding,
+score-floor sensitivity, and relay participation. Run the small gate first:
+
+```bash
+python scripts/task.py frozen-security-pilot
+```
+
+After it passes, launch the 20-seed matrix (1120 resumable runs):
+
+```bash
+python scripts/task.py frozen-security-main
+```
+
+Use `--dry-run` to print either matrix without executing it. The report checks
+the score-dependent and score-independent proposer bounds for every measured
+epoch. It reports stochastic outcomes as across-seed means and paired 95%
+confidence intervals; finite-slot proposer counts are not treated as a
+deterministic safety condition. A partial report can be generated while jobs
+are running with:
+
+```bash
+python scripts/task.py frozen-security-report \
+  --config experiments/configs/frozen_v1_security_main.yaml \
+  --allow-incomplete
+```
