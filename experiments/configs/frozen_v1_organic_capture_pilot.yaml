@@ -7,7 +7,7 @@
   "timeout_seconds": 1800,
   "seeds": [0, 1, 2],
   "defaults": {
-    "run_revision": "organic-capture-v1",
+    "run_revision": "organic-capture-v2-stable-assignment",
     "node_num": 100,
     "sybil_node_num": 0,
     "fake_node_num": 0,

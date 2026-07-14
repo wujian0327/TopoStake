@@ -1063,6 +1063,10 @@ pub fn select_adversarial_nodes(
     let mut candidates: Vec<String> = stake_map.keys().cloned().collect();
     match placement {
         AdversaryPlacement::Random => {
+            // A seeded shuffle is reproducible only when its input order is
+            // reproducible. HashMap iteration is process-randomized, so sort
+            // first to keep paired experiment coalitions identical.
+            candidates.sort();
             let mut rng = StdRng::seed_from_u64(attack_seed);
             candidates.shuffle(&mut rng);
         }
@@ -1312,6 +1316,38 @@ mod tests {
             share <= 0.43,
             "single-validator overshoot tolerance exceeded"
         );
+    }
+
+    #[test]
+    fn random_adversary_selection_is_independent_of_hashmap_iteration_order() {
+        let entries: Vec<(String, f64)> = (0..20)
+            .map(|i| (format!("validator-{i:02}"), 1.0))
+            .collect();
+        let forward: std::collections::HashMap<_, _> = entries.iter().cloned().collect();
+        let reverse: std::collections::HashMap<_, _> =
+            entries.iter().rev().cloned().collect();
+        let degrees = std::collections::HashMap::new();
+        let betweenness = std::collections::HashMap::new();
+
+        let selected_forward = super::select_adversarial_nodes(
+            &forward,
+            &degrees,
+            &betweenness,
+            0.25,
+            super::AdversaryPlacement::Random,
+            12345,
+        );
+        let selected_reverse = super::select_adversarial_nodes(
+            &reverse,
+            &degrees,
+            &betweenness,
+            0.25,
+            super::AdversaryPlacement::Random,
+            12345,
+        );
+
+        assert_eq!(selected_forward, selected_reverse);
+        assert_eq!(selected_forward.len(), 5);
     }
 
     #[test]
