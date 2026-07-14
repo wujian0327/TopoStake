@@ -228,6 +228,10 @@ struct Args {
     #[clap(long, default_value = "0")]
     focal_relayer_count: u32,
 
+    /// Fraction of non-focal honest validators assigned the lazy relay profile
+    #[clap(long, default_value = "0.0")]
+    lazy_fraction: f64,
+
     /// Target corrupted real-stake fraction
     #[clap(long, default_value = "0.0")]
     adversary_stake_fraction: f64,
@@ -344,6 +348,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         relay_profile: args.relay_profile,
         relay_background_profile: args.relay_background_profile,
         focal_relayer_count: args.focal_relayer_count,
+        lazy_fraction: args.lazy_fraction,
         adversary_stake_fraction: args.adversary_stake_fraction,
         adversary_placement: args.adversary_placement,
         attack_mode: args.attack_mode,

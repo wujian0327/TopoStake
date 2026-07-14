@@ -45,6 +45,7 @@ pub struct WorldState {
     pub node_wallets: HashMap<String, Wallet>,
     pub node_mempools: HashMap<String, Arc<RwLock<HashMap<String, Arc<TransactionPaths>>>>>,
     pub node_relay_profiles: HashMap<String, String>,
+    pub node_relay_forward_counters: HashMap<String, Arc<AtomicU64>>,
     pub blockchain: Arc<RwLock<Blockchain>>,
     pub consensus: Box<dyn Consensus>,
     consensus_name: String,
@@ -71,6 +72,7 @@ pub struct WorldState {
     pub focal_relayer_nodes: HashSet<String>,
     pub node_degrees: HashMap<String, usize>,
     pub node_betweenness: HashMap<String, f64>,
+    last_relay_forward_attempts: HashMap<String, u64>,
     epoch_proposer_counts: HashMap<String, u64>,
     total_included_tx: u64,
     total_reward_income: HashMap<String, f64>,
@@ -262,6 +264,7 @@ impl WorldState {
                 node_wallets: HashMap::new(),
                 node_mempools: HashMap::new(),
                 node_relay_profiles: HashMap::new(),
+                node_relay_forward_counters: HashMap::new(),
                 blockchain: Arc::new(RwLock::new(blockchain)),
                 consensus,
                 consensus_name,
@@ -288,6 +291,7 @@ impl WorldState {
                 focal_relayer_nodes: HashSet::new(),
                 node_degrees: HashMap::new(),
                 node_betweenness: HashMap::new(),
+                last_relay_forward_attempts: HashMap::new(),
                 epoch_proposer_counts: HashMap::new(),
                 total_included_tx: 0,
                 total_reward_income: HashMap::new(),
@@ -900,6 +904,17 @@ impl WorldState {
                 .copied()
                 .unwrap_or(0.0);
             let fee = fee_spent.get(&validator.address).copied().unwrap_or(0.0);
+            let cumulative_forward_attempts = self
+                .node_relay_forward_counters
+                .get(&validator.address)
+                .map(|counter| counter.load(Ordering::Relaxed))
+                .unwrap_or(0);
+            let previous_forward_attempts = self
+                .last_relay_forward_attempts
+                .insert(validator.address.clone(), cumulative_forward_attempts)
+                .unwrap_or(0);
+            let relay_forward_attempts =
+                cumulative_forward_attempts.saturating_sub(previous_forward_attempts);
             let node_metrics = NodeEpochMetrics {
                 epoch,
                 validator_id: self
@@ -956,6 +971,7 @@ impl WorldState {
                 proposer_reward,
                 fee_spent: fee,
                 net_income: proposer_reward + relay_reward - fee,
+                relay_forward_attempts,
                 degree: self
                     .node_degrees
                     .get(&validator.address)

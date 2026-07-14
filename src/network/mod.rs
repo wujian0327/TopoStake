@@ -135,6 +135,7 @@ pub struct SimulationConfig {
     pub relay_profile: RelayProfile,
     pub relay_background_profile: RelayProfile,
     pub focal_relayer_count: u32,
+    pub lazy_fraction: f64,
     pub adversary_stake_fraction: f64,
     pub adversary_placement: AdversaryPlacement,
     pub attack_mode: AttackMode,
@@ -184,6 +185,7 @@ impl SimulationConfig {
         self.unstable_fraction = self.unstable_fraction.clamp(0.0, 1.0);
         self.offline_probability = self.offline_probability.clamp(0.0, 1.0);
         self.adversary_stake_fraction = self.adversary_stake_fraction.clamp(0.0, 1.0);
+        self.lazy_fraction = self.lazy_fraction.clamp(0.0, 1.0);
         if self.attack_tx_rate_multiplier < 0.0 || !self.attack_tx_rate_multiplier.is_finite() {
             self.attack_tx_rate_multiplier = 0.0;
         }
@@ -401,6 +403,10 @@ pub async fn start_network(config: SimulationConfig) {
         .iter()
         .map(|(address, node)| (address.clone(), node.relay_profile.to_string()))
         .collect();
+    world.node_relay_forward_counters = node_map
+        .iter()
+        .map(|(address, node)| (address.clone(), node.relay_forward_attempts.clone()))
+        .collect();
     for node in node_map.values() {
         for sybil in &node.sybil_nodes {
             world
@@ -492,6 +498,26 @@ pub async fn start_network(config: SimulationConfig) {
         for address in &world.focal_relayer_nodes {
             if let Some(node) = node_map.get_mut(address) {
                 node.set_relay_profile(relay_profile);
+            }
+        }
+    } else if config.lazy_fraction > 0.0 {
+        let mut relay_candidates: Vec<String> = node_map
+            .iter()
+            .filter(|(_, node)| node.index < node_num)
+            .map(|(address, _)| address.clone())
+            .collect();
+        let mut relay_rng = StdRng::seed_from_u64(config.failure_seed ^ 0x5245_4c41_595f_4d49);
+        relay_candidates.shuffle(&mut relay_rng);
+        let lazy_count = ((relay_candidates.len() as f64 * config.lazy_fraction).round()
+            as usize)
+            .min(relay_candidates.len());
+        for (rank, address) in relay_candidates.iter().enumerate() {
+            if let Some(node) = node_map.get_mut(address) {
+                node.set_relay_profile(if rank < lazy_count {
+                    RelayProfile::Lazy
+                } else {
+                    relay_profile
+                });
             }
         }
     } else if relay_profile == RelayProfile::Mixed {

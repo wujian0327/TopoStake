@@ -63,6 +63,9 @@ cargo run --release -- -n 100 -t 10 -c minotaur
 - `--attack-mode`: `none`, `max-score`, `path-padding`, or `flooding`
 - `--padding-identities`: controlled identities for path-padding experiments
 - `--attack-tx-rate-multiplier`: extra adversarial transaction rate for flooding
+- `--lazy-fraction`: deterministic seed-paired fraction of non-focal honest
+  validators assigned the lazy relay profile; remaining validators use
+  `--relay-profile`
 
 ## Output Files
 
@@ -77,7 +80,7 @@ Each run writes `output.log` in the project root and a reproducibility bundle to
 
 `epoch_metrics.csv` includes generated/included transactions, logical throughput, p50/p95/p99 inclusion latency, block success ratio, path length and validity counts, conflicting receipt count, proposer/relay/burned rewards, stake and proposer-weight Gini/HHI, adversary stake/score/weight shares, theoretical proposer-weight bound, observed adversary proposer share, and a bound-violation flag.
 
-`node_epoch_metrics.csv` includes validator id, relay profile, focal-relayer and adversarial flags, economic stake, balance, raw/saturated contribution, EMA and normalized score, bonus, proposer weights, proposer count, relay/proposer reward, fee spent, net income, degree, and betweenness. `inclusion_samples.csv` records transaction-level logical inclusion latency for pooled quantiles.
+`node_epoch_metrics.csv` includes validator id, relay profile, focal-relayer and adversarial flags, economic stake, balance, raw/saturated contribution, EMA and normalized score, bonus, proposer weights, proposer count, relay/proposer reward, fee spent, net income, signed outbound relay-forward attempts, degree, and betweenness. `inclusion_samples.csv` records transaction-level logical inclusion latency for pooled quantiles.
 
 ## Paper Experiment Pipeline
 
@@ -92,6 +95,12 @@ Use the cross-platform Python runner on Windows, Linux, or macOS:
 - `python scripts/task.py frozen-evidence-bench`: benchmark path-evidence time, size, and rejection cost
 - `python scripts/task.py frozen-security-main --dry-run`: inspect the formal 20-seed security matrix
 - `python scripts/task.py frozen-security-figures`: render frozen-v1 security figures and their manifest
+- `python scripts/task.py frozen-fee-bonus-pilot --dry-run`: inspect the
+  three-seed, 24-run long-horizon Full/fee-only pilot
+- `python scripts/task.py frozen-fee-bonus-pilot`: run, validate, and plot the
+  long-horizon pilot
+- `python scripts/task.py frozen-fee-bonus-main --dry-run`: inspect the formal
+  20-seed, 160-run long-horizon matrix
 - `python scripts/task.py frozen-devnet-check`: frozen-v1 profile and devnet-artifact acceptance gate
 - `python scripts/task.py frozen-devnet-pilot --dry-run`: inspect the formal five-variant pilot matrix
 - `python scripts/task.py experiments-main`: full paper experiment matrix

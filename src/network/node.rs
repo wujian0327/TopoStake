@@ -15,6 +15,7 @@ use rand::SeedableRng;
 // use serde_json;
 use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::RwLock;
@@ -46,6 +47,9 @@ pub struct Node {
     pub hash_power: f64,           // 节点算力
     pub tx_propagation_delay: u64, // 交易传播延迟(ms)
     pub relay_profile: RelayProfile,
+    /// Signed outbound relay-path messages attempted by this node.  The
+    /// world-state sampler converts this cumulative counter into epoch deltas.
+    pub relay_forward_attempts: Arc<AtomicU64>,
     failure_rng: StdRng,
 }
 
@@ -117,6 +121,7 @@ impl Node {
             hash_power: 1.0,
             tx_propagation_delay: 50, // 默认50ms
             relay_profile: RelayProfile::Normal,
+            relay_forward_attempts: Arc::new(AtomicU64::new(0)),
             failure_rng: StdRng::seed_from_u64(wallet_seed ^ index as u64),
         }
     }
@@ -157,6 +162,7 @@ impl Node {
             hash_power: 1.0,
             tx_propagation_delay: 50, // 默认50ms
             relay_profile: RelayProfile::Normal,
+            relay_forward_attempts: Arc::new(AtomicU64::new(0)),
             failure_rng: StdRng::seed_from_u64(index as u64),
         }
     }
@@ -218,6 +224,7 @@ impl Node {
             hash_power: 1.0,
             tx_propagation_delay: 50, // 默认50ms
             relay_profile: RelayProfile::Normal,
+            relay_forward_attempts: Arc::new(AtomicU64::new(0)),
             failure_rng: StdRng::seed_from_u64(wallet_seed ^ index as u64),
         }
     }
@@ -652,6 +659,7 @@ impl Node {
                         ) {
                             continue;
                         }
+                        self.relay_forward_attempts.fetch_add(1, Ordering::Relaxed);
                         debug!(
                             "Node[{}] send transaction[{}] paths[{}] to Node[{}]",
                             self.short_address_with_index(),

@@ -135,6 +135,38 @@ def task_frozen_security_figures(_args: argparse.Namespace) -> None:
     run([PYTHON, "analysis/plot_frozen_security.py"])
 
 
+def task_fee_bonus(args: argparse.Namespace, config: str) -> None:
+    task_run_experiments(config, force=args.force, dry_run=args.dry_run)
+    if args.dry_run:
+        return
+    cmd = [PYTHON, "experiments/fee_bonus_long_horizon_report.py", "--config", config]
+    if args.allow_incomplete:
+        cmd.append("--allow-incomplete")
+    run(cmd)
+    run([PYTHON, "analysis/plot_fee_bonus_long_horizon.py", "--config", config])
+
+
+def task_fee_bonus_pilot(args: argparse.Namespace) -> None:
+    task_fee_bonus(args, "experiments/configs/frozen_v1_fee_bonus_pilot.yaml")
+
+
+def task_fee_bonus_main(args: argparse.Namespace) -> None:
+    task_fee_bonus(args, "experiments/configs/frozen_v1_fee_bonus_main.yaml")
+
+
+def task_fee_bonus_report(args: argparse.Namespace) -> None:
+    config = args.config or "experiments/configs/frozen_v1_fee_bonus_pilot.yaml"
+    cmd = [PYTHON, "experiments/fee_bonus_long_horizon_report.py", "--config", config]
+    if args.allow_incomplete:
+        cmd.append("--allow-incomplete")
+    run(cmd)
+
+
+def task_fee_bonus_figures(args: argparse.Namespace) -> None:
+    config = args.config or "experiments/configs/frozen_v1_fee_bonus_pilot.yaml"
+    run([PYTHON, "analysis/plot_fee_bonus_long_horizon.py", "--config", config])
+
+
 def task_frozen_devnet_figures(_args: argparse.Namespace) -> None:
     run([PYTHON, "analysis/plot_frozen_devnet.py"])
 
@@ -208,6 +240,10 @@ TASKS: Dict[str, Callable[[argparse.Namespace], None]] = {
     "frozen-security-main": task_frozen_security_main,
     "frozen-security-report": task_frozen_security_report,
     "frozen-security-figures": task_frozen_security_figures,
+    "frozen-fee-bonus-pilot": task_fee_bonus_pilot,
+    "frozen-fee-bonus-main": task_fee_bonus_main,
+    "frozen-fee-bonus-report": task_fee_bonus_report,
+    "frozen-fee-bonus-figures": task_fee_bonus_figures,
     "frozen-evidence-bench": task_frozen_evidence_bench,
     "frozen-padding-check": task_frozen_padding_check,
     "frozen-devnet-check": task_frozen_devnet_check,
