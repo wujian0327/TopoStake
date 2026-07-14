@@ -1691,7 +1691,7 @@ impl From<serde_json::error::Error> for WorldStateError {
 mod tests {
     use super::*;
     use crate::blockchain::block::Block;
-    use crate::blockchain::path::{clear_receipt_cache_for_tests, TransactionPaths};
+    use crate::blockchain::path::TransactionPaths;
     use crate::blockchain::transaction::Transaction;
     use crate::blockchain::Blockchain;
     use crate::network::node::{Neighbor, Node};
@@ -1699,7 +1699,6 @@ mod tests {
 
     #[test]
     fn organic_capture_excludes_coalition_origins_and_accounts_relayer_credit() {
-        clear_receipt_cache_for_tests();
         let origin = Wallet::new();
         let adversary = Wallet::new();
         let miner = Wallet::new();
