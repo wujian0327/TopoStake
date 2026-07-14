@@ -2,7 +2,7 @@
 """Generate paper-ready figures for the frozen-v1 simulator evaluation.
 
 The script accepts an incomplete matrix while experiments are running. Only
-successful, complete runs are used, and every figure records the number of
+successful, complete runs are used, and the manifest records the number of
 available seeds. Re-running the same command after all 20 seeds finish replaces
 the preliminary figures without changing the plotting code.
 """
@@ -143,7 +143,9 @@ def configure_style() -> None:
             "axes.grid": False,
             "pdf.fonttype": 42,
             "ps.fonttype": 42,
-            "savefig.bbox": "tight",
+            # Keep a fixed canvas so independently generated panels align when
+            # assembled into one LaTeX figure row.
+            "savefig.bbox": None,
         }
     )
 
@@ -152,19 +154,6 @@ def style_axis(ax: Axes, grid: bool = True) -> None:
     if grid:
         ax.grid(axis="y", color="#E6E6E6", linewidth=0.7, zorder=0)
     ax.tick_params(direction="out", length=3)
-
-
-def add_seed_note(fig: Figure, seed_count: int, expected_seeds: int) -> None:
-    qualifier = "Preliminary; " if seed_count < expected_seeds else ""
-    fig.text(
-        0.985,
-        0.005,
-        f"{qualifier}n={seed_count} independent seeds; 95% CIs where shown",
-        ha="right",
-        va="bottom",
-        fontsize=6.5,
-        color=GRAY,
-    )
 
 
 def save_figure(fig: Figure, output_dir: Path, stem: str) -> list[str]:
@@ -234,8 +223,7 @@ def figure_relay_participation(
         if metric == "focal_relay_reward_per_stake":
             ax.ticklabel_format(axis="y", style="sci", scilimits=(-2, 2))
         ax.legend(frameon=False, ncol=2, loc="best")
-        add_seed_note(fig, seed_count, expected_seeds)
-        fig.subplots_adjust(bottom=0.22, left=0.18, right=0.97, top=0.88)
+        fig.subplots_adjust(bottom=0.18, left=0.18, right=0.97, top=0.88)
         outputs.extend(save_figure(fig, output_dir, f"frozen_relay_participation_{letter}"))
     return outputs
 
@@ -296,8 +284,7 @@ def figure_score_floor(
         ax.set_title(title)
         style_axis(ax)
         ax.legend(frameon=False, ncol=2, loc="best")
-        add_seed_note(fig, seed_count, expected_seeds)
-        fig.subplots_adjust(bottom=0.22, left=0.19, right=0.97, top=0.88)
+        fig.subplots_adjust(bottom=0.18, left=0.19, right=0.97, top=0.88)
         outputs.extend(save_figure(fig, output_dir, f"frozen_score_floor_{letter}"))
     return outputs
 
@@ -370,8 +357,7 @@ def figure_flooding(
     ax.axhline(0.0, color=LIGHT_GRAY, linewidth=0.8, zorder=0)
     ax.set_xlabel("Attack traffic multiplier")
     style_axis(ax)
-    add_seed_note(fig, seed_count, expected_seeds)
-    fig.subplots_adjust(bottom=0.22, left=0.19, right=0.97, top=0.88)
+    fig.subplots_adjust(bottom=0.18, left=0.19, right=0.97, top=0.88)
     outputs.extend(save_figure(fig, output_dir, "frozen_flooding_a"))
 
     panels = [
@@ -393,8 +379,7 @@ def figure_flooding(
         ax.set_ylabel(ylabel)
         ax.set_title(title)
         style_axis(ax)
-        add_seed_note(fig, seed_count, expected_seeds)
-        fig.subplots_adjust(bottom=0.22, left=0.19, right=0.97, top=0.88)
+        fig.subplots_adjust(bottom=0.18, left=0.19, right=0.97, top=0.88)
         outputs.extend(save_figure(fig, output_dir, f"frozen_flooding_{letter}"))
     return outputs
 
@@ -438,8 +423,7 @@ def figure_padding(
     ax.set_title("End-to-end network stress")
     ax.legend(frameon=False, ncol=3, loc="best")
     style_axis(ax)
-    add_seed_note(fig, seed_count, expected_seeds)
-    fig.subplots_adjust(bottom=0.22, left=0.19, right=0.97, top=0.88)
+    fig.subplots_adjust(bottom=0.18, left=0.19, right=0.97, top=0.88)
     outputs.extend(save_figure(fig, output_dir, "frozen_padding_a"))
 
     warning = None
@@ -505,8 +489,9 @@ def figure_proposer_envelope(
         ),
     ]
     for letter, (x_field, y_field, title, x_label, y_label) in zip("ab", specifications):
-        fig, ax = plt.subplots(figsize=(3.45, 2.95))
+        fig, ax = plt.subplots(figsize=(3.45, 2.55))
         finite_points: list[tuple[float, float]] = []
+        scenario_points: dict[tuple[str, str, str], list[tuple[float, float]]] = defaultdict(list)
         for row in selected:
             x = as_float(row.get(x_field))
             y = as_float(row.get(y_field))
@@ -515,14 +500,20 @@ def figure_proposer_envelope(
             if not all(math.isfinite(value) for value in (x, y, eta)):
                 continue
             finite_points.append((x, y))
+            scenario_points[
+                (row.get("adversary_stake_fraction", ""), placement, f"{eta:g}")
+            ].append((x, y))
+        for (_, placement, eta_text), points in sorted(scenario_points.items()):
+            eta = float(eta_text)
             ax.scatter(
-                [x],
-                [y],
+                [statistics.mean(point[0] for point in points)],
+                [statistics.mean(point[1] for point in points)],
                 color=eta_colors.get(eta, GRAY),
                 marker=markers.get(placement, "o"),
-                s=20,
-                alpha=0.72,
-                edgecolors="none",
+                s=27,
+                alpha=0.9,
+                edgecolors="white",
+                linewidths=0.35,
                 zorder=3,
             )
         if finite_points:
@@ -545,16 +536,18 @@ def figure_proposer_envelope(
         ]
         ax.legend(
             handles=legend_handles,
-            frameon=False,
-            ncol=3,
-            loc="upper center",
-            bbox_to_anchor=(0.5, -0.18),
-            fontsize=6.2,
-            columnspacing=0.8,
+            frameon=True,
+            framealpha=0.9,
+            facecolor="white",
+            edgecolor="#D0D0D0",
+            ncol=2,
+            loc="upper left",
+            fontsize=5.8,
+            borderpad=0.25,
+            columnspacing=0.65,
             handletextpad=0.3,
         )
-        add_seed_note(fig, seed_count, expected_seeds)
-        fig.subplots_adjust(bottom=0.36, left=0.19, right=0.97, top=0.88)
+        fig.subplots_adjust(bottom=0.18, left=0.19, right=0.97, top=0.88)
         outputs.extend(save_figure(fig, output_dir, f"frozen_proposer_envelope_{letter}"))
     return outputs
 
@@ -592,8 +585,7 @@ def figure_relay_network_stress(
         ax.set_ylabel(ylabel)
         ax.set_title(title)
         style_axis(ax)
-        add_seed_note(fig, seed_count, expected_seeds)
-        fig.subplots_adjust(bottom=0.22, left=0.19, right=0.97, top=0.88)
+        fig.subplots_adjust(bottom=0.18, left=0.19, right=0.97, top=0.88)
         outputs.extend(save_figure(fig, output_dir, f"frozen_relay_network_stress_{letter}"))
     return outputs
 

@@ -309,7 +309,8 @@ def configure_style() -> None:
             "axes.spines.right": False,
             "pdf.fonttype": 42,
             "ps.fonttype": 42,
-            "savefig.bbox": "tight",
+            # Fixed canvases keep separately rendered panels aligned in LaTeX.
+            "savefig.bbox": None,
         }
     )
 
@@ -331,16 +332,7 @@ def finish_axis(fig: Any, axis: Axes, loads: list[int], seed_count: int) -> None
     axis.grid(axis="y", color="#E6E6E6", linewidth=0.7)
     axis.axhline(0.0, color="#666666", linewidth=0.9, linestyle="--", zorder=1)
     axis.legend(frameon=False, ncol=2, loc="best")
-    fig.subplots_adjust(bottom=0.22, left=0.20, right=0.97, top=0.88)
-    fig.text(
-        0.5,
-        0.015,
-        f"n={seed_count} paired seeds; 95% Student-t CIs",
-        ha="center",
-        va="bottom",
-        fontsize=7.2,
-        color="#666666",
-    )
+    fig.subplots_adjust(bottom=0.18, left=0.20, right=0.97, top=0.88)
 
 
 def plot_paired_metric(
