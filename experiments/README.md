@@ -61,9 +61,14 @@ acceptance artifacts under `results/processed/`. Run the pilot before the main
 matrix; use `--dry-run` to inspect exact commands.
 
 Every simulator run also writes `inclusion_samples.csv`. The security report
-uses those transaction-level samples for pooled p50/p95/p99 latency. The older
-`p95_inclusion_latency_s_mean` field is retained for compatibility but is only
-the mean of per-epoch p95 values and is not the paper latency statistic.
+defines its post-warmup cohort by transaction creation slot, then uses the
+included members of that cohort for pooled p50/p95/p99 latency and inclusion
+ratio. This prevents transactions created during warmup but included afterward
+from inflating the numerator. The report rejects duplicate cohort samples and
+an inclusion ratio above one. It also reads the recorded revision from each
+referenced `run_config.json` and rejects a matrix that mixes Git revisions. The
+older `p95_inclusion_latency_s_mean` field is retained for compatibility but is
+only the mean of per-epoch p95 values and is not the paper latency statistic.
 
 `frozen_v1_devnet_pilot.yaml` and `frozen_v1_devnet_main.yaml` drive the formal
 Kurtosis evaluation. They compare five variants with the same frozen profile:

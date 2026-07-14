@@ -139,16 +139,22 @@ def aggregate_run(run: dict[str, Any]) -> dict[str, Any]:
     output_dir = Path(run["output_dir"])
     status = read_json(output_dir / "runner_status.json")
     summary = read_json(output_dir / "run_summary.json")
+    run_config = read_json(output_dir / "run_config.json")
     epochs = read_csv(output_dir / "epoch_metrics.csv")
     nodes = read_csv(output_dir / "node_epoch_metrics.csv")
     inclusion_samples = read_csv(output_dir / "inclusion_samples.csv")
     warmup = int(run.get("warmup_epochs", 0))
+    slots_per_epoch = max(1, int(run.get("slot_per_epoch", 1)))
+    warmup_slot = warmup * slots_per_epoch
     epochs = usable_rows(epochs, warmup)
     nodes = usable_rows(nodes, warmup)
+    # Define latency and inclusion over a creation-time cohort. Filtering by
+    # inclusion epoch admits transactions created during warmup and can make
+    # included/generated exceed one when the warmup backlog drains.
     inclusion_samples = [
         row
         for row in inclusion_samples
-        if int(to_float(row.get("included_epoch"))) >= warmup
+        if int(to_float(row.get("created_slot"), -1)) >= warmup_slot
     ]
 
     out = {field: run.get(field, "") for field in SCENARIO_FIELDS}
@@ -158,6 +164,7 @@ def aggregate_run(run: dict[str, Any]) -> dict[str, Any]:
             "seed_index": run["seed_index"],
             "seed_value": run["seed_value"],
             "output_dir": run["output_dir"],
+            "git_commit_sha": run_config.get("git_commit_sha", "unknown"),
             "status": status.get("status", "missing"),
             "completed_epochs": summary.get("completed_epochs", 0),
             "expected_epochs": run.get("max_epochs", 0),
@@ -211,10 +218,19 @@ def aggregate_run(run: dict[str, Any]) -> dict[str, Any]:
     out["generated_tx_total"] = sum(
         int(to_float(row.get("generated_tx"))) for row in epochs
     )
+    out["cohort_included_tx_total"] = len(inclusion_samples)
     out["inclusion_ratio"] = (
-        out["included_tx_total"] / out["generated_tx_total"]
+        out["cohort_included_tx_total"] / out["generated_tx_total"]
         if out["generated_tx_total"] > 0
-        else 0.0
+        else (0.0 if out["cohort_included_tx_total"] == 0 else math.inf)
+    )
+    cohort_hashes = [
+        str(row.get("tx_hash"))
+        for row in inclusion_samples
+        if row.get("tx_hash") not in (None, "")
+    ]
+    out["inclusion_sample_duplicate_count"] = len(cohort_hashes) - len(
+        set(cohort_hashes)
     )
     latency_samples = [
         to_float(row.get("latency_s"), math.nan) for row in inclusion_samples
@@ -223,9 +239,9 @@ def aggregate_run(run: dict[str, Any]) -> dict[str, Any]:
         math.isfinite(value) for value in latency_samples
     )
     out["inclusion_latency_sample_coverage"] = (
-        out["inclusion_latency_sample_count"] / out["included_tx_total"]
-        if out["included_tx_total"] > 0
-        else 0.0
+        out["inclusion_latency_sample_count"] / out["cohort_included_tx_total"]
+        if out["cohort_included_tx_total"] > 0
+        else 1.0
     )
     out["p50_inclusion_latency_s_pooled"] = percentile(latency_samples, 0.50)
     out["p95_inclusion_latency_s_pooled"] = percentile(latency_samples, 0.95)
@@ -326,19 +342,25 @@ def group_runs(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if row["complete"]:
             groups[tuple(str(row.get(field, "")) for field in fields)].append(row)
     result: list[dict[str, Any]] = []
-    numeric = PAIR_METRICS + [
-        "max_score_bound_excess",
-        "max_cap_bound_excess",
-        "max_bound_order_excess",
-        "credit_ineligible_path_count",
-        "credit_ineligible_path_rate",
-        "evidence_accounting_mismatch",
-    ]
+    numeric = list(
+        dict.fromkeys(
+            PAIR_METRICS
+            + [
+                "max_score_bound_excess",
+                "max_cap_bound_excess",
+                "max_bound_order_excess",
+                "credit_ineligible_path_count",
+                "credit_ineligible_path_rate",
+                "evidence_accounting_mismatch",
+            ]
+        )
+    )
     for key, group in sorted(groups.items()):
         base = dict(zip(fields, key))
         for metric in numeric:
             avg, ci, n = mean_ci95(to_float(row.get(metric), math.nan) for row in group)
-            result.append({**base, "metric": metric, "n": n, "mean": avg, "ci95": ci})
+            if n > 0:
+                result.append({**base, "metric": metric, "n": n, "mean": avg, "ci95": ci})
     return result
 
 
@@ -411,12 +433,24 @@ def validation(rows: list[dict[str, Any]], expected_seeds: int) -> list[dict[str
     max_order_excess = max(
         (to_float(row["max_bound_order_excess"]) for row in complete), default=0.0
     )
+    revisions = {
+        str(row.get("git_commit_sha", "")).strip()
+        for row in complete
+        if str(row.get("git_commit_sha", "")).strip()
+    }
     return [
         check("run-completeness", len(complete) == len(rows), f"complete={len(complete)}/{len(rows)}"),
         check(
             "seed-coverage",
             bool(scenario_counts) and min_coverage >= expected_seeds,
             f"minimum successful seeds per scenario={min_coverage}, expected={expected_seeds}",
+        ),
+        check(
+            "run-revision-consistency",
+            len(revisions) == 1 and "unknown" not in revisions,
+            "referenced git revisions={}".format(
+                ",".join(sorted(revisions)) if revisions else "missing"
+            ),
         ),
         check(
             "score-dependent-proposer-bound",
@@ -441,6 +475,24 @@ def validation(rows: list[dict[str, Any]], expected_seeds: int) -> list[dict[str
                     else 0.0
                 ),
                 sum(int(row["evidence_accounting_mismatch"]) for row in complete),
+            ),
+        ),
+        check(
+            "creation-cohort-inclusion-accounting",
+            all(
+                0.0 <= to_float(row.get("inclusion_ratio")) <= 1.0 + 1e-9
+                and int(to_float(row.get("inclusion_sample_duplicate_count"))) == 0
+                for row in complete
+            ),
+            "maximum inclusion ratio={:.6g}, duplicate samples={}".format(
+                max(
+                    (to_float(row.get("inclusion_ratio")) for row in complete),
+                    default=0.0,
+                ),
+                sum(
+                    int(to_float(row.get("inclusion_sample_duplicate_count")))
+                    for row in complete
+                ),
             ),
         ),
         check(

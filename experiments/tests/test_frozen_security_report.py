@@ -15,6 +15,7 @@ from frozen_security_report import (  # noqa: E402
     SCENARIO_FIELDS,
     aggregate_run,
     fixed_padding_check,
+    group_runs,
     paired_differences,
     validation,
 )
@@ -32,6 +33,7 @@ def synthetic_run(seed: int, padding: int, contribution: float) -> dict[str, obj
             "protocol": "topostake",
             "padding_identities": padding,
             "seed_value": seed,
+            "git_commit_sha": "test-commit",
             "complete": True,
             "bound_violation_count": 0,
             "max_score_bound_excess": 0.0,
@@ -40,6 +42,11 @@ def synthetic_run(seed: int, padding: int, contribution: float) -> dict[str, obj
             "credit_ineligible_path_count": 0,
             "credit_ineligible_path_rate": 0.0,
             "included_tx_total": 1,
+            "generated_tx_total": 1,
+            "cohort_included_tx_total": 1,
+            "inclusion_ratio": 1.0,
+            "inclusion_sample_duplicate_count": 0,
+            "inclusion_latency_sample_coverage": 1.0,
             "evidence_accounting_mismatch": 0,
             "finite_metrics": True,
             "adversary_raw_contribution_total": contribution,
@@ -84,12 +91,16 @@ class FrozenSecurityReportTests(unittest.TestCase):
         checks = {item["name"]: item for item in validation(rows, expected_seeds=2)}
         self.assertTrue(checks["run-completeness"]["passed"])
         self.assertTrue(checks["seed-coverage"]["passed"])
+        self.assertTrue(checks["run-revision-consistency"]["passed"])
         self.assertTrue(checks["score-dependent-proposer-bound"]["passed"])
         one_seed = {item["name"]: item for item in validation(rows[:1], expected_seeds=2)}
         self.assertFalse(one_seed["seed-coverage"]["passed"])
         rows[1]["max_cap_bound_excess"] = 0.01
         checks = {item["name"]: item for item in validation(rows, expected_seeds=2)}
         self.assertFalse(checks["score-independent-proposer-cap"]["passed"])
+        rows[1]["git_commit_sha"] = "different-commit"
+        checks = {item["name"]: item for item in validation(rows, expected_seeds=2)}
+        self.assertFalse(checks["run-revision-consistency"]["passed"])
 
     def test_focal_relayer_isolation_is_validated(self) -> None:
         row = synthetic_run(0, 0, 10.0)
@@ -111,6 +122,29 @@ class FrozenSecurityReportTests(unittest.TestCase):
         row["background_profile_mismatch_count"] = 1
         checks = {item["name"]: item for item in validation([row], expected_seeds=1)}
         self.assertFalse(checks["focal-relayer-isolation"]["passed"])
+
+    def test_creation_cohort_accounting_rejects_overflow_and_duplicates(self) -> None:
+        row = synthetic_run(0, 0, 10.0)
+        checks = {item["name"]: item for item in validation([row], expected_seeds=1)}
+        self.assertTrue(checks["creation-cohort-inclusion-accounting"]["passed"])
+        row["inclusion_ratio"] = 1.01
+        checks = {item["name"]: item for item in validation([row], expected_seeds=1)}
+        self.assertFalse(checks["creation-cohort-inclusion-accounting"]["passed"])
+        row["inclusion_ratio"] = 1.0
+        row["inclusion_sample_duplicate_count"] = 1
+        checks = {item["name"]: item for item in validation([row], expected_seeds=1)}
+        self.assertFalse(checks["creation-cohort-inclusion-accounting"]["passed"])
+
+    def test_group_rows_are_unique_and_skip_structural_nulls(self) -> None:
+        rows = [synthetic_run(0, 0, 10.0), synthetic_run(1, 0, 12.0)]
+        for row in rows:
+            row["focal_bonus_mean"] = float("nan")
+            row["focal_proposer_weight_mean"] = float("nan")
+        groups = group_runs(rows)
+        keys = [(row["experiment"], row["metric"]) for row in groups]
+        self.assertEqual(len(keys), len(set(keys)))
+        self.assertNotIn(("path_padding_end_to_end", "focal_bonus_mean"), keys)
+        self.assertNotIn(("path_padding_end_to_end", "focal_proposer_weight_mean"), keys)
 
     def test_fixed_padding_report_is_required_and_validated(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -134,11 +168,14 @@ class FrozenSecurityReportTests(unittest.TestCase):
             output = Path(directory)
             (output / "runner_status.json").write_text(json.dumps({"status": "ok"}))
             (output / "run_summary.json").write_text(json.dumps({"completed_epochs": 1}))
+            (output / "run_config.json").write_text(
+                json.dumps({"git_commit_sha": "test-commit"})
+            )
             (output / "epoch_metrics.csv").write_text(
-                "epoch,included_tx,valid_path_count,invalid_path_count,"
+                "epoch,generated_tx,included_tx,valid_path_count,invalid_path_count,"
                 "adversary_proposer_weight_share,score_dependent_proposer_weight_bound,"
                 "theoretical_proposer_weight_bound,bound_violation\n"
-                "0,10,7,3,0.1,0.2,0.3,false\n"
+                "0,10,10,7,3,0.1,0.2,0.3,false\n"
             )
             (output / "node_epoch_metrics.csv").write_text(
                 "epoch,focal_relayer,adversarial,raw_contribution,relay_reward,"
@@ -165,15 +202,63 @@ class FrozenSecurityReportTests(unittest.TestCase):
                 "seed_value": 0,
                 "max_epochs": 1,
                 "warmup_epochs": 0,
+                "slot_per_epoch": 5,
             }
             result = aggregate_run(run)
             self.assertTrue(result["complete"])
+            self.assertEqual(result["git_commit_sha"], "test-commit")
             self.assertEqual(result["evidence_accounting_mismatch"], 0)
             self.assertAlmostEqual(result["credit_ineligible_path_rate"], 0.3)
+            self.assertEqual(result["cohort_included_tx_total"], 10)
+            self.assertAlmostEqual(result["inclusion_ratio"], 1.0)
+            self.assertEqual(result["inclusion_sample_duplicate_count"], 0)
             self.assertAlmostEqual(result["p50_inclusion_latency_s_pooled"], 5.5)
             self.assertAlmostEqual(result["p95_inclusion_latency_s_pooled"], 9.55)
             self.assertAlmostEqual(result["inclusion_latency_sample_coverage"], 1.0)
             self.assertAlmostEqual(result["focal_relay_reward_per_stake"], 0.1)
+
+    def test_latency_cohort_is_selected_by_creation_slot(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            (output / "runner_status.json").write_text(json.dumps({"status": "ok"}))
+            (output / "run_summary.json").write_text(json.dumps({"completed_epochs": 2}))
+            (output / "run_config.json").write_text(
+                json.dumps({"git_commit_sha": "test-commit"})
+            )
+            (output / "epoch_metrics.csv").write_text(
+                "epoch,generated_tx,included_tx,valid_path_count,invalid_path_count,"
+                "adversary_proposer_weight_share,score_dependent_proposer_weight_bound,"
+                "theoretical_proposer_weight_bound,bound_violation\n"
+                "0,3,0,0,0,0.1,0.2,0.3,false\n"
+                "1,2,3,3,0,0.1,0.2,0.3,false\n"
+            )
+            (output / "node_epoch_metrics.csv").write_text(
+                "epoch,focal_relayer,adversarial,raw_contribution,relay_reward,"
+                "economic_stake,bonus,normalized_proposer_weight\n"
+                "0,false,false,0,0,1,0,0.01\n"
+                "1,false,false,0,0,1,0,0.01\n"
+            )
+            (output / "inclusion_samples.csv").write_text(
+                "included_epoch,tx_hash,created_slot,included_slot,latency_s,evidence_eligible\n"
+                "1,warmup-a,3,6,3.0,true\n"
+                "1,warmup-b,4,6,2.0,true\n"
+                "1,cohort-a,5,6,1.0,true\n"
+            )
+            run = {
+                "output_dir": str(output),
+                "run_id": "cohort-test",
+                "seed_index": 0,
+                "seed_value": 0,
+                "max_epochs": 2,
+                "warmup_epochs": 1,
+                "slot_per_epoch": 5,
+            }
+            result = aggregate_run(run)
+            self.assertEqual(result["included_tx_total"], 3)
+            self.assertEqual(result["generated_tx_total"], 2)
+            self.assertEqual(result["cohort_included_tx_total"], 1)
+            self.assertAlmostEqual(result["inclusion_ratio"], 0.5)
+            self.assertAlmostEqual(result["p95_inclusion_latency_s_pooled"], 1.0)
 
 
 if __name__ == "__main__":
