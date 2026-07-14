@@ -94,6 +94,29 @@ fn node_relay_profile(config_profile: RelayProfile, node_index: u32) -> RelayPro
     }
 }
 
+fn select_lazy_relayer_addresses(
+    mut candidates: Vec<(u32, String)>,
+    lazy_fraction: f64,
+    failure_seed: u64,
+) -> HashSet<String> {
+    // HashMap iteration order is process-dependent. Canonicalize the candidate
+    // population before applying the seeded shuffle so paired protocol runs
+    // assign the same validator identities to the lazy strategy.
+    candidates.sort_by(|left, right| {
+        left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1))
+    });
+    let mut addresses: Vec<String> = candidates
+        .into_iter()
+        .map(|(_, address)| address)
+        .collect();
+    let mut relay_rng = StdRng::seed_from_u64(failure_seed ^ 0x5245_4c41_595f_4d49);
+    addresses.shuffle(&mut relay_rng);
+    let lazy_count =
+        ((addresses.len() as f64 * lazy_fraction.clamp(0.0, 1.0)).round() as usize)
+            .min(addresses.len());
+    addresses.into_iter().take(lazy_count).collect()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SimulationConfig {
     pub node_num: u32,
@@ -501,24 +524,25 @@ pub async fn start_network(config: SimulationConfig) {
             }
         }
     } else if config.lazy_fraction > 0.0 {
-        let mut relay_candidates: Vec<String> = node_map
+        let relay_candidates: Vec<(u32, String)> = node_map
             .iter()
             .filter(|(_, node)| node.index < node_num)
-            .map(|(address, _)| address.clone())
+            .map(|(address, node)| (node.index, address.clone()))
             .collect();
-        let mut relay_rng = StdRng::seed_from_u64(config.failure_seed ^ 0x5245_4c41_595f_4d49);
-        relay_candidates.shuffle(&mut relay_rng);
-        let lazy_count = ((relay_candidates.len() as f64 * config.lazy_fraction).round()
-            as usize)
-            .min(relay_candidates.len());
-        for (rank, address) in relay_candidates.iter().enumerate() {
-            if let Some(node) = node_map.get_mut(address) {
-                node.set_relay_profile(if rank < lazy_count {
-                    RelayProfile::Lazy
-                } else {
-                    relay_profile
-                });
-            }
+        let lazy_addresses = select_lazy_relayer_addresses(
+            relay_candidates,
+            config.lazy_fraction,
+            config.failure_seed,
+        );
+        for (address, node) in node_map
+            .iter_mut()
+            .filter(|(_, node)| node.index < node_num)
+        {
+            node.set_relay_profile(if lazy_addresses.contains(address) {
+                RelayProfile::Lazy
+            } else {
+                relay_profile
+            });
         }
     } else if relay_profile == RelayProfile::Mixed {
         let mut addresses_by_degree: Vec<String> = node_degrees.keys().cloned().collect();
@@ -1240,6 +1264,27 @@ mod tests {
 
         assert_eq!(summary(123), summary(123));
         assert_ne!(summary(123), summary(124));
+    }
+
+    #[test]
+    fn lazy_relayer_assignment_is_independent_of_hashmap_iteration_order() {
+        let candidates = vec![
+            (0, "validator-0".to_string()),
+            (1, "validator-1".to_string()),
+            (2, "validator-2".to_string()),
+            (3, "validator-3".to_string()),
+            (4, "validator-4".to_string()),
+            (5, "validator-5".to_string()),
+        ];
+        let mut reversed = candidates.clone();
+        reversed.reverse();
+
+        let selected = super::select_lazy_relayer_addresses(candidates, 0.5, 12345);
+        let selected_reversed =
+            super::select_lazy_relayer_addresses(reversed, 0.5, 12345);
+
+        assert_eq!(selected, selected_reversed);
+        assert_eq!(selected.len(), 3);
     }
 
     #[test]

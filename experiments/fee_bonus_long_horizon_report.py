@@ -448,6 +448,9 @@ def main() -> int:
     acceptance_path = prefix.with_name(prefix.name + "_acceptance.json")
     acceptance_path.write_text(json.dumps(acceptance, indent=2) + "\n", encoding="utf-8")
     print(f"{suite}: {'PASS' if passed else 'INCOMPLETE/FAIL'}")
+    for check in checks:
+        if not check["passed"]:
+            print(f"FAILED {check['name']}: {check['detail']}")
     print(f"wrote {acceptance_path.relative_to(ROOT)}")
     return 0 if passed or args.allow_incomplete else 1
 

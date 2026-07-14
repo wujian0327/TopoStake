@@ -7,7 +7,7 @@
   "timeout_seconds": 1200,
   "seeds": [0, 1, 2],
   "defaults": {
-    "run_revision": "fee-bonus-long-horizon-v1",
+    "run_revision": "fee-bonus-long-horizon-v2-deterministic-assignment",
     "node_num": 30,
     "sybil_node_num": 0,
     "fake_node_num": 0,
