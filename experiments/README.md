@@ -15,6 +15,7 @@ python scripts/task.py frozen-security-pilot
 python scripts/task.py frozen-security-main --dry-run
 python scripts/task.py frozen-security-figures
 python scripts/task.py frozen-devnet-check
+python scripts/task.py frozen-devnet-figures
 python scripts/task.py frozen-devnet-pilot --dry-run
 python scripts/task.py tdsc-fast
 python scripts/task.py experiments-main
@@ -106,6 +107,13 @@ and inline-evidence verification timing. Per-run artifacts live under
 repeated with `--resume` after the underlying issue is fixed.
 The aggregate table includes `block_ssz_count` and `resource_samples` so every
 block-size and resource result retains its measurement denominator.
+
+After the main matrix completes, `frozen-devnet-figures` validates every row
+and writes paired, seed-level 95% Student-t comparisons against baseline. Each
+metric is exported as a separate PDF/PNG under
+`figures/frozen_v1_devnet/`; the task also writes an inspectable figure-data
+CSV, a compact LaTeX table, and a manifest that records the aggregate-resource
+and single-host measurement scope.
 
 ## Frozen-v1 Devnet Acceptance
 

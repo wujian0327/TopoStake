@@ -135,6 +135,10 @@ def task_frozen_security_figures(_args: argparse.Namespace) -> None:
     run([PYTHON, "analysis/plot_frozen_security.py"])
 
 
+def task_frozen_devnet_figures(_args: argparse.Namespace) -> None:
+    run([PYTHON, "analysis/plot_frozen_devnet.py"])
+
+
 def task_frozen_devnet_check(args: argparse.Namespace) -> None:
     cmd = [PYTHON, "experiments/frozen_devnet_acceptance.py"]
     if args.artifact:
@@ -207,6 +211,7 @@ TASKS: Dict[str, Callable[[argparse.Namespace], None]] = {
     "frozen-evidence-bench": task_frozen_evidence_bench,
     "frozen-padding-check": task_frozen_padding_check,
     "frozen-devnet-check": task_frozen_devnet_check,
+    "frozen-devnet-figures": task_frozen_devnet_figures,
     "frozen-devnet-smoke": task_frozen_devnet_smoke,
     "frozen-devnet-pilot": task_frozen_devnet_pilot,
     "frozen-devnet-main": task_frozen_devnet_main,

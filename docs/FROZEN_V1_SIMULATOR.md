@@ -146,6 +146,24 @@ repeated-identity rejection. Outputs are written to
 split into `figures/frozen_v1_evidence_overhead_a.pdf` for runtime and
 `figures/frozen_v1_evidence_overhead_b.pdf` for encoded size.
 
+## Frozen-v1 devnet figures
+
+After `frozen-devnet-main` completes the formal 75-run matrix, generate the
+devnet figures with:
+
+```bash
+python scripts/task.py frozen-devnet-figures
+```
+
+The command requires all protocol-acceptance and measurement-quality gates to
+pass. It pairs runs by seed and reports two-sided 95% Student-t intervals for
+each difference from baseline. Output panels are independent single-axis files
+under `figures/frozen_v1_devnet/`: performance (`_a` throughput, `_b` p95
+latency), aggregate single-host resources (`_a` CPU, `_b` memory, `_c` network
+traffic), and evidence overhead (`_a` additional serialized bytes per included
+transaction, `_b` block-level inline-evidence verification). The manifest
+records the exact source, seed set, statistical method, and resource scope.
+
 The score-floor sweep crosses `kappa = {0.1, 1, 10}` with low-to-normal offered
 loads. This is intentional: at high score mass, changing `kappa` has little
 effect and does not test the startup/idle small-denominator case.
