@@ -167,6 +167,38 @@ def task_fee_bonus_figures(args: argparse.Namespace) -> None:
     run([PYTHON, "analysis/plot_fee_bonus_long_horizon.py", "--config", config])
 
 
+def task_organic_capture(args: argparse.Namespace, config: str) -> None:
+    task_run_experiments(config, force=args.force, dry_run=args.dry_run)
+    if args.dry_run:
+        return
+    cmd = [PYTHON, "experiments/organic_capture_report.py", "--config", config]
+    if args.allow_incomplete:
+        cmd.append("--allow-incomplete")
+    run(cmd)
+    run([PYTHON, "analysis/plot_organic_capture.py", "--config", config])
+
+
+def task_organic_capture_pilot(args: argparse.Namespace) -> None:
+    task_organic_capture(args, "experiments/configs/frozen_v1_organic_capture_pilot.yaml")
+
+
+def task_organic_capture_main(args: argparse.Namespace) -> None:
+    task_organic_capture(args, "experiments/configs/frozen_v1_organic_capture_main.yaml")
+
+
+def task_organic_capture_report(args: argparse.Namespace) -> None:
+    config = args.config or "experiments/configs/frozen_v1_organic_capture_pilot.yaml"
+    cmd = [PYTHON, "experiments/organic_capture_report.py", "--config", config]
+    if args.allow_incomplete:
+        cmd.append("--allow-incomplete")
+    run(cmd)
+
+
+def task_organic_capture_figures(args: argparse.Namespace) -> None:
+    config = args.config or "experiments/configs/frozen_v1_organic_capture_pilot.yaml"
+    run([PYTHON, "analysis/plot_organic_capture.py", "--config", config])
+
+
 def task_frozen_devnet_figures(_args: argparse.Namespace) -> None:
     run([PYTHON, "analysis/plot_frozen_devnet.py"])
 
@@ -244,6 +276,10 @@ TASKS: Dict[str, Callable[[argparse.Namespace], None]] = {
     "frozen-fee-bonus-main": task_fee_bonus_main,
     "frozen-fee-bonus-report": task_fee_bonus_report,
     "frozen-fee-bonus-figures": task_fee_bonus_figures,
+    "frozen-organic-capture-pilot": task_organic_capture_pilot,
+    "frozen-organic-capture-main": task_organic_capture_main,
+    "frozen-organic-capture-report": task_organic_capture_report,
+    "frozen-organic-capture-figures": task_organic_capture_figures,
     "frozen-evidence-bench": task_frozen_evidence_bench,
     "frozen-padding-check": task_frozen_padding_check,
     "frozen-devnet-check": task_frozen_devnet_check,

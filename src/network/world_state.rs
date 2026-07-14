@@ -106,6 +106,34 @@ struct EpochRewardReport {
     burned_relay_fee: f64,
 }
 
+#[derive(Default, Debug, Clone)]
+struct OrganicCaptureReport {
+    included_tx: u64,
+    valid_path_count: u64,
+    relay_reward: f64,
+    adversary_relay_reward: f64,
+    raw_contribution: f64,
+    adversary_raw_contribution: f64,
+}
+
+impl OrganicCaptureReport {
+    fn adversary_relay_reward_share(&self) -> f64 {
+        if self.relay_reward > 0.0 {
+            self.adversary_relay_reward / self.relay_reward
+        } else {
+            0.0
+        }
+    }
+
+    fn adversary_raw_contribution_share(&self) -> f64 {
+        if self.raw_contribution > 0.0 {
+            self.adversary_raw_contribution / self.raw_contribution
+        } else {
+            0.0
+        }
+    }
+}
+
 impl EpochRewardReport {
     fn total_by_address(&self) -> HashMap<String, f64> {
         let mut totals = self.proposer_by_address.clone();
@@ -737,6 +765,7 @@ impl WorldState {
         self.write_inclusion_samples(&inclusion_samples);
 
         let reward_report = self.estimate_epoch_rewards(&epoch_blocks, validators, &snapshot);
+        let organic_capture = self.organic_capture_report(&epoch_blocks, validators, &snapshot);
         for (address, reward) in reward_report.total_by_address() {
             *self.total_reward_income.entry(address).or_insert(0.0) += reward;
         }
@@ -856,6 +885,16 @@ impl WorldState {
             total_proposer_reward: reward_report.total_proposer_reward,
             total_relay_reward: reward_report.total_relay_reward,
             burned_relay_fee: reward_report.burned_relay_fee,
+            organic_included_tx: organic_capture.included_tx,
+            organic_valid_path_count: organic_capture.valid_path_count,
+            organic_relay_reward: organic_capture.relay_reward,
+            adversary_organic_relay_reward: organic_capture.adversary_relay_reward,
+            adversary_organic_relay_reward_share: organic_capture
+                .adversary_relay_reward_share(),
+            organic_raw_contribution: organic_capture.raw_contribution,
+            adversary_organic_raw_contribution: organic_capture.adversary_raw_contribution,
+            adversary_organic_raw_contribution_share: organic_capture
+                .adversary_raw_contribution_share(),
             stake_gini,
             stake_hhi,
             proposer_weight_gini,
@@ -1193,6 +1232,69 @@ impl WorldState {
                 }
                 report.total_relay_reward += paid;
                 report.burned_relay_fee += (relay_budget - paid).max(0.0);
+            }
+        }
+        report
+    }
+
+    /// Measure coalition capture from transactions funded by non-adversarial
+    /// originators. This is an evaluation-only decomposition of the existing
+    /// reward and score rules; it does not alter path acceptance or consensus.
+    fn organic_capture_report(
+        &self,
+        blocks: &[Block],
+        validators: &[Validator],
+        snapshot: &ConsensusMetricsSnapshot,
+    ) -> OrganicCaptureReport {
+        let validator_set: HashSet<&str> = validators.iter().map(|v| v.address.as_str()).collect();
+        let theta = snapshot.topostake_proposer_fee_ratio.unwrap_or(1.0);
+        let depth = snapshot.topostake_depth.unwrap_or(1);
+        let cost_reference = snapshot.topostake_score_cost_reference.unwrap_or(1.0);
+        let mut report = OrganicCaptureReport::default();
+
+        if snapshot.topostake_depth.is_none() {
+            return report;
+        }
+
+        for block in blocks {
+            for (idx, tx) in block.body.transactions.iter().enumerate() {
+                if self.adversarial_nodes.contains(&tx.from) {
+                    continue;
+                }
+                report.included_tx += 1;
+                let Some(path) = block.body.paths.get(idx) else {
+                    continue;
+                };
+                if !block.verify_path_evidence(idx) {
+                    continue;
+                }
+                let full_path = path.full_path(block.header.miner.clone());
+                let path_length = full_path.len().saturating_sub(1);
+                if path_length < 2 {
+                    continue;
+                }
+                report.valid_path_count += 1;
+                let relay_budget = (1.0 - theta) * tx.fee;
+                let q = TopoStakeConsensus::transaction_credit_weight(
+                    tx.irrecoverable_cost,
+                    cost_reference,
+                );
+                for position in 1..path_length {
+                    let relayer = &full_path[position];
+                    if !validator_set.contains(relayer.as_str()) {
+                        continue;
+                    }
+                    let gamma =
+                        TopoStakeConsensus::gamma_for_depth(depth, position, path_length);
+                    let reward = relay_budget * gamma;
+                    let contribution = q * gamma;
+                    report.relay_reward += reward;
+                    report.raw_contribution += contribution;
+                    if self.adversarial_nodes.contains(relayer) {
+                        report.adversary_relay_reward += reward;
+                        report.adversary_raw_contribution += contribution;
+                    }
+                }
             }
         }
         report
@@ -1589,11 +1691,97 @@ impl From<serde_json::error::Error> for WorldStateError {
 mod tests {
     use super::*;
     use crate::blockchain::block::Block;
-    use crate::blockchain::path::TransactionPaths;
+    use crate::blockchain::path::{clear_receipt_cache_for_tests, TransactionPaths};
     use crate::blockchain::transaction::Transaction;
     use crate::blockchain::Blockchain;
     use crate::network::node::{Neighbor, Node};
     use log::info;
+
+    #[test]
+    fn organic_capture_excludes_coalition_origins_and_accounts_relayer_credit() {
+        clear_receipt_cache_for_tests();
+        let origin = Wallet::new();
+        let adversary = Wallet::new();
+        let miner = Wallet::new();
+        let tx = Transaction::with_costs(
+            miner.address.clone(),
+            0,
+            1.0,
+            1.0,
+            origin.clone(),
+        );
+        let mut path = TransactionPaths::new_with_epoch(tx.clone(), 0);
+        assert!(path.append_completed_hop(
+            adversary.address.clone(),
+            origin.clone(),
+            adversary.clone(),
+        ));
+        assert!(path.append_completed_hop(
+            miner.address.clone(),
+            adversary.clone(),
+            miner.clone(),
+        ));
+        let block = Block::new(
+            1,
+            0,
+            0,
+            Block::gen_genesis_block().header.hash,
+            Body::new(vec![tx], vec![path.to_aggregated_signed_paths()]),
+            miner.clone(),
+        )
+        .unwrap();
+        let config = TopoStakeConfig {
+            proposer_fee_ratio: 0.5,
+            score_cost_reference: 1.0,
+            ..TopoStakeConfig::default()
+        };
+        let (mut world, _sender, _receiver) = WorldState::new(
+            Block::gen_genesis_block(),
+            ConsensusType::TopoStake,
+            Blockchain::new(Block::gen_genesis_block()),
+            1,
+            5,
+            20,
+            8,
+            config,
+            0.1,
+            3,
+            1,
+            "ba".to_string(),
+            1,
+            10,
+            PathBuf::from("/tmp/topostake-organic-capture-test"),
+            "organic-capture-test".to_string(),
+            1,
+            false,
+            0.01,
+            0.0,
+            Arc::new(AtomicU64::new(0)),
+            Arc::new(std::sync::Mutex::new(HashMap::new())),
+        );
+        world.adversarial_nodes.insert(adversary.address.clone());
+        let validators = vec![
+            Validator::new(origin.address.clone(), 1.0, 1.0),
+            Validator::new(adversary.address.clone(), 1.0, 1.0),
+            Validator::new(miner.address.clone(), 1.0, 1.0),
+        ];
+        let snapshot = world.consensus.metrics_snapshot();
+        let report = world.organic_capture_report(&[block.clone()], &validators, &snapshot);
+        assert_eq!(report.included_tx, 1);
+        assert_eq!(report.valid_path_count, 1);
+        assert!(report.relay_reward > 0.0);
+        assert_eq!(report.adversary_relay_reward, report.relay_reward);
+        assert!(report.raw_contribution > 0.0);
+        assert_eq!(
+            report.adversary_raw_contribution,
+            report.raw_contribution
+        );
+
+        world.adversarial_nodes.insert(origin.address);
+        let excluded = world.organic_capture_report(&[block], &validators, &snapshot);
+        assert_eq!(excluded.included_tx, 0);
+        assert_eq!(excluded.relay_reward, 0.0);
+    }
 
     #[tokio::test]
     async fn timer_trigger() {

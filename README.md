@@ -78,7 +78,7 @@ Each run writes `output.log` in the project root and a reproducibility bundle to
 - `node_epoch_metrics.csv`: per-validator stake, score, reward, fee, and topology metrics
 - `run_summary.json`: final generated/included transaction counts, block success/failure counts, and adversary net income
 
-`epoch_metrics.csv` includes generated/included transactions, logical throughput, p50/p95/p99 inclusion latency, block success ratio, path length and validity counts, conflicting receipt count, proposer/relay/burned rewards, stake and proposer-weight Gini/HHI, adversary stake/score/weight shares, theoretical proposer-weight bound, observed adversary proposer share, and a bound-violation flag.
+`epoch_metrics.csv` includes generated/included transactions, logical throughput, p50/p95/p99 inclusion latency, block success ratio, path length and validity counts, conflicting receipt count, proposer/relay/burned rewards, organic user-funded relay reward and raw-contribution capture, stake and proposer-weight Gini/HHI, adversary stake/score/weight shares, theoretical proposer-weight bound, observed adversary proposer share, and a bound-violation flag.
 
 `node_epoch_metrics.csv` includes validator id, relay profile, focal-relayer and adversarial flags, economic stake, balance, raw/saturated contribution, EMA and normalized score, bonus, proposer weights, proposer count, relay/proposer reward, fee spent, net income, signed outbound relay-forward attempts, degree, and betweenness. `inclusion_samples.csv` records transaction-level logical inclusion latency for pooled quantiles.
 
@@ -101,6 +101,10 @@ Use the cross-platform Python runner on Windows, Linux, or macOS:
   long-horizon pilot
 - `python scripts/task.py frozen-fee-bonus-main --dry-run`: inspect the formal
   20-seed, 160-run long-horizon matrix
+- `python scripts/task.py frozen-organic-capture-pilot`: run the three-seed,
+  36-run paired organic-traffic path-capture pilot
+- `python scripts/task.py frozen-organic-capture-main --dry-run`: inspect the
+  formal 20-seed, 240-run organic-traffic capture matrix
 - `python scripts/task.py frozen-devnet-check`: frozen-v1 profile and devnet-artifact acceptance gate
 - `python scripts/task.py frozen-devnet-pilot --dry-run`: inspect the formal five-variant pilot matrix
 - `python scripts/task.py experiments-main`: full paper experiment matrix
@@ -122,3 +126,13 @@ which measures expected proposer opportunity without finite-horizon election
 noise. Reported 95% mean intervals use Student-t critical values across
 independent seeds; cost thresholds use a deterministic paired bootstrap around
 the ratio of mean reward premium to mean additional forwarding work.
+
+The organic-capture suite labels a stake-controlled coalition without adding
+coalition-funded flooding transactions. Its baseline uses ordinary
+topology-dependent relay delay; the paired stress run gives coalition relays
+zero delay, modelling a strong first-path capture advantage. The report
+separately accounts for relay reward and raw score contribution arising only
+from transactions originated outside the coalition, then verifies that the
+resulting proposer share remains inside the frozen-v1 envelope. This is a
+capture stress test, not a claim that signatures prove physical relay service
+or that every malicious proposer can reconstruct arbitrary paths.
