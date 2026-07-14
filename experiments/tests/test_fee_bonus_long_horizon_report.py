@@ -7,7 +7,14 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "experiments"))
 
-from fee_bonus_long_horizon_report import aggregate_run, gini, paired_rows, spearman  # noqa: E402
+from fee_bonus_long_horizon_report import (  # noqa: E402
+    PAIR_METRICS,
+    aggregate_run,
+    gini,
+    mean_ci,
+    paired_rows,
+    spearman,
+)
 
 
 class FeeBonusLongHorizonReportTests(unittest.TestCase):
@@ -20,6 +27,12 @@ class FeeBonusLongHorizonReportTests(unittest.TestCase):
         self.assertAlmostEqual(spearman([1, 2, 3], [30, 20, 10]), -1.0)
         self.assertTrue(math.isfinite(spearman([1, 1, 1], [2, 3, 4])))
 
+    def test_small_sample_ci_uses_student_t(self) -> None:
+        mean, ci, n = mean_ci([1.0, 2.0, 3.0])
+        self.assertEqual(n, 3)
+        self.assertEqual(mean, 2.0)
+        self.assertAlmostEqual(ci, 4.303 / math.sqrt(3.0))
+
     def test_paired_rows_match_seed_and_fraction(self) -> None:
         base = {
             "complete": True,
@@ -28,23 +41,7 @@ class FeeBonusLongHorizonReportTests(unittest.TestCase):
         }
         fee = {**base, "protocol_label": "topostake_eta0"}
         full = {**base, "protocol_label": "topostake"}
-        for metric in (
-            "throughput_mean",
-            "p95_inclusion_latency_s_pooled",
-            "inclusion_ratio",
-            "credit_eligible_rate",
-            "relay_reward_total",
-            "proposer_reward_total",
-            "relay_reward_per_stake_gini",
-            "total_reward_per_stake_gini",
-            "relay_reward_degree_spearman",
-            "relay_reward_betweenness_spearman",
-            "top_degree_quartile_relay_reward_share",
-            "forward_attempts_per_included_tx",
-            "break_even_relay_cost_per_forward",
-            "active_relay_reward_per_stake",
-            "lazy_relay_reward_per_stake",
-        ):
+        for metric in PAIR_METRICS:
             fee[metric] = 1.0
             full[metric] = 1.5
         paired = paired_rows([fee, full])
@@ -92,6 +89,14 @@ class FeeBonusLongHorizonReportTests(unittest.TestCase):
             self.assertEqual(result["relay_forward_attempts"], 26.0)
             self.assertEqual(result["credit_eligible_rate"], 0.5)
             self.assertEqual(result["observed_lazy_fraction"], 0.5)
+            self.assertTrue(result["profile_comparison_available"])
+            self.assertEqual(result["active_proposer_reward_per_stake"], 4.0)
+            self.assertEqual(result["lazy_proposer_reward_per_stake"], 2.0)
+            self.assertEqual(result["active_total_reward_per_stake"], 6.0)
+            self.assertEqual(result["lazy_total_reward_per_stake"], 2.0)
+            self.assertEqual(result["participation_reward_premium_per_stake"], 4.0)
+            self.assertEqual(result["participation_forward_premium_per_stake"], 16.0)
+            self.assertEqual(result["participation_break_even_cost_per_forward"], 0.25)
 
 
 if __name__ == "__main__":

@@ -33,7 +33,51 @@ PAIR_METRICS = (
     "break_even_relay_cost_per_forward",
     "active_relay_reward_per_stake",
     "lazy_relay_reward_per_stake",
+    "active_proposer_reward_per_stake",
+    "lazy_proposer_reward_per_stake",
+    "active_total_reward_per_stake",
+    "lazy_total_reward_per_stake",
+    "participation_reward_premium_per_stake",
+    "active_forward_attempts_per_stake",
+    "lazy_forward_attempts_per_stake",
+    "participation_forward_premium_per_stake",
+    "participation_break_even_cost_per_forward",
 )
+
+# Two-sided 95% Student-t critical values indexed by sample count. The formal
+# suite uses 20 seeds; retaining the small-n entries keeps pilot intervals
+# honest instead of applying a normal approximation to three observations.
+T95 = {
+    2: 12.706,
+    3: 4.303,
+    4: 3.182,
+    5: 2.776,
+    6: 2.571,
+    7: 2.447,
+    8: 2.365,
+    9: 2.306,
+    10: 2.262,
+    11: 2.228,
+    12: 2.201,
+    13: 2.179,
+    14: 2.160,
+    15: 2.145,
+    16: 2.131,
+    17: 2.120,
+    18: 2.110,
+    19: 2.101,
+    20: 2.093,
+    21: 2.086,
+    22: 2.080,
+    23: 2.074,
+    24: 2.069,
+    25: 2.064,
+    26: 2.060,
+    27: 2.056,
+    28: 2.052,
+    29: 2.048,
+    30: 2.045,
+}
 
 
 def read_json(path: Path) -> dict[str, Any]:
@@ -118,9 +162,10 @@ def mean_ci(values: Iterable[float]) -> tuple[float, float, int]:
         return 0.0, 0.0, 0
     if len(clean) == 1:
         return clean[0], 0.0, 1
+    critical = T95.get(len(clean), 1.96)
     return (
         statistics.mean(clean),
-        1.96 * statistics.stdev(clean) / math.sqrt(len(clean)),
+        critical * statistics.stdev(clean) / math.sqrt(len(clean)),
         len(clean),
     )
 
@@ -179,7 +224,9 @@ def aggregate_run(run: dict[str, Any]) -> dict[str, Any]:
         betweenness.append(number(item["betweenness"]))
         relay_rewards.append(number(item["relay_reward"]))
         item["relay_reward_per_stake"] = relay_per_stake
+        item["proposer_reward_per_stake"] = number(item["proposer_reward"]) / stake
         item["total_reward_per_stake"] = combined_per_stake
+        item["forward_attempts_per_stake"] = number(item["forward_attempts"]) / stake
         by_profile[str(item["profile"])].append(item)
 
     top_count = max(1, math.ceil(len(node_totals) / 4)) if node_totals else 0
@@ -197,6 +244,29 @@ def aggregate_run(run: dict[str, Any]) -> dict[str, Any]:
     def profile_mean(profile: str, metric: str) -> float:
         values = [number(item.get(metric)) for item in by_profile.get(profile, [])]
         return statistics.mean(values) if values else 0.0
+
+    profile_comparison_available = bool(by_profile.get("active")) and bool(
+        by_profile.get("lazy")
+    )
+    active_total_reward_per_stake = profile_mean("active", "total_reward_per_stake")
+    lazy_total_reward_per_stake = profile_mean("lazy", "total_reward_per_stake")
+    active_forward_attempts_per_stake = profile_mean("active", "forward_attempts_per_stake")
+    lazy_forward_attempts_per_stake = profile_mean("lazy", "forward_attempts_per_stake")
+    participation_reward_premium = (
+        active_total_reward_per_stake - lazy_total_reward_per_stake
+        if profile_comparison_available
+        else 0.0
+    )
+    participation_forward_premium = (
+        active_forward_attempts_per_stake - lazy_forward_attempts_per_stake
+        if profile_comparison_available
+        else 0.0
+    )
+    participation_break_even_cost = (
+        participation_reward_premium / participation_forward_premium
+        if participation_forward_premium > 0.0
+        else 0.0
+    )
 
     complete = (
         status.get("status") == "ok"
@@ -219,6 +289,7 @@ def aggregate_run(run: dict[str, Any]) -> dict[str, Any]:
         "seed_index": run.get("seed_index", ""),
         "lazy_fraction": number(run.get("lazy_fraction")),
         "observed_lazy_fraction": observed_lazy_fraction,
+        "profile_comparison_available": profile_comparison_available,
         "profile_assignment_hash": hashlib.sha256(profile_assignment.encode()).hexdigest(),
         "git_commit_sha": run_config.get("git_commit_sha", "unknown"),
         "status": status.get("status", "missing"),
@@ -260,6 +331,19 @@ def aggregate_run(run: dict[str, Any]) -> dict[str, Any]:
         ),
         "active_relay_reward_per_stake": profile_mean("active", "relay_reward_per_stake"),
         "lazy_relay_reward_per_stake": profile_mean("lazy", "relay_reward_per_stake"),
+        "active_proposer_reward_per_stake": profile_mean(
+            "active", "proposer_reward_per_stake"
+        ),
+        "lazy_proposer_reward_per_stake": profile_mean(
+            "lazy", "proposer_reward_per_stake"
+        ),
+        "active_total_reward_per_stake": active_total_reward_per_stake,
+        "lazy_total_reward_per_stake": lazy_total_reward_per_stake,
+        "participation_reward_premium_per_stake": participation_reward_premium,
+        "active_forward_attempts_per_stake": active_forward_attempts_per_stake,
+        "lazy_forward_attempts_per_stake": lazy_forward_attempts_per_stake,
+        "participation_forward_premium_per_stake": participation_forward_premium,
+        "participation_break_even_cost_per_forward": participation_break_even_cost,
         "active_forward_attempts_per_epoch": (
             profile_mean("active", "forward_attempts") / len(usable_epochs)
             if usable_epochs
@@ -396,6 +480,12 @@ def main() -> int:
         for metric in PAIR_METRICS
         if not math.isfinite(number(row.get(metric), math.nan))
     )
+    profile_coverage_errors = sum(
+        1
+        for row in complete
+        if (number(row["lazy_fraction"]) > 0.0)
+        != bool(row["profile_comparison_available"])
+    )
     checks = [
         {
             "name": "run-completeness",
@@ -424,6 +514,11 @@ def main() -> int:
             "name": "relay-work-observed",
             "passed": bool(complete) and all(number(row["relay_forward_attempts"]) > 0 for row in complete),
             "detail": f"zero-work runs={sum(number(row['relay_forward_attempts']) <= 0 for row in complete)}",
+        },
+        {
+            "name": "participation-profile-coverage",
+            "passed": profile_coverage_errors == 0,
+            "detail": f"coverage errors={profile_coverage_errors}",
         },
         {
             "name": "finite-metrics",

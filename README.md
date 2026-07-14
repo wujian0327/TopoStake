@@ -111,3 +111,10 @@ The Makefile provides the same targets for environments that already have
 
 Raw outputs are written under `results/raw/<suite>/`, processed tables under
 `results/processed/`, and figures under `figures/`.
+
+The long-horizon fee/bonus report pairs Full TopoStake and fee-only runs by
+seed, lazy-relayer fraction, and validator assignment. In addition to network
+and concentration metrics, it reports active-minus-lazy proposer, relay, and
+total reward per stake; the corresponding extra forwarding work; and the
+largest per-forward cost supported by the measured participation premium.
+Reported 95% intervals use Student-t critical values across independent seeds.

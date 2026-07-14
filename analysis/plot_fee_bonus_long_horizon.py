@@ -69,12 +69,18 @@ def configure_style() -> None:
 
 
 def render_metric(
-    rows: list[dict[str, str]], metric: str, ylabel: str, title: str, output: Path
+    rows: list[dict[str, str]],
+    metric: str,
+    ylabel: str,
+    title: str,
+    output: Path,
+    minimum_lazy_fraction: float = 0.0,
 ) -> None:
     selected = [
         row
         for row in rows
         if row.get("metric") == metric and row.get("series") in LABELS
+        and number(row["lazy_fraction"]) >= minimum_lazy_fraction
     ]
     if not selected:
         raise ValueError(f"no grouped rows for {metric}")
@@ -102,6 +108,42 @@ def render_metric(
     axis.set_xticks([0, 25, 50, 75])
     axis.grid(axis="y", color="#E6E6E6", linewidth=0.7)
     axis.legend(frameon=False, loc="best")
+    fig.subplots_adjust(bottom=0.18, left=0.20, right=0.97, top=0.88)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    for suffix in ("pdf", "png"):
+        fig.savefig(output.with_suffix(f".{suffix}"), dpi=300, facecolor="white")
+    plt.close(fig)
+
+
+def render_paired_difference(
+    rows: list[dict[str, str]], metric: str, ylabel: str, title: str, output: Path
+) -> None:
+    points = sorted(
+        (number(row["lazy_fraction"]), number(row["mean"]), number(row["ci95"]))
+        for row in rows
+        if row.get("metric") == metric
+        and row.get("series") == "full-minus-fee-only"
+        and number(row["lazy_fraction"]) > 0.0
+    )
+    if not points:
+        raise ValueError(f"no paired rows for {metric}")
+    fig, axis = plt.subplots(figsize=(3.45, 2.55))
+    axis.errorbar(
+        [100.0 * point[0] for point in points],
+        [point[1] for point in points],
+        yerr=[point[2] for point in points],
+        color="#009E73",
+        marker="D",
+        linewidth=1.2,
+        markersize=4.5,
+        capsize=2.5,
+    )
+    axis.axhline(0.0, color="#666666", linewidth=0.9, linestyle="--")
+    axis.set_xlabel("Lazy relayers (%)")
+    axis.set_ylabel(ylabel)
+    axis.set_title(title)
+    axis.set_xticks([25, 50, 75])
+    axis.grid(axis="y", color="#E6E6E6", linewidth=0.7)
     fig.subplots_adjust(bottom=0.18, left=0.20, right=0.97, top=0.88)
     output.parent.mkdir(parents=True, exist_ok=True)
     for suffix in ("pdf", "png"):
@@ -146,21 +188,48 @@ def main() -> int:
             "fee_bonus_long_horizon_d",
         ),
         (
-            "break_even_relay_cost_per_forward",
-            "Reward per forward attempt",
-            "Immediate relay-cost break-even point",
+            "participation_break_even_cost_per_forward",
+            "Reward premium / extra forward",
+            "Participation cost threshold",
             "fee_bonus_long_horizon_e",
+            0.01,
         ),
         (
             "forward_attempts_per_included_tx",
             "Forward attempts / included tx",
             "Relay work",
             "fee_bonus_long_horizon_f",
+            0.0,
+        ),
+        (
+            "participation_reward_premium_per_stake",
+            "Active-minus-lazy total reward / stake",
+            "Participation reward premium",
+            "fee_bonus_long_horizon_g",
+            0.01,
         ),
     ]
-    for metric, ylabel, title, stem in specifications:
-        render_metric(rows, metric, ylabel, title, args.output_dir / stem)
-    print(f"generated {len(specifications) * 2} files from {groups_path}")
+    normalized_specs = [
+        (*specification, 0.0) if len(specification) == 4 else specification
+        for specification in specifications
+    ]
+    for metric, ylabel, title, stem, minimum_lazy_fraction in normalized_specs:
+        render_metric(
+            rows,
+            metric,
+            ylabel,
+            title,
+            args.output_dir / stem,
+            minimum_lazy_fraction,
+        )
+    render_paired_difference(
+        rows,
+        "participation_reward_premium_per_stake",
+        "Full-minus-fee-only premium",
+        "Incremental proposer-bonus incentive",
+        args.output_dir / "fee_bonus_long_horizon_h",
+    )
+    print(f"generated {(len(specifications) + 1) * 2} files from {groups_path}")
     return 0
 
 
