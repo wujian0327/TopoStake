@@ -49,6 +49,20 @@ def number(value: Any) -> float:
     return result
 
 
+def interval_errors(row: dict[str, str]) -> tuple[float, float]:
+    mean = number(row["mean"])
+    if row.get("ci95_low") not in {None, ""} and row.get("ci95_high") not in {
+        None,
+        "",
+    }:
+        return (
+            max(0.0, mean - number(row["ci95_low"])),
+            max(0.0, number(row["ci95_high"]) - mean),
+        )
+    ci = number(row["ci95"])
+    return ci, ci
+
+
 def configure_style() -> None:
     plt.rcParams.update(
         {
@@ -87,14 +101,21 @@ def render_metric(
     fig, axis = plt.subplots(figsize=(3.45, 2.55))
     for series in ("topostake_eta0", "topostake"):
         points = sorted(
-            (number(row["lazy_fraction"]), number(row["mean"]), number(row["ci95"]))
+            (
+                number(row["lazy_fraction"]),
+                number(row["mean"]),
+                *interval_errors(row),
+            )
             for row in selected
             if row["series"] == series
         )
         axis.errorbar(
             [100.0 * point[0] for point in points],
             [point[1] for point in points],
-            yerr=[point[2] for point in points],
+            yerr=(
+                [point[2] for point in points],
+                [point[3] for point in points],
+            ),
             color=COLORS[series],
             marker=MARKERS[series],
             linewidth=1.2,
@@ -119,7 +140,11 @@ def render_paired_difference(
     rows: list[dict[str, str]], metric: str, ylabel: str, title: str, output: Path
 ) -> None:
     points = sorted(
-        (number(row["lazy_fraction"]), number(row["mean"]), number(row["ci95"]))
+        (
+            number(row["lazy_fraction"]),
+            number(row["mean"]),
+            *interval_errors(row),
+        )
         for row in rows
         if row.get("metric") == metric
         and row.get("series") == "full-minus-fee-only"
@@ -131,7 +156,10 @@ def render_paired_difference(
     axis.errorbar(
         [100.0 * point[0] for point in points],
         [point[1] for point in points],
-        yerr=[point[2] for point in points],
+        yerr=(
+            [point[2] for point in points],
+            [point[3] for point in points],
+        ),
         color="#009E73",
         marker="D",
         linewidth=1.2,
@@ -206,6 +234,13 @@ def main() -> int:
             "Active-minus-lazy total reward / stake",
             "Participation reward premium",
             "fee_bonus_long_horizon_g",
+            0.01,
+        ),
+        (
+            "participation_weight_multiplier_premium",
+            "Active-minus-lazy weight/stake multiplier",
+            "Expected proposer-opportunity premium",
+            "fee_bonus_long_horizon_i",
             0.01,
         ),
     ]

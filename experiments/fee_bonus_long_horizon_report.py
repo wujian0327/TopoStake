@@ -8,6 +8,7 @@ import csv
 import hashlib
 import json
 import math
+import random
 import statistics
 from collections import defaultdict
 from pathlib import Path
@@ -42,7 +43,12 @@ PAIR_METRICS = (
     "lazy_forward_attempts_per_stake",
     "participation_forward_premium_per_stake",
     "participation_break_even_cost_per_forward",
+    "active_proposer_weight_multiplier",
+    "lazy_proposer_weight_multiplier",
+    "participation_weight_multiplier_premium",
 )
+
+RATIO_METRIC = "participation_break_even_cost_per_forward"
 
 # Two-sided 95% Student-t critical values indexed by sample count. The formal
 # suite uses 20 seeds; retaining the small-n entries keeps pilot intervals
@@ -170,6 +176,77 @@ def mean_ci(values: Iterable[float]) -> tuple[float, float, int]:
     )
 
 
+def stable_seed(label: str) -> int:
+    return int.from_bytes(hashlib.sha256(label.encode()).digest()[:8], "big")
+
+
+def ratio_of_means(numerators: list[float], denominators: list[float]) -> float:
+    if not numerators or len(numerators) != len(denominators):
+        return 0.0
+    denominator = statistics.mean(denominators)
+    return statistics.mean(numerators) / denominator if denominator > 0.0 else 0.0
+
+
+def bootstrap_ratio_ci(
+    numerators: list[float],
+    denominators: list[float],
+    label: str,
+    iterations: int = 10_000,
+) -> tuple[float, float, float, int]:
+    point = ratio_of_means(numerators, denominators)
+    count = len(numerators)
+    if count < 2:
+        return point, point, point, count
+    rng = random.Random(stable_seed(label))
+    estimates = []
+    for _ in range(iterations):
+        sampled = [rng.randrange(count) for _ in range(count)]
+        estimate = ratio_of_means(
+            [numerators[index] for index in sampled],
+            [denominators[index] for index in sampled],
+        )
+        if math.isfinite(estimate):
+            estimates.append(estimate)
+    return point, percentile(estimates, 0.025), percentile(estimates, 0.975), count
+
+
+def bootstrap_ratio_difference_ci(
+    full_numerators: list[float],
+    full_denominators: list[float],
+    fee_numerators: list[float],
+    fee_denominators: list[float],
+    label: str,
+    iterations: int = 10_000,
+) -> tuple[float, float, float, int]:
+    count = len(full_numerators)
+    if not (
+        count
+        and len(full_denominators) == count
+        and len(fee_numerators) == count
+        and len(fee_denominators) == count
+    ):
+        return 0.0, 0.0, 0.0, 0
+    point = ratio_of_means(full_numerators, full_denominators) - ratio_of_means(
+        fee_numerators, fee_denominators
+    )
+    if count < 2:
+        return point, point, point, count
+    rng = random.Random(stable_seed(label))
+    estimates = []
+    for _ in range(iterations):
+        sampled = [rng.randrange(count) for _ in range(count)]
+        estimate = ratio_of_means(
+            [full_numerators[index] for index in sampled],
+            [full_denominators[index] for index in sampled],
+        ) - ratio_of_means(
+            [fee_numerators[index] for index in sampled],
+            [fee_denominators[index] for index in sampled],
+        )
+        if math.isfinite(estimate):
+            estimates.append(estimate)
+    return point, percentile(estimates, 0.025), percentile(estimates, 0.975), count
+
+
 def aggregate_run(run: dict[str, Any]) -> dict[str, Any]:
     output = Path(run["output_dir"])
     status = read_json(output / "runner_status.json")
@@ -200,11 +277,17 @@ def aggregate_run(run: dict[str, Any]) -> dict[str, Any]:
                 "relay_reward": 0.0,
                 "proposer_reward": 0.0,
                 "forward_attempts": 0.0,
+                "normalized_proposer_weight_sum": 0.0,
+                "epoch_observations": 0,
             },
         )
         item["relay_reward"] += number(row.get("relay_reward"))
         item["proposer_reward"] += number(row.get("proposer_reward"))
         item["forward_attempts"] += number(row.get("relay_forward_attempts"))
+        item["normalized_proposer_weight_sum"] += number(
+            row.get("normalized_proposer_weight")
+        )
+        item["epoch_observations"] += 1
 
     per_stake = []
     total_per_stake = []
@@ -212,6 +295,7 @@ def aggregate_run(run: dict[str, Any]) -> dict[str, Any]:
     betweenness = []
     relay_rewards = []
     by_profile: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    total_stake = sum(max(number(item["stake"]), 0.0) for item in node_totals.values())
     for item in node_totals.values():
         stake = max(number(item["stake"]), 1e-15)
         relay_per_stake = number(item["relay_reward"]) / stake
@@ -227,6 +311,13 @@ def aggregate_run(run: dict[str, Any]) -> dict[str, Any]:
         item["proposer_reward_per_stake"] = number(item["proposer_reward"]) / stake
         item["total_reward_per_stake"] = combined_per_stake
         item["forward_attempts_per_stake"] = number(item["forward_attempts"]) / stake
+        normalized_stake = stake / total_stake if total_stake > 0.0 else 0.0
+        average_proposer_weight = number(item["normalized_proposer_weight_sum"]) / max(
+            1.0, number(item["epoch_observations"])
+        )
+        item["proposer_weight_multiplier"] = (
+            average_proposer_weight / normalized_stake if normalized_stake > 0.0 else 0.0
+        )
         by_profile[str(item["profile"])].append(item)
 
     top_count = max(1, math.ceil(len(node_totals) / 4)) if node_totals else 0
@@ -265,6 +356,15 @@ def aggregate_run(run: dict[str, Any]) -> dict[str, Any]:
     participation_break_even_cost = (
         participation_reward_premium / participation_forward_premium
         if participation_forward_premium > 0.0
+        else 0.0
+    )
+    active_proposer_weight_multiplier = profile_mean(
+        "active", "proposer_weight_multiplier"
+    )
+    lazy_proposer_weight_multiplier = profile_mean("lazy", "proposer_weight_multiplier")
+    participation_weight_multiplier_premium = (
+        active_proposer_weight_multiplier - lazy_proposer_weight_multiplier
+        if profile_comparison_available
         else 0.0
     )
 
@@ -344,6 +444,9 @@ def aggregate_run(run: dict[str, Any]) -> dict[str, Any]:
         "lazy_forward_attempts_per_stake": lazy_forward_attempts_per_stake,
         "participation_forward_premium_per_stake": participation_forward_premium,
         "participation_break_even_cost_per_forward": participation_break_even_cost,
+        "active_proposer_weight_multiplier": active_proposer_weight_multiplier,
+        "lazy_proposer_weight_multiplier": lazy_proposer_weight_multiplier,
+        "participation_weight_multiplier_premium": participation_weight_multiplier_premium,
         "active_forward_attempts_per_epoch": (
             profile_mean("active", "forward_attempts") / len(usable_epochs)
             if usable_epochs
@@ -394,6 +497,8 @@ def group_rows(runs: list[dict[str, Any]], pairs: list[dict[str, Any]]) -> list[
         if not row["complete"]:
             continue
         for metric in PAIR_METRICS:
+            if metric == RATIO_METRIC:
+                continue
             groups[(row["protocol_label"], number(row["lazy_fraction"]), metric)].append(
                 number(row.get(metric))
             )
@@ -408,10 +513,14 @@ def group_rows(runs: list[dict[str, Any]], pairs: list[dict[str, Any]]) -> list[
                 "n": n,
                 "mean": mean,
                 "ci95": ci,
+                "ci95_low": mean - ci,
+                "ci95_high": mean + ci,
             }
         )
     pair_groups: dict[tuple[float, str], list[float]] = defaultdict(list)
     for row in pairs:
+        if row["metric"] == RATIO_METRIC:
+            continue
         pair_groups[(number(row["lazy_fraction"]), row["metric"])].append(number(row["difference"]))
     for (fraction, metric), values in sorted(pair_groups.items()):
         mean, ci, n = mean_ci(values)
@@ -423,6 +532,86 @@ def group_rows(runs: list[dict[str, Any]], pairs: list[dict[str, Any]]) -> list[
                 "n": n,
                 "mean": mean,
                 "ci95": ci,
+                "ci95_low": mean - ci,
+                "ci95_high": mean + ci,
+            }
+        )
+
+    by_run = {
+        (
+            int(number(row["seed_index"])),
+            number(row["lazy_fraction"]),
+            str(row["protocol_label"]),
+        ): row
+        for row in runs
+        if row["complete"]
+    }
+    fractions = sorted({number(row["lazy_fraction"]) for row in runs if row["complete"]})
+    seeds = sorted({int(number(row["seed_index"])) for row in runs if row["complete"]})
+    ratio_rows: dict[tuple[float, str], list[dict[str, Any]]] = {}
+    for fraction in fractions:
+        for protocol in PROTOCOLS:
+            selected = [
+                by_run[(seed, fraction, protocol)]
+                for seed in seeds
+                if (seed, fraction, protocol) in by_run
+            ]
+            ratio_rows[(fraction, protocol)] = selected
+            numerators = [number(row["participation_reward_premium_per_stake"]) for row in selected]
+            denominators = [
+                number(row["participation_forward_premium_per_stake"]) for row in selected
+            ]
+            mean, low, high, n = bootstrap_ratio_ci(
+                numerators,
+                denominators,
+                f"{protocol}:{fraction}:{RATIO_METRIC}",
+            )
+            output.append(
+                {
+                    "series": protocol,
+                    "lazy_fraction": fraction,
+                    "metric": RATIO_METRIC,
+                    "n": n,
+                    "mean": mean,
+                    "ci95": max(mean - low, high - mean),
+                    "ci95_low": low,
+                    "ci95_high": high,
+                }
+            )
+        full = ratio_rows[(fraction, "topostake")]
+        fee = ratio_rows[(fraction, "topostake_eta0")]
+        full_by_seed = {int(number(row["seed_index"])): row for row in full}
+        fee_by_seed = {int(number(row["seed_index"])): row for row in fee}
+        paired_seeds = sorted(set(full_by_seed) & set(fee_by_seed))
+        mean, low, high, n = bootstrap_ratio_difference_ci(
+            [
+                number(full_by_seed[seed]["participation_reward_premium_per_stake"])
+                for seed in paired_seeds
+            ],
+            [
+                number(full_by_seed[seed]["participation_forward_premium_per_stake"])
+                for seed in paired_seeds
+            ],
+            [
+                number(fee_by_seed[seed]["participation_reward_premium_per_stake"])
+                for seed in paired_seeds
+            ],
+            [
+                number(fee_by_seed[seed]["participation_forward_premium_per_stake"])
+                for seed in paired_seeds
+            ],
+            f"paired:{fraction}:{RATIO_METRIC}",
+        )
+        output.append(
+            {
+                "series": "full-minus-fee-only",
+                "lazy_fraction": fraction,
+                "metric": RATIO_METRIC,
+                "n": n,
+                "mean": mean,
+                "ci95": max(mean - low, high - mean),
+                "ci95_low": low,
+                "ci95_high": high,
             }
         )
     return output

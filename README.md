@@ -117,4 +117,8 @@ seed, lazy-relayer fraction, and validator assignment. In addition to network
 and concentration metrics, it reports active-minus-lazy proposer, relay, and
 total reward per stake; the corresponding extra forwarding work; and the
 largest per-forward cost supported by the measured participation premium.
-Reported 95% intervals use Student-t critical values across independent seeds.
+It also reports the active-minus-lazy normalized proposer-weight multiplier,
+which measures expected proposer opportunity without finite-horizon election
+noise. Reported 95% mean intervals use Student-t critical values across
+independent seeds; cost thresholds use a deterministic paired bootstrap around
+the ratio of mean reward premium to mean additional forwarding work.

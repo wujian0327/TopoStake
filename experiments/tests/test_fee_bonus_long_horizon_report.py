@@ -10,7 +10,9 @@ sys.path.insert(0, str(ROOT / "experiments"))
 from fee_bonus_long_horizon_report import (  # noqa: E402
     PAIR_METRICS,
     aggregate_run,
+    bootstrap_ratio_ci,
     gini,
+    group_rows,
     mean_ci,
     paired_rows,
     spearman,
@@ -32,6 +34,12 @@ class FeeBonusLongHorizonReportTests(unittest.TestCase):
         self.assertEqual(n, 3)
         self.assertEqual(mean, 2.0)
         self.assertAlmostEqual(ci, 4.303 / math.sqrt(3.0))
+
+    def test_ratio_of_means_bootstrap_is_deterministic(self) -> None:
+        first = bootstrap_ratio_ci([1.0, 1.0], [1.0, 100.0], "test", 1_000)
+        second = bootstrap_ratio_ci([1.0, 1.0], [1.0, 100.0], "test", 1_000)
+        self.assertEqual(first, second)
+        self.assertAlmostEqual(first[0], 2.0 / 101.0)
 
     def test_paired_rows_match_seed_and_fraction(self) -> None:
         base = {
@@ -60,11 +68,11 @@ class FeeBonusLongHorizonReportTests(unittest.TestCase):
             )
             (output / "node_epoch_metrics.csv").write_text(
                 "epoch,validator_id,relay_profile,economic_stake,relay_reward,"
-                "proposer_reward,relay_forward_attempts,degree,betweenness\n"
-                "0,0,active,1,1,2,10,3,0.2\n"
-                "0,1,lazy,1,0,1,2,1,0.0\n"
-                "1,0,active,1,1,2,11,3,0.2\n"
-                "1,1,lazy,1,0,1,3,1,0.0\n"
+                "proposer_reward,normalized_proposer_weight,relay_forward_attempts,degree,betweenness\n"
+                "0,0,active,1,1,2,0.7,10,3,0.2\n"
+                "0,1,lazy,1,0,1,0.3,2,1,0.0\n"
+                "1,0,active,1,1,2,0.7,11,3,0.2\n"
+                "1,1,lazy,1,0,1,0.3,3,1,0.0\n"
             )
             (output / "inclusion_samples.csv").write_text(
                 "tx_hash,created_slot,latency_s,evidence_eligible\n"
@@ -97,6 +105,33 @@ class FeeBonusLongHorizonReportTests(unittest.TestCase):
             self.assertEqual(result["participation_reward_premium_per_stake"], 4.0)
             self.assertEqual(result["participation_forward_premium_per_stake"], 16.0)
             self.assertEqual(result["participation_break_even_cost_per_forward"], 0.25)
+            self.assertAlmostEqual(result["active_proposer_weight_multiplier"], 1.4)
+            self.assertAlmostEqual(result["lazy_proposer_weight_multiplier"], 0.6)
+            self.assertAlmostEqual(result["participation_weight_multiplier_premium"], 0.8)
+
+    def test_group_threshold_uses_ratio_of_means_not_mean_of_ratios(self) -> None:
+        runs = []
+        for protocol in ("topostake_eta0", "topostake"):
+            for seed, denominator in enumerate((1.0, 100.0)):
+                row = {
+                    "complete": True,
+                    "seed_index": seed,
+                    "lazy_fraction": 0.5,
+                    "protocol_label": protocol,
+                    "participation_reward_premium_per_stake": 1.0,
+                    "participation_forward_premium_per_stake": denominator,
+                }
+                for metric in PAIR_METRICS:
+                    row.setdefault(metric, 0.0)
+                runs.append(row)
+        groups = group_rows(runs, paired_rows(runs))
+        threshold = next(
+            row
+            for row in groups
+            if row["series"] == "topostake"
+            and row["metric"] == "participation_break_even_cost_per_forward"
+        )
+        self.assertAlmostEqual(threshold["mean"], 2.0 / 101.0)
 
 
 if __name__ == "__main__":
