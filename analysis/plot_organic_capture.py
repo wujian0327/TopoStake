@@ -17,6 +17,7 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -28,6 +29,10 @@ PLACEMENTS = ("random", "high-degree")
 COLORS = {"none": "#777777", "max-score": "#D55E00"}
 MARKERS = {"random": "o", "high-degree": "s"}
 LINESTYLES = {"random": "-", "high-degree": "--"}
+GAIN_COLORS = {
+    "adversary_score_share": "#D55E00",
+    "adversary_proposer_weight_share": "#0072B2",
+}
 
 
 def load_yaml(path: Path) -> dict[str, Any]:
@@ -78,6 +83,12 @@ def configure_style() -> None:
     )
 
 
+def save_figure(fig: Any, output: Path) -> None:
+    output.parent.mkdir(parents=True, exist_ok=True)
+    for suffix in ("pdf", "svg", "png"):
+        fig.savefig(output.with_suffix(f".{suffix}"), dpi=300, facecolor="white")
+
+
 def render_metric(
     rows: list[dict[str, str]],
     metric: str,
@@ -86,8 +97,9 @@ def render_metric(
     output: Path,
     reference: Callable[[float], float],
     reference_label: str,
+    scale: float = 1.0,
 ) -> None:
-    fig, axis = plt.subplots(figsize=(3.45, 2.55))
+    fig, axis = plt.subplots(figsize=(3.45, 2.45))
     found = False
     for mode in MODES:
         for placement in PLACEMENTS:
@@ -95,8 +107,8 @@ def render_metric(
             points = sorted(
                 (
                     number(row["adversary_stake_fraction"]),
-                    number(row["mean"]),
-                    *interval_errors(row),
+                    scale * number(row["mean"]),
+                    *(scale * value for value in interval_errors(row)),
                 )
                 for row in rows
                 if row.get("metric") == metric and row.get("series") == series
@@ -104,8 +116,8 @@ def render_metric(
             if not points:
                 continue
             found = True
-            mode_label = "Baseline" if mode == "none" else "Capture stress"
-            placement_label = "random" if placement == "random" else "high degree"
+            mode_label = "Base" if mode == "none" else "Stress"
+            placement_label = "random" if placement == "random" else "high-deg."
             axis.errorbar(
                 [100.0 * point[0] for point in points],
                 [point[1] for point in points],
@@ -127,7 +139,7 @@ def render_metric(
     xs = [10.0, 20.0, 30.0]
     axis.plot(
         xs,
-        [reference(x / 100.0) for x in xs],
+        [scale * reference(x / 100.0) for x in xs],
         color="#222222",
         linewidth=0.9,
         linestyle=":",
@@ -137,12 +149,155 @@ def render_metric(
     axis.set_ylabel(ylabel)
     axis.set_title(title)
     axis.set_xticks(xs)
+    axis.set_ylim(bottom=0.0)
     axis.grid(axis="y", color="#E6E6E6", linewidth=0.7)
-    axis.legend(frameon=False, loc="best", ncol=1)
-    fig.subplots_adjust(bottom=0.18, left=0.20, right=0.97, top=0.88)
-    output.parent.mkdir(parents=True, exist_ok=True)
-    for suffix in ("pdf", "png"):
-        fig.savefig(output.with_suffix(f".{suffix}"), dpi=300, facecolor="white")
+    axis.legend(
+        frameon=True,
+        facecolor="white",
+        edgecolor="none",
+        framealpha=0.9,
+        loc="center",
+        bbox_to_anchor=(0.55, 0.52),
+        ncol=2,
+        columnspacing=0.8,
+        handlelength=1.8,
+    )
+    fig.subplots_adjust(bottom=0.19, left=0.20, right=0.97, top=0.88)
+    save_figure(fig, output)
+    plt.close(fig)
+
+
+def paired_points(
+    rows: list[dict[str, str]], metric: str, placement: str, scale: float = 100.0
+) -> list[tuple[float, float, float, float]]:
+    series = f"max-score-minus-none:{placement}"
+    return sorted(
+        (
+            number(row["adversary_stake_fraction"]),
+            scale * number(row["mean"]),
+            *(scale * value for value in interval_errors(row)),
+        )
+        for row in rows
+        if row.get("metric") == metric and row.get("series") == series
+    )
+
+
+def render_paired_capture(rows: list[dict[str, str]], output: Path) -> None:
+    fig, axis = plt.subplots(figsize=(3.45, 2.45))
+    metric = "adversary_organic_relay_reward_share"
+    for placement in PLACEMENTS:
+        points = paired_points(rows, metric, placement)
+        if not points:
+            plt.close(fig)
+            raise ValueError(f"no paired grouped rows for {metric}:{placement}")
+        label = "Random" if placement == "random" else "High degree"
+        axis.errorbar(
+            [100.0 * point[0] for point in points],
+            [point[1] for point in points],
+            yerr=([point[2] for point in points], [point[3] for point in points]),
+            color="#D55E00",
+            marker=MARKERS[placement],
+            markerfacecolor="white" if placement == "high-degree" else "#D55E00",
+            linestyle=LINESTYLES[placement],
+            linewidth=1.2,
+            markersize=4.2,
+            capsize=2.2,
+            label=label,
+        )
+    axis.axhline(0.0, color="#333333", linewidth=0.8, linestyle=":")
+    axis.set_xlabel("Coalition stake target (%)")
+    axis.set_ylabel("Reward-share gain (percentage points)")
+    axis.set_title("Organic relay-capture gain (b)")
+    axis.set_xticks([10.0, 20.0, 30.0])
+    axis.grid(axis="y", color="#E6E6E6", linewidth=0.7)
+    axis.legend(
+        frameon=True,
+        facecolor="white",
+        edgecolor="none",
+        framealpha=0.9,
+        loc="upper left",
+    )
+    fig.subplots_adjust(bottom=0.19, left=0.20, right=0.97, top=0.88)
+    save_figure(fig, output)
+    plt.close(fig)
+
+
+def render_score_to_proposer_gain(rows: list[dict[str, str]], output: Path) -> None:
+    fig, axis = plt.subplots(figsize=(3.45, 2.45))
+    metrics = (
+        "adversary_score_share",
+        "adversary_proposer_weight_share",
+    )
+    for metric in metrics:
+        for placement in PLACEMENTS:
+            points = paired_points(rows, metric, placement)
+            if not points:
+                plt.close(fig)
+                raise ValueError(f"no paired grouped rows for {metric}:{placement}")
+            axis.errorbar(
+                [100.0 * point[0] for point in points],
+                [point[1] for point in points],
+                yerr=(
+                    [point[2] for point in points],
+                    [point[3] for point in points],
+                ),
+                color=GAIN_COLORS[metric],
+                marker=MARKERS[placement],
+                markerfacecolor=(
+                    "white" if placement == "high-degree" else GAIN_COLORS[metric]
+                ),
+                linestyle=LINESTYLES[placement],
+                linewidth=1.2,
+                markersize=4.2,
+                capsize=2.2,
+                label="_nolegend_",
+            )
+    axis.axhline(0.0, color="#333333", linewidth=0.8, linestyle=":")
+    axis.set_xlabel("Coalition stake target (%)")
+    axis.set_ylabel("Stress-induced gain (percentage points)")
+    axis.set_title("Score-to-proposer attenuation (c)")
+    axis.set_xticks([10.0, 20.0, 30.0])
+    axis.grid(axis="y", color="#E6E6E6", linewidth=0.7)
+    legend_handles = [
+        Line2D([0], [0], color=GAIN_COLORS["adversary_score_share"], label="Score"),
+        Line2D(
+            [0],
+            [0],
+            color=GAIN_COLORS["adversary_proposer_weight_share"],
+            label="Proposer weight",
+        ),
+        Line2D(
+            [0],
+            [0],
+            color="#666666",
+            marker=MARKERS["random"],
+            linestyle=LINESTYLES["random"],
+            label="Random",
+        ),
+        Line2D(
+            [0],
+            [0],
+            color="#666666",
+            marker=MARKERS["high-degree"],
+            markerfacecolor="white",
+            linestyle=LINESTYLES["high-degree"],
+            label="High degree",
+        ),
+    ]
+    axis.legend(
+        handles=legend_handles,
+        frameon=True,
+        facecolor="white",
+        edgecolor="none",
+        framealpha=0.9,
+        loc="center",
+        bbox_to_anchor=(0.52, 0.27),
+        ncol=2,
+        columnspacing=1.0,
+        handlelength=2.0,
+    )
+    fig.subplots_adjust(bottom=0.19, left=0.20, right=0.97, top=0.88)
+    save_figure(fig, output)
     plt.close(fig)
 
 
@@ -156,37 +311,20 @@ def main() -> int:
     suite = str(config.get("suite", args.config.stem))
     groups_path = args.groups or PROCESSED / f"{suite}_groups.csv"
     rows = read_csv(groups_path)
-    defaults = config.get("defaults", {})
-    c = number(defaults.get("eta", 0.0)) * number(defaults.get("bonus_cap", 0.0))
     configure_style()
     render_metric(
         rows,
         "adversary_organic_relay_reward_share",
-        "Coalition share of organic relay reward",
-        "User-funded relay-reward capture",
+        "Organic relay reward share (%)",
+        "Organic relay-reward capture (a)",
         args.output_dir / "organic_capture_a",
         lambda stake: stake,
-        "Stake share",
+        "Stake",
+        scale=100.0,
     )
-    render_metric(
-        rows,
-        "adversary_organic_raw_contribution_share",
-        "Coalition share of organic contribution",
-        "User-funded score-input capture",
-        args.output_dir / "organic_capture_b",
-        lambda stake: stake,
-        "Stake share",
-    )
-    render_metric(
-        rows,
-        "adversary_proposer_weight_share",
-        "Coalition proposer-weight share",
-        "Bounded consensus influence",
-        args.output_dir / "organic_capture_c",
-        lambda stake: stake * (1.0 + c) / (1.0 + stake * c),
-        "Protocol envelope",
-    )
-    print(f"generated 6 files from {groups_path}")
+    render_paired_capture(rows, args.output_dir / "organic_capture_b")
+    render_score_to_proposer_gain(rows, args.output_dir / "organic_capture_c")
+    print(f"generated 9 files from {groups_path}")
     return 0
 
 
