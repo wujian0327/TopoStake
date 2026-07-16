@@ -326,7 +326,7 @@ def save_figure(fig: Any, stem: Path) -> list[Path]:
     return outputs
 
 
-def finish_axis(fig: Any, axis: Axes, loads: list[int], seed_count: int) -> None:
+def finish_axis(fig: Any, axis: Axes, loads: list[int]) -> None:
     axis.set_xticks(range(len(loads)), [str(load) for load in loads])
     axis.set_xlabel("Offered load (transactions/slot)")
     axis.grid(axis="y", color="#E6E6E6", linewidth=0.7)
@@ -366,8 +366,7 @@ def plot_paired_metric(
         )
     axis.set_title(title)
     axis.set_ylabel(ylabel)
-    seed_count = min(int(row["n"]) for row in selected)
-    finish_axis(fig, axis, loads, seed_count)
+    finish_axis(fig, axis, loads)
     return save_figure(fig, stem)
 
 
@@ -401,8 +400,7 @@ def plot_verification(
         )
     axis.set_title("Inline evidence verification")
     axis.set_ylabel("Block verification time (ms)")
-    seed_count = min(int(row["n"]) for row in selected)
-    finish_axis(fig, axis, loads, seed_count)
+    finish_axis(fig, axis, loads)
     return save_figure(fig, stem)
 
 
