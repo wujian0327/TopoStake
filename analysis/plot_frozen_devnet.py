@@ -57,7 +57,7 @@ PRIMARY_FIGURE_STEMS = (
     "frozen_devnet_resources_a",
     "frozen_devnet_evidence_a",
 )
-FOUR_UP_FIGSIZE = (3.0, 2.25)
+FOUR_UP_FIGSIZE = (3.0, 2.55)
 
 FIGURE_CONTENTS = {
     "frozen_devnet_performance_a": "paired inclusion-throughput change versus baseline",
@@ -340,22 +340,24 @@ def finish_axis(
     fig: Any,
     axis: Axes,
     loads: list[int],
-    *,
-    show_legend: bool,
 ) -> None:
     axis.set_xticks(range(len(loads)), [str(load) for load in loads])
     axis.set_xlabel("Load (tx/slot)")
     axis.grid(axis="y", color="#E6E6E6", linewidth=0.7)
     axis.axhline(0.0, color="#666666", linewidth=0.9, linestyle="--", zorder=1)
-    if show_legend:
-        axis.legend(
-            frameon=False,
-            ncol=2,
-            loc="best",
-            columnspacing=0.8,
-            handletextpad=0.4,
-        )
-    fig.subplots_adjust(bottom=0.24, left=0.25, right=0.97, top=0.97)
+    # Reserve a fixed band above every axis for the same two-column legend.
+    # Keeping it outside the plotting area prevents data-dependent overlap
+    # with points or confidence intervals while preserving aligned panels.
+    axis.legend(
+        frameon=False,
+        ncol=2,
+        loc="lower center",
+        bbox_to_anchor=(0.5, 1.02),
+        borderaxespad=0.0,
+        columnspacing=0.8,
+        handletextpad=0.4,
+    )
+    fig.subplots_adjust(bottom=0.21, left=0.25, right=0.97, top=0.73)
 
 
 def plot_paired_metric(
@@ -363,8 +365,6 @@ def plot_paired_metric(
     metric: str,
     ylabel: str,
     stem: Path,
-    *,
-    show_legend: bool,
 ) -> list[Path]:
     selected = [
         row
@@ -389,7 +389,7 @@ def plot_paired_metric(
             label=LABELS[variant],
         )
     axis.set_ylabel(ylabel)
-    finish_axis(fig, axis, loads, show_legend=show_legend)
+    finish_axis(fig, axis, loads)
     return save_figure(fig, stem)
 
 
@@ -422,7 +422,7 @@ def plot_verification(
             label=label,
         )
     axis.set_ylabel("Verification time (ms)")
-    finish_axis(fig, axis, loads, show_legend=True)
+    finish_axis(fig, axis, loads)
     return save_figure(fig, stem)
 
 
@@ -470,10 +470,6 @@ def render_figures(
                 metric,
                 ylabel,
                 output_dir / filename,
-                show_legend=(
-                    filename == PRIMARY_FIGURE_STEMS[0]
-                    or filename not in PRIMARY_FIGURE_STEMS
-                ),
             )
         )
     outputs.extend(
