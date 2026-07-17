@@ -8,7 +8,12 @@ if str(EXPERIMENTS) not in sys.path:
     sys.path.insert(0, str(EXPERIMENTS))
 
 from run_sustained_outage import assignment_for, closest_prefix
-from sustained_outage_report import paired_rows
+from sustained_outage_report import (
+    effective_weight_epoch,
+    group_weight_series,
+    paired_rows,
+    relay_attempts_during_outage,
+)
 
 
 class SustainedOutageAssignmentTests(unittest.TestCase):
@@ -52,13 +57,54 @@ class SustainedOutageAssignmentTests(unittest.TestCase):
             "assignment_sha256": "same",
             "duty_slot_keys": [(10, 0)],
             "steady_group_weight": 0.2,
+            "expected_miss_rate": 0.22,
             "chain_growth_ratio": 0.8,
             "steady_p95_inclusion_latency_s": 2.0,
         }
-        eta0 = dict(common, protocol_label="topostake_eta0", miss_rate=0.25)
-        full = dict(common, protocol_label="topostake", miss_rate=0.20)
+        eta0 = dict(
+            common,
+            protocol_label="topostake_eta0",
+            miss_rate=0.25,
+            expected_miss_rate=0.24,
+        )
+        full = dict(
+            common,
+            protocol_label="topostake",
+            miss_rate=0.20,
+            expected_miss_rate=0.20,
+        )
         pair = paired_rows([eta0, full])[0]
         self.assertAlmostEqual(pair["miss_rate_improvement"], 0.05)
+        self.assertAlmostEqual(pair["expected_miss_rate_improvement"], 0.04)
+
+    def test_node_metric_weight_is_applied_in_following_epoch(self):
+        rows = [
+            {
+                "epoch": "9",
+                "validator_id": "1",
+                "normalized_proposer_weight": "0.25",
+                "bonus": "0.4",
+            },
+            {
+                "epoch": "10",
+                "validator_id": "1",
+                "normalized_proposer_weight": "0.20",
+                "bonus": "0.3",
+            },
+        ]
+        weights, bonuses = group_weight_series(rows, {1}, 10, 12)
+        self.assertEqual(effective_weight_epoch(9), 10)
+        self.assertEqual(weights, {10: 0.25, 11: 0.20})
+        self.assertEqual(bonuses, {10: [0.4], 11: [0.3]})
+
+    def test_relay_audit_includes_first_outage_epoch(self):
+        rows = [
+            {"epoch": "9", "validator_id": "1", "relay_forward_attempts": "7"},
+            {"epoch": "10", "validator_id": "1", "relay_forward_attempts": "2"},
+            {"epoch": "11", "validator_id": "1", "relay_forward_attempts": "3"},
+            {"epoch": "12", "validator_id": "1", "relay_forward_attempts": "5"},
+        ]
+        self.assertEqual(relay_attempts_during_outage(rows, {1}, 10, 12), 5)
 
 
 if __name__ == "__main__":

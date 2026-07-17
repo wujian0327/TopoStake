@@ -126,6 +126,23 @@ separate random and high-score proposer-weight and missed-slot panels as four
 PDF/PNG pairs under `figures/frozen_v1_sustained_outage/`; LaTeX may assemble
 those independent canvases as subfigures. The missed-slot panels show both
 absolute mechanisms and annotate Full TopoStake's paired change from fee-only.
+The report additionally derives the expected missed-slot rate from the
+outage group's frozen proposer-weight share. This expectation removes finite
+slot-lottery noise; the realized missed-slot rate remains the primary observed
+outcome. Node-metric weights are aligned to their actual effective epoch, and
+the relay-silence audit includes the first outage epoch.
+
+Before expanding the formal matrix, screen three five-seed, random-outage
+environments at 33% target stake with 30 warm-up and 100 outage epochs:
+
+```bash
+python scripts/task.py frozen-sustained-outage-env-pilot
+```
+
+The aggregate task runs the current BA/Gini-0.6/load-20 reference, then
+ER/Gini-0.1/load-64 and WS/Gini-0.1/load-64 candidates. The protocol envelope
+is identical in all three. Each environment may also be run separately with
+the `-ba-pilot`, `-er-pilot`, or `-ws-pilot` task variants.
 
 ## Frozen-v1 Devnet Acceptance
 

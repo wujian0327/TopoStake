@@ -172,6 +172,18 @@ def series_points(
     return sorted(points)
 
 
+def configure_target_axis(axis: Any, targets: Iterable[float]) -> None:
+    ticks = sorted({100.0 * target for target in targets})
+    if not ticks:
+        return
+    axis.set_xticks(ticks)
+    if len(ticks) == 1:
+        axis.set_xlim(ticks[0] - 5.0, ticks[0] + 5.0)
+    else:
+        padding = max(2.0, 0.08 * (ticks[-1] - ticks[0]))
+        axis.set_xlim(ticks[0] - padding, ticks[-1] + padding)
+
+
 def render_weight_share(
     runs: list[dict[str, str]], selection: str, output: Path
 ) -> list[Path]:
@@ -210,8 +222,7 @@ def render_weight_share(
         )
     axis.set_xlabel("Outage stake (%)")
     axis.set_ylabel("Proposer share (%)")
-    axis.set_xticks([10, 25, 40])
-    axis.set_xlim(7, 43)
+    configure_target_axis(axis, fee_only)
     axis.set_ylim(5, 45)
     axis.grid(axis="y", color="#E6E6E6", linewidth=0.7)
     fig.subplots_adjust(bottom=0.23, left=0.25, right=0.97, top=0.97)
@@ -277,8 +288,7 @@ def render_missed_slot_rate(
         )
     axis.set_xlabel("Outage stake (%)")
     axis.set_ylabel("Missed slots (%)")
-    axis.set_xticks([10, 25, 40])
-    axis.set_xlim(7, 43)
+    configure_target_axis(axis, fee_only)
     axis.set_ylim(0, 48)
     axis.grid(axis="y", color="#E6E6E6", linewidth=0.7)
     fig.subplots_adjust(bottom=0.23, left=0.25, right=0.97, top=0.97)
@@ -301,7 +311,9 @@ def main() -> int:
     runs = read_csv(runs_path)
     pairs = read_csv(pairs_path)
     outputs = []
-    for selection, suffix in (("random", "random"), ("high-score", "high_score")):
+    suffixes = {"random": "random", "high-score": "high_score"}
+    for selection in map(str, spec["outage"]["selections"]):
+        suffix = suffixes.get(selection, selection.replace("-", "_"))
         outputs.extend(
             render_weight_share(
                 runs,
