@@ -11,10 +11,10 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "analysis"))
 
 from plot_sustained_outage import (  # noqa: E402
+    grouped_run_metric,
     mean_ci,
-    paired_run_deltas,
-    render_missed_slots,
-    render_weight_response,
+    render_missed_slot_rate,
+    render_weight_share,
 )
 
 
@@ -49,31 +49,45 @@ class SustainedOutagePlotTests(unittest.TestCase):
         return rows
 
     def pairs(self) -> list[dict[str, str]]:
-        return [
-            {
-                "seed_index": str(seed),
-                "selection": selection,
-                "target_stake_fraction": str(target),
-                "miss_rate_improvement": str(
-                    0.01 + 0.001 * seed if selection == "random" else -0.002 * seed
-                ),
-            }
-            for seed in range(3)
-            for selection in ("random", "high-score")
-            for target in (0.10, 0.25, 0.40)
-        ]
+        rows = []
+        for seed in range(3):
+            for selection in ("random", "high-score"):
+                for target in (0.10, 0.25, 0.40):
+                    improvement = (
+                        0.01 + 0.001 * seed
+                        if selection == "random"
+                        else -0.002 * seed
+                    )
+                    rows.append(
+                        {
+                            "seed_index": str(seed),
+                            "selection": selection,
+                            "target_stake_fraction": str(target),
+                            "eta0_miss_rate": str(target),
+                            "full_miss_rate": str(target - improvement),
+                            "miss_rate_improvement": str(improvement),
+                        }
+                    )
+        return rows
 
-    def test_run_delta_uses_full_minus_eta0(self) -> None:
-        deltas = paired_run_deltas(self.runs(), "steady_group_weight")
-        self.assertEqual(len(deltas[("random", 0.10)]), 3)
-        self.assertAlmostEqual(deltas[("random", 0.10)][0], -1.0)
+    def test_grouped_run_metric_selects_protocol(self) -> None:
+        grouped = grouped_run_metric(
+            self.runs(), "steady_group_weight", "random", "topostake"
+        )
+        self.assertEqual(len(grouped[0.10]), 3)
+        self.assertAlmostEqual(grouped[0.10][0], 9.0)
 
     def test_panels_are_independent_files(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory)
-            render_weight_response(self.runs(), output / "weight")
-            render_missed_slots(self.pairs(), output / "miss")
-            for stem in ("weight", "miss"):
+            for selection, suffix in (("random", "random"), ("high-score", "high")):
+                render_weight_share(
+                    self.runs(), selection, output / f"weight_{suffix}"
+                )
+                render_missed_slot_rate(
+                    self.pairs(), selection, output / f"miss_{suffix}"
+                )
+            for stem in ("weight_random", "weight_high", "miss_random", "miss_high"):
                 self.assertTrue((output / f"{stem}.pdf").exists())
                 self.assertTrue((output / f"{stem}.png").exists())
 

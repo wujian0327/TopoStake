@@ -109,7 +109,7 @@ Use the cross-platform Python runner on Windows, Linux, or macOS:
   three-seed paired sustained-outage pilot
 - `python scripts/task.py frozen-sustained-outage-main --dry-run`: inspect the
   formal 20-seed paired sustained-outage matrix
-- `python scripts/task.py frozen-sustained-outage-figures`: regenerate the two
+- `python scripts/task.py frozen-sustained-outage-figures`: regenerate four
   independent proposer-weight and missed-slot figures from processed results
 - `python scripts/task.py frozen-devnet-check`: frozen-v1 profile and devnet-artifact acceptance gate
 - `python scripts/task.py frozen-devnet-pilot --dry-run`: inspect the formal five-variant pilot matrix

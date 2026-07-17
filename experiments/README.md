@@ -122,9 +122,10 @@ using the same seed-specific validator assignment. It evaluates random and
 high-score outage groups at 10%, 25%, and 40% target stake. The report audits
 outage enforcement, silent relays, paired assignments, the `eta=0` stake
 baseline, and proposer-weight-envelope compliance. The figure task writes
-`sustained_outage_weight_response` and `sustained_outage_missed_slots` as
-separate PDF/PNG files under `figures/frozen_v1_sustained_outage/`; LaTeX may
-assemble those independent canvases as subfigures.
+separate random and high-score proposer-weight and missed-slot panels as four
+PDF/PNG pairs under `figures/frozen_v1_sustained_outage/`; LaTeX may assemble
+those independent canvases as subfigures. The missed-slot panels show both
+absolute mechanisms and annotate Full TopoStake's paired change from fee-only.
 
 ## Frozen-v1 Devnet Acceptance
 

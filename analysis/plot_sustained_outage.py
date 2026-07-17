@@ -19,7 +19,6 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from matplotlib.lines import Line2D
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -28,8 +27,7 @@ DEFAULT_CONFIG = ROOT / "experiments" / "configs" / "frozen_v1_sustained_outage_
 DEFAULT_OUTPUT = ROOT / "figures" / "frozen_v1_sustained_outage"
 BLUE = "#0072B2"
 ORANGE = "#E69F00"
-COLORS = {"random": BLUE, "high-score": ORANGE}
-LABELS = {"random": "Random", "high-score": "High-score"}
+GRAY = "#666666"
 T95 = {
     2: 12.706,
     3: 4.303,
@@ -131,188 +129,165 @@ def save_figure(fig: Any, output: Path) -> list[Path]:
     return outputs
 
 
-def paired_run_deltas(
-    rows: list[dict[str, str]], metric: str
-) -> dict[tuple[str, float], list[float]]:
-    variants: dict[tuple[int, str, float], dict[str, dict[str, str]]] = defaultdict(dict)
+def grouped_run_metric(
+    rows: list[dict[str, str]],
+    metric: str,
+    selection: str,
+    protocol_label: str,
+    scale: float = 100.0,
+) -> dict[float, list[float]]:
+    grouped: dict[float, list[float]] = defaultdict(list)
     for row in rows:
-        key = (
-            int(row["seed_index"]),
-            row["selection"],
-            number(row["target_stake_fraction"]),
-        )
-        variants[key][row["protocol_label"]] = row
-    deltas: dict[tuple[str, float], list[float]] = defaultdict(list)
-    for (_seed, selection, target), protocols in variants.items():
-        if "topostake" not in protocols or "topostake_eta0" not in protocols:
+        if row["selection"] != selection or row["protocol_label"] != protocol_label:
             continue
-        deltas[(selection, target)].append(
-            100.0
-            * (
-                number(protocols["topostake"][metric])
-                - number(protocols["topostake_eta0"][metric])
-            )
-        )
-    return dict(deltas)
-
-
-def grouped_pair_metric(
-    rows: list[dict[str, str]], metric: str, scale: float = 100.0
-) -> dict[tuple[str, float], list[float]]:
-    grouped: dict[tuple[str, float], list[float]] = defaultdict(list)
-    for row in rows:
-        grouped[(row["selection"], number(row["target_stake_fraction"]))].append(
+        grouped[number(row["target_stake_fraction"])].append(
             scale * number(row[metric])
         )
     return dict(grouped)
 
 
-def label_fee_only_baseline(axis: Any) -> None:
-    axis.text(
-        42.4,
-        0.12,
-        r"Fee-only baseline ($\eta{=}0$)",
-        color="#555555",
-        fontsize=6.5,
-        ha="right",
-        va="bottom",
-        bbox={"facecolor": "white", "edgecolor": "none", "pad": 0.8},
-    )
+def grouped_pair_metric(
+    rows: list[dict[str, str]],
+    metric: str,
+    selection: str,
+    scale: float = 100.0,
+) -> dict[float, list[float]]:
+    grouped: dict[float, list[float]] = defaultdict(list)
+    for row in rows:
+        if row["selection"] == selection:
+            grouped[number(row["target_stake_fraction"])].append(
+                scale * number(row[metric])
+            )
+    return dict(grouped)
 
 
-def render_weight_response(
-    runs: list[dict[str, str]], output: Path
+def series_points(
+    grouped: dict[float, list[float]],
+) -> list[tuple[float, float, float]]:
+    points = []
+    for target, values in grouped.items():
+        mean, ci, count = mean_ci(values)
+        if count:
+            points.append((100.0 * target, mean, ci))
+    return sorted(points)
+
+
+def render_weight_share(
+    runs: list[dict[str, str]], selection: str, output: Path
 ) -> list[Path]:
-    initial = paired_run_deltas(runs, "initial_group_weight")
-    steady = paired_run_deltas(runs, "steady_group_weight")
-    if not initial or not steady:
+    fee_only = grouped_run_metric(
+        runs, "steady_group_weight", selection, "topostake_eta0"
+    )
+    full_onset = grouped_run_metric(
+        runs, "initial_group_weight", selection, "topostake"
+    )
+    full_steady = grouped_run_metric(
+        runs, "steady_group_weight", selection, "topostake"
+    )
+    if not fee_only or not full_onset or not full_steady:
         raise ValueError("sustained-outage run pairs are incomplete")
 
     fig, axis = plt.subplots(figsize=(3.45, 2.55))
-    for selection in ("random", "high-score"):
-        for grouped, linestyle, marker, facecolor in (
-            (initial, "--", "^", COLORS[selection]),
-            (steady, "-", "o", "white"),
-        ):
-            points = []
-            for (candidate, target), values in grouped.items():
-                if candidate != selection:
-                    continue
-                mean, ci, count = mean_ci(values)
-                if count:
-                    points.append((100.0 * target, mean, ci))
-            points.sort()
-            axis.errorbar(
-                [point[0] for point in points],
-                [point[1] for point in points],
-                yerr=[point[2] for point in points],
-                color=COLORS[selection],
-                marker=marker,
-                markerfacecolor=facecolor,
-                markeredgecolor=COLORS[selection],
-                linestyle=linestyle,
-                linewidth=1.2,
-                markersize=4.5,
-                capsize=2.5,
-            )
-    axis.axhline(0.0, color="#666666", linewidth=0.9, linestyle="--")
-    label_fee_only_baseline(axis)
-    axis.set_xlabel("Outage-group stake target (%)")
-    axis.set_ylabel(
-        "Offline-group weight change (pp)\n"
-        + r"Full ($\eta{=}0.5$) vs. fee-only ($\eta{=}0$)"
-    )
-    axis.set_xticks([10, 25, 40])
-    axis.set_xlim(7, 43)
-    axis.set_ylim(-2.45, 3.25)
-    axis.grid(axis="y", color="#E6E6E6", linewidth=0.7)
-    axis.legend(
-        handles=[
-            Line2D([0], [0], color=BLUE, linewidth=1.4, label="Random"),
-            Line2D([0], [0], color=ORANGE, linewidth=1.4, label="High-score"),
-            Line2D(
-                [0],
-                [0],
-                color="#555555",
-                linestyle="--",
-                marker="^",
-                markersize=4.0,
-                label="Onset",
-            ),
-            Line2D(
-                [0],
-                [0],
-                color="#555555",
-                linestyle="-",
-                marker="o",
-                markerfacecolor="white",
-                markersize=4.0,
-                label="Steady",
-            ),
-        ],
-        frameon=False,
-        loc="upper center",
-        bbox_to_anchor=(0.5, 1.16),
-        ncol=4,
-        columnspacing=0.65,
-        handlelength=1.6,
-    )
-    fig.subplots_adjust(bottom=0.20, left=0.22, right=0.97, top=0.82)
-    return save_figure(fig, output)
-
-
-def render_missed_slots(
-    pairs: list[dict[str, str]], output: Path
-) -> list[Path]:
-    grouped = grouped_pair_metric(pairs, "miss_rate_improvement")
-    if not grouped:
-        raise ValueError("no sustained-outage paired rows")
-
-    fig, axis = plt.subplots(figsize=(3.45, 2.55))
-    offsets = {"random": -0.7, "high-score": 0.7}
-    markers = {"random": "o", "high-score": "s"}
-    for selection in ("random", "high-score"):
-        points = []
-        for (candidate, target), values in grouped.items():
-            if candidate != selection:
-                continue
-            mean, ci, count = mean_ci(values)
-            if count:
-                points.append((100.0 * target + offsets[selection], mean, ci))
-        points.sort()
+    for grouped, color, linestyle, marker, label in (
+        (fee_only, GRAY, "--", "s", r"Fee-only ($\eta{=}0$)"),
+        (full_onset, ORANGE, "--", "^", r"Full onset ($\eta{=}0.5$)"),
+        (full_steady, BLUE, "-", "o", r"Full steady ($\eta{=}0.5$)"),
+    ):
+        points = series_points(grouped)
         axis.errorbar(
             [point[0] for point in points],
             [point[1] for point in points],
             yerr=[point[2] for point in points],
-            color=COLORS[selection],
-            marker=markers[selection],
+            color=color,
+            marker=marker,
             markerfacecolor="white",
-            markeredgecolor=COLORS[selection],
+            markeredgecolor=color,
+            linestyle=linestyle,
             linewidth=1.2,
             markersize=4.5,
             capsize=2.5,
-            label=LABELS[selection],
+            label=label,
         )
-    axis.axhline(0.0, color="#666666", linewidth=0.9, linestyle="--")
-    label_fee_only_baseline(axis)
     axis.set_xlabel("Outage-group stake target (%)")
-    axis.set_ylabel(
-        "Miss-rate reduction (pp)\n"
-        + r"Full ($\eta{=}0.5$) vs. fee-only ($\eta{=}0$)"
-    )
+    axis.set_ylabel("Offline-group proposer share (%)")
     axis.set_xticks([10, 25, 40])
     axis.set_xlim(7, 43)
-    axis.set_ylim(-5.0, 6.5)
+    axis.set_ylim(5, 45)
     axis.grid(axis="y", color="#E6E6E6", linewidth=0.7)
     axis.legend(
         frameon=False,
         loc="upper center",
-        bbox_to_anchor=(0.5, 1.16),
+        bbox_to_anchor=(0.5, 1.20),
         ncol=2,
-        columnspacing=1.0,
-        handlelength=1.6,
+        columnspacing=0.7,
+        handlelength=1.4,
     )
-    fig.subplots_adjust(bottom=0.20, left=0.22, right=0.97, top=0.82)
+    fig.subplots_adjust(bottom=0.20, left=0.22, right=0.97, top=0.78)
+    return save_figure(fig, output)
+
+
+def render_missed_slot_rate(
+    pairs: list[dict[str, str]], selection: str, output: Path
+) -> list[Path]:
+    fee_only = grouped_pair_metric(pairs, "eta0_miss_rate", selection)
+    full = grouped_pair_metric(pairs, "full_miss_rate", selection)
+    reduction = grouped_pair_metric(pairs, "miss_rate_improvement", selection)
+    if not fee_only or not full or not reduction:
+        raise ValueError("no sustained-outage paired rows")
+
+    fig, axis = plt.subplots(figsize=(3.45, 2.55))
+    plotted: dict[str, list[tuple[float, float, float]]] = {}
+    for name, grouped, offset, color, linestyle, marker, label in (
+        ("fee_only", fee_only, -0.45, GRAY, "--", "s", r"Fee-only ($\eta{=}0$)"),
+        ("full", full, 0.45, BLUE, "-", "o", r"Full TopoStake ($\eta{=}0.5$)"),
+    ):
+        points = series_points(grouped)
+        plotted[name] = points
+        axis.errorbar(
+            [point[0] + offset for point in points],
+            [point[1] for point in points],
+            yerr=[point[2] for point in points],
+            color=color,
+            marker=marker,
+            markerfacecolor="white",
+            markeredgecolor=color,
+            linestyle=linestyle,
+            linewidth=1.2,
+            markersize=4.5,
+            capsize=2.5,
+            label=label,
+        )
+    fee_by_target = {point[0]: point for point in plotted["fee_only"]}
+    full_by_target = {point[0]: point for point in plotted["full"]}
+    for target, values in sorted(reduction.items()):
+        x = 100.0 * target
+        reduction_mean, _ci, count = mean_ci(values)
+        if not count or x not in fee_by_target or x not in full_by_target:
+            continue
+        fee_point = fee_by_target[x]
+        full_point = full_by_target[x]
+        label = (
+            f"{reduction_mean:.1f} pp lower"
+            if reduction_mean >= 0
+            else f"{-reduction_mean:.1f} pp higher"
+        )
+        y = max(fee_point[1] + fee_point[2], full_point[1] + full_point[2]) + 1.0
+        axis.text(x, y, label, fontsize=6.5, color="#333333", ha="center", va="bottom")
+    axis.set_xlabel("Outage-group stake target (%)")
+    axis.set_ylabel("Missed-slot rate during outage (%)")
+    axis.set_xticks([10, 25, 40])
+    axis.set_xlim(7, 43)
+    axis.set_ylim(0, 48)
+    axis.grid(axis="y", color="#E6E6E6", linewidth=0.7)
+    axis.legend(
+        frameon=False,
+        loc="upper center",
+        bbox_to_anchor=(0.5, 1.20),
+        ncol=2,
+        columnspacing=0.8,
+        handlelength=1.4,
+    )
+    fig.subplots_adjust(bottom=0.20, left=0.22, right=0.97, top=0.78)
     return save_figure(fig, output)
 
 
@@ -329,14 +304,24 @@ def main() -> int:
     runs_path = args.runs or processed / "sustained_outage_runs.csv"
     pairs_path = args.pairs or processed / "sustained_outage_paired.csv"
     configure_style()
-    outputs = render_weight_response(
-        read_csv(runs_path), args.output_dir / "sustained_outage_weight_response"
-    )
-    outputs.extend(
-        render_missed_slots(
-            read_csv(pairs_path), args.output_dir / "sustained_outage_missed_slots"
+    runs = read_csv(runs_path)
+    pairs = read_csv(pairs_path)
+    outputs = []
+    for selection, suffix in (("random", "random"), ("high-score", "high_score")):
+        outputs.extend(
+            render_weight_share(
+                runs,
+                selection,
+                args.output_dir / f"sustained_outage_weight_{suffix}",
+            )
         )
-    )
+        outputs.extend(
+            render_missed_slot_rate(
+                pairs,
+                selection,
+                args.output_dir / f"sustained_outage_missed_slots_{suffix}",
+            )
+        )
     print("Generated: " + ", ".join(str(path) for path in outputs))
     return 0
 
