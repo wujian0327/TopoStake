@@ -9,6 +9,7 @@ Python interpreter for Python scripts.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import subprocess
 import sys
@@ -28,15 +29,18 @@ FIGURE_SCRIPTS = [
     "analysis/plot_churn.py",
 ]
 
-PAPER_FIGURE_SCRIPTS = FIGURE_SCRIPTS + [
-    "analysis/plot_relay_participation.py",
+PAPER_FIGURE_JOBS = [
+    ("analysis/plot_performance.py", ("results/processed/runs.csv",)),
+    ("analysis/plot_weight_bound.py", ("results/processed/runs.csv",)),
+    (
+        "analysis/plot_padding_flooding.py",
+        (
+            "results/processed/runs.csv",
+            "results/processed/node_epoch_metrics_all.csv",
+        ),
+    ),
     "analysis/plot_path_padding_sim.py",
     "analysis/plot_flooding_sim.py",
-    "analysis/plot_devnet_overhead.py",
-    "analysis/plot_devnet_prompt41_42.py",
-    "analysis/plot_frozen_evidence.py",
-    "analysis/plot_frozen_security.py",
-    "analysis/plot_frozen_devnet.py",
 ]
 
 
@@ -78,24 +82,42 @@ def task_figures(_args: argparse.Namespace) -> None:
         run([PYTHON, script])
 
 
+def run_figure_if_ready(
+    script: str,
+    required_inputs: tuple[str, ...] = (),
+    script_args: tuple[str, ...] = (),
+) -> bool:
+    missing = [path for path in required_inputs if not (ROOT / path).is_file()]
+    if missing:
+        print(
+            f"skip: {script} (missing {', '.join(missing)})",
+            flush=True,
+        )
+        return False
+    run([PYTHON, script, *script_args])
+    return True
+
+
 def task_paper_figures(_args: argparse.Namespace) -> None:
-    for script in PAPER_FIGURE_SCRIPTS:
-        run([PYTHON, script])
-    for script, config in (
-        (
-            "analysis/plot_fee_bonus_long_horizon.py",
-            "experiments/configs/frozen_v1_fee_bonus_main.yaml",
-        ),
-        (
-            "analysis/plot_organic_capture.py",
-            "experiments/configs/frozen_v1_organic_capture_main.yaml",
-        ),
-        (
-            "analysis/plot_sustained_outage.py",
-            "experiments/configs/frozen_v1_sustained_outage_main.yaml",
-        ),
-    ):
-        run([PYTHON, script, "--config", config])
+    for job in PAPER_FIGURE_JOBS:
+        if isinstance(job, str):
+            run_figure_if_ready(job)
+        else:
+            script, required_inputs = job
+            run_figure_if_ready(script, required_inputs)
+
+    config = _args.config or "experiments/configs/frozen_v1_sustained_outage_main.yaml"
+    spec = json.loads((ROOT / config).read_text(encoding="utf-8"))
+    processed = Path("results/processed") / str(spec["suite"])
+    required_inputs = (
+        str(processed / "sustained_outage_runs.csv"),
+        str(processed / "sustained_outage_paired.csv"),
+    )
+    run_figure_if_ready(
+        "analysis/plot_sustained_outage.py",
+        required_inputs,
+        ("--config", config),
+    )
 
 
 def task_experiments_smoke(args: argparse.Namespace) -> None:
