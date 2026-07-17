@@ -160,12 +160,13 @@ pass. It pairs runs by seed and reports two-sided 95% Student-t intervals for
 each difference from baseline. The compact main-paper row uses four independent
 single-axis files: performance (`_a` throughput, `_b` p95 latency), aggregate
 single-host CPU (`resources_a`), and additional serialized bytes per included
-transaction (`evidence_a`). Every panel carries the same two-column variant
-legend in a reserved band above the plotting area, so it cannot overlap data
-or confidence intervals. Memory, network traffic, and block-level inline-
-evidence verification remain separate outputs for the table or appendix. The
-manifest records the four primary stems, exact source, seed set, statistical
-method, and resource scope.
+transaction (`evidence_a`). Every panel carries the same compact two-column
+variant legend inside a metric-specific empty corner of the plotting area;
+this avoids both an outer whitespace band and the central confidence
+intervals. Memory, network traffic, and block-level inline-evidence
+verification remain separate outputs for the table or appendix. The manifest
+records the four primary stems, exact source, seed set, statistical method,
+and resource scope.
 
 The score-floor sweep crosses `kappa = {0.1, 1, 10}` with low-to-normal offered
 loads. This is intentional: at high score mass, changing `kappa` has little

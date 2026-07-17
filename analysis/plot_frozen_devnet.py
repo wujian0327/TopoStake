@@ -42,9 +42,9 @@ COLORS = {
 }
 MARKERS = {"pathobs": "o", "fee_only": "s", "bonus_only": "^", "topostake": "D"}
 LABELS = {
-    "pathobs": "Path obs.",
-    "fee_only": "Fee only",
-    "bonus_only": "Bonus only",
+    "pathobs": "PathObs",
+    "fee_only": "Fee-only",
+    "bonus_only": "Bonus-only",
     "topostake": "Full",
 }
 OFFSETS = {"pathobs": -0.18, "fee_only": -0.06, "bonus_only": 0.06, "topostake": 0.18}
@@ -57,7 +57,16 @@ PRIMARY_FIGURE_STEMS = (
     "frozen_devnet_resources_a",
     "frozen_devnet_evidence_a",
 )
-FOUR_UP_FIGSIZE = (3.0, 2.55)
+FOUR_UP_FIGSIZE = (3.0, 2.25)
+LEGEND_LOCATIONS = {
+    "throughput_change_percent": "upper left",
+    "p95_latency_change_seconds": "lower right",
+    "aggregate_cpu_change_percentage_points": "upper left",
+    "aggregate_memory_change_mib": "upper left",
+    "aggregate_network_change_mib": "upper left",
+    "additional_block_bytes_per_tx": "lower left",
+    "verification": "lower left",
+}
 
 FIGURE_CONTENTS = {
     "frozen_devnet_performance_a": "paired inclusion-throughput change versus baseline",
@@ -340,24 +349,29 @@ def finish_axis(
     fig: Any,
     axis: Axes,
     loads: list[int],
+    legend_loc: str,
 ) -> None:
     axis.set_xticks(range(len(loads)), [str(load) for load in loads])
     axis.set_xlabel("Load (tx/slot)")
     axis.grid(axis="y", color="#E6E6E6", linewidth=0.7)
     axis.axhline(0.0, color="#666666", linewidth=0.9, linestyle="--", zorder=1)
-    # Reserve a fixed band above every axis for the same two-column legend.
-    # Keeping it outside the plotting area prevents data-dependent overlap
-    # with points or confidence intervals while preserving aligned panels.
+    # A compact two-column legend fits into a metric-specific empty corner.
+    # A nearly opaque white backing keeps grid lines from reducing legibility
+    # without adding an outer whitespace band.
     axis.legend(
-        frameon=False,
+        frameon=True,
+        facecolor="white",
+        edgecolor="none",
+        framealpha=0.92,
         ncol=2,
-        loc="lower center",
-        bbox_to_anchor=(0.5, 1.02),
-        borderaxespad=0.0,
-        columnspacing=0.8,
-        handletextpad=0.4,
+        loc=legend_loc,
+        fontsize=7.8,
+        borderpad=0.18,
+        labelspacing=0.15,
+        handletextpad=0.3,
+        columnspacing=0.55,
     )
-    fig.subplots_adjust(bottom=0.21, left=0.25, right=0.97, top=0.73)
+    fig.subplots_adjust(bottom=0.24, left=0.25, right=0.97, top=0.97)
 
 
 def plot_paired_metric(
@@ -388,8 +402,11 @@ def plot_paired_metric(
             linewidth=1.1,
             label=LABELS[variant],
         )
+    if metric == "throughput_change_percent":
+        bottom, top = axis.get_ylim()
+        axis.set_ylim(bottom, top + 0.06 * (top - bottom))
     axis.set_ylabel(ylabel)
-    finish_axis(fig, axis, loads)
+    finish_axis(fig, axis, loads, LEGEND_LOCATIONS[metric])
     return save_figure(fig, stem)
 
 
@@ -422,7 +439,7 @@ def plot_verification(
             label=label,
         )
     axis.set_ylabel("Verification time (ms)")
-    finish_axis(fig, axis, loads)
+    finish_axis(fig, axis, loads, LEGEND_LOCATIONS["verification"])
     return save_figure(fig, stem)
 
 
