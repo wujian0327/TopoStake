@@ -204,8 +204,10 @@ def render_weight_response(
             )
     axis.axhline(0.0, color="#666666", linewidth=0.9, linestyle="--")
     axis.set_xlabel("Outage-group stake target (%)")
-    axis.set_ylabel("Offline-group weight shift (pp)\n" + r"TopoStake $-$ $\eta{=}0$")
-    axis.set_title("Proposer-weight response", y=1.27)
+    axis.set_ylabel(
+        "Offline-group weight shift (pp)\n"
+        + r"Full ($\eta{=}0.5$) $-$ fee-only ($\eta{=}0$)"
+    )
     axis.set_xticks([10, 25, 40])
     axis.set_xlim(7, 43)
     axis.set_ylim(-2.45, 3.25)
@@ -236,12 +238,12 @@ def render_weight_response(
         ],
         frameon=False,
         loc="upper center",
-        bbox_to_anchor=(0.5, 1.14),
+        bbox_to_anchor=(0.5, 1.16),
         ncol=4,
         columnspacing=0.65,
         handlelength=1.6,
     )
-    fig.subplots_adjust(bottom=0.20, left=0.22, right=0.97, top=0.72)
+    fig.subplots_adjust(bottom=0.20, left=0.22, right=0.97, top=0.82)
     return save_figure(fig, output)
 
 
@@ -279,14 +281,23 @@ def render_missed_slots(
         )
     axis.axhline(0.0, color="#666666", linewidth=0.9, linestyle="--")
     axis.set_xlabel("Outage-group stake target (%)")
-    axis.set_ylabel("Miss-rate improvement (pp)\n" + r"$\eta{=}0$ $-$ TopoStake")
-    axis.set_title("Missed slots under sustained outage")
+    axis.set_ylabel(
+        "Miss-rate improvement (pp)\n"
+        + r"Fee-only ($\eta{=}0$) $-$ full ($\eta{=}0.5$)"
+    )
     axis.set_xticks([10, 25, 40])
     axis.set_xlim(7, 43)
     axis.set_ylim(-5.0, 6.5)
     axis.grid(axis="y", color="#E6E6E6", linewidth=0.7)
-    axis.legend(frameon=False, loc="upper left")
-    fig.subplots_adjust(bottom=0.20, left=0.22, right=0.97, top=0.87)
+    axis.legend(
+        frameon=False,
+        loc="upper center",
+        bbox_to_anchor=(0.5, 1.16),
+        ncol=2,
+        columnspacing=1.0,
+        handlelength=1.6,
+    )
+    fig.subplots_adjust(bottom=0.20, left=0.22, right=0.97, top=0.82)
     return save_figure(fig, output)
 
 
