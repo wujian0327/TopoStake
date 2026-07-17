@@ -273,6 +273,9 @@ def main() -> int:
         "paired_duty_slots_match": all(pair["duty_slots_match"] for pair in pairs),
         "scheduled_outage_enforced": all(run["group_miss_enforcement"] for run in runs),
         "outage_assignments_resolved": all(run["outage_assignment_resolved"] for run in runs),
+        "realized_outage_stake_below_one_third": all(
+            run["realized_stake_fraction"] < (1.0 / 3.0) for run in runs
+        ),
         "weight_epochs_complete": all(run["weight_epoch_coverage"] for run in runs),
         "outage_relays_silent_after_onset": all(
             run["outage_sustained_relay_attempts"] == 0 for run in runs

@@ -1,3 +1,4 @@
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -107,6 +108,20 @@ class SustainedOutageAssignmentTests(unittest.TestCase):
         ]
         self.assertEqual(relay_attempts_by_epoch(rows, {1}, 10, 12), {10: 2, 11: 3})
         self.assertEqual(relay_attempts_during_outage(rows, {1}, 10, 12), 5)
+
+    def test_pilot_and_main_configs_stay_below_finality_threshold(self):
+        for name in (
+            "frozen_v1_sustained_outage_pilot.yaml",
+            "frozen_v1_sustained_outage_main.yaml",
+        ):
+            spec = json.loads((EXPERIMENTS / "configs" / name).read_text())
+            self.assertEqual(spec["defaults"]["topology"], "ba")
+            self.assertEqual(spec["defaults"]["stake_gini"], 0.1)
+            self.assertEqual(spec["defaults"]["eta"], 0.5)
+            self.assertEqual(spec["outage"]["stake_fractions"], [0.10, 0.20, 0.30])
+            self.assertTrue(
+                all(value < (1.0 / 3.0) for value in spec["outage"]["stake_fractions"])
+            )
 
 
 if __name__ == "__main__":

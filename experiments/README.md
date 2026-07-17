@@ -122,7 +122,9 @@ and single-host measurement scope.
 
 The sustained-outage suite pairs Full TopoStake with the `eta=0` baseline
 using the same seed-specific validator assignment. It evaluates random and
-high-score outage groups at 10%, 25%, and 40% target stake. The report audits
+high-score outage groups at 10%, 20%, and 30% target stake on a 100-node BA
+network with Gini 0.1 and 64 transactions per slot. All conditions remain
+strictly below the one-third finality threshold. The report audits
 outage enforcement, silent relays, paired assignments, the `eta=0` stake
 baseline, and proposer-weight-envelope compliance. The figure task writes
 separate random and high-score proposer-weight and missed-slot panels as four
@@ -135,18 +137,9 @@ slot-lottery noise; the realized missed-slot rate remains the primary observed
 outcome. Node-metric weights are aligned to their actual effective epoch, and
 the relay-silence audit reports the asynchronous onset drain separately and
 requires zero forwarding in every subsequent sustained-outage epoch.
-
-Before expanding the formal matrix, screen three five-seed, random-outage
-environments at 33% target stake with 30 warm-up and 100 outage epochs:
-
-```bash
-python scripts/task.py frozen-sustained-outage-env-pilot
-```
-
-The aggregate task runs the current BA/Gini-0.6/load-20 reference, then
-ER/Gini-0.1/load-64 and WS/Gini-0.1/load-64 candidates. The protocol envelope
-is identical in all three. Each environment may also be run separately with
-the `-ba-pilot`, `-er-pilot`, or `-ws-pilot` task variants.
+The pilot uses five seeds; the main matrix uses twenty. Both use a 30-epoch
+warm-up and a 100-epoch outage while retaining the frozen `eta=0.5` protocol
+envelope.
 
 ## Frozen-v1 Devnet Acceptance
 

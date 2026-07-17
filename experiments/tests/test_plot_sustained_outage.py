@@ -29,7 +29,7 @@ class SustainedOutagePlotTests(unittest.TestCase):
         rows = []
         for seed in range(3):
             for selection, initial_bonus in (("random", 0.0), ("high-score", 0.02)):
-                for target in (0.10, 0.25, 0.40):
+                for target in (0.10, 0.20, 0.30):
                     for protocol in ("topostake_eta0", "topostake"):
                         full = protocol == "topostake"
                         rows.append(
@@ -52,7 +52,7 @@ class SustainedOutagePlotTests(unittest.TestCase):
         rows = []
         for seed in range(3):
             for selection in ("random", "high-score"):
-                for target in (0.10, 0.25, 0.40):
+                for target in (0.10, 0.20, 0.30):
                     improvement = (
                         0.01 + 0.001 * seed
                         if selection == "random"

@@ -255,30 +255,6 @@ def task_sustained_outage_main(args: argparse.Namespace) -> None:
     )
 
 
-def task_sustained_outage_env_ba_pilot(args: argparse.Namespace) -> None:
-    task_sustained_outage(
-        args, "experiments/configs/frozen_v1_sustained_outage_env_ba_pilot.yaml"
-    )
-
-
-def task_sustained_outage_env_er_pilot(args: argparse.Namespace) -> None:
-    task_sustained_outage(
-        args, "experiments/configs/frozen_v1_sustained_outage_env_er_pilot.yaml"
-    )
-
-
-def task_sustained_outage_env_ws_pilot(args: argparse.Namespace) -> None:
-    task_sustained_outage(
-        args, "experiments/configs/frozen_v1_sustained_outage_env_ws_pilot.yaml"
-    )
-
-
-def task_sustained_outage_env_pilot(args: argparse.Namespace) -> None:
-    task_sustained_outage_env_ba_pilot(args)
-    task_sustained_outage_env_er_pilot(args)
-    task_sustained_outage_env_ws_pilot(args)
-
-
 def task_sustained_outage_report(args: argparse.Namespace) -> None:
     config = args.config or "experiments/configs/frozen_v1_sustained_outage_main.yaml"
     run([PYTHON, "experiments/sustained_outage_report.py", "--config", config])
@@ -372,10 +348,6 @@ TASKS: Dict[str, Callable[[argparse.Namespace], None]] = {
     "frozen-organic-capture-figures": task_organic_capture_figures,
     "frozen-sustained-outage-pilot": task_sustained_outage_pilot,
     "frozen-sustained-outage-main": task_sustained_outage_main,
-    "frozen-sustained-outage-env-pilot": task_sustained_outage_env_pilot,
-    "frozen-sustained-outage-env-ba-pilot": task_sustained_outage_env_ba_pilot,
-    "frozen-sustained-outage-env-er-pilot": task_sustained_outage_env_er_pilot,
-    "frozen-sustained-outage-env-ws-pilot": task_sustained_outage_env_ws_pilot,
     "frozen-sustained-outage-report": task_sustained_outage_report,
     "frozen-sustained-outage-figures": task_sustained_outage_figures,
     "frozen-evidence-bench": task_frozen_evidence_bench,
