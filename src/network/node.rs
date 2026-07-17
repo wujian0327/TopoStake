@@ -658,6 +658,12 @@ impl Node {
                     //并广播到邻居
                     let neighbors = self.neighbors.clone();
                     for neighbor_sender in &neighbors {
+                        // The shared outage flag may change while a message is
+                        // being handled. Recheck at the forwarding boundary so
+                        // an in-flight handler cannot fan out after onset.
+                        if !self.scheduled_online.load(Ordering::Relaxed) {
+                            break;
+                        }
                         if from == neighbor_sender.address {
                             continue;
                         }

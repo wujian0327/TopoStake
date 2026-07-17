@@ -12,6 +12,7 @@ from sustained_outage_report import (
     effective_weight_epoch,
     group_weight_series,
     paired_rows,
+    relay_attempts_by_epoch,
     relay_attempts_during_outage,
 )
 
@@ -104,6 +105,7 @@ class SustainedOutageAssignmentTests(unittest.TestCase):
             {"epoch": "11", "validator_id": "1", "relay_forward_attempts": "3"},
             {"epoch": "12", "validator_id": "1", "relay_forward_attempts": "5"},
         ]
+        self.assertEqual(relay_attempts_by_epoch(rows, {1}, 10, 12), {10: 2, 11: 3})
         self.assertEqual(relay_attempts_during_outage(rows, {1}, 10, 12), 5)
 
 

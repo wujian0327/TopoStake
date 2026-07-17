@@ -56,12 +56,18 @@ def group_weight_series(
 def relay_attempts_during_outage(
     nodes: Iterable[Dict[str, str]], outage_ids: set[int], start: int, end: int
 ) -> int:
-    return sum(
-        int(row["relay_forward_attempts"])
-        for row in nodes
-        if int(row["validator_id"]) in outage_ids
-        and start <= int(row["epoch"]) < end
-    )
+    return sum(relay_attempts_by_epoch(nodes, outage_ids, start, end).values())
+
+
+def relay_attempts_by_epoch(
+    nodes: Iterable[Dict[str, str]], outage_ids: set[int], start: int, end: int
+) -> Dict[int, int]:
+    attempts: Dict[int, int] = defaultdict(int)
+    for row in nodes:
+        epoch = int(row["epoch"])
+        if int(row["validator_id"]) in outage_ids and start <= epoch < end:
+            attempts[epoch] += int(row["relay_forward_attempts"])
+    return dict(attempts)
 
 
 def summarize_run(run_dir: Path) -> Dict[str, Any]:
@@ -106,7 +112,11 @@ def summarize_run(run_dir: Path) -> Dict[str, Any]:
         for row in nodes
         if int(row["epoch"]) == stake_snapshot_epoch
     )
-    relay_attempts = relay_attempts_during_outage(nodes, outage_ids, start, end)
+    relay_attempts = relay_attempts_by_epoch(nodes, outage_ids, start, end)
+    onset_relay_attempts = relay_attempts.get(start, 0)
+    sustained_relay_attempts = sum(
+        attempts for epoch, attempts in relay_attempts.items() if epoch > start
+    )
     mean_group_weight = mean(
         weights_by_epoch.get(epoch, 0.0) for epoch in expected_weight_epochs
     )
@@ -130,7 +140,9 @@ def summarize_run(run_dir: Path) -> Dict[str, Any]:
         "miss_rate": len(misses) / len(outage_duties) if outage_duties else 0.0,
         "chain_growth_ratio": 1.0 - len(misses) / len(outage_duties) if outage_duties else 0.0,
         "group_miss_enforcement": len(scheduled_misses) == len(group_duties),
-        "outage_relay_attempts": relay_attempts,
+        "outage_relay_attempts": sum(relay_attempts.values()),
+        "outage_onset_relay_attempts": onset_relay_attempts,
+        "outage_sustained_relay_attempts": sustained_relay_attempts,
         "weight_epoch_coverage": sorted(weights_by_epoch) == expected_weight_epochs,
         "initial_group_weight": weights_by_epoch.get(start, 0.0),
         "mean_group_weight": mean_group_weight,
@@ -235,6 +247,14 @@ def markdown_summary(pairs: List[Dict[str, Any]], acceptance: Dict[str, Any]) ->
     lines.extend(["", "Acceptance: " + ("PASS" if acceptance["pass"] else "FAIL"), ""])
     for name, value in acceptance["checks"].items():
         lines.append(f"- {name}: {'pass' if value else 'FAIL'}")
+    diagnostic = acceptance["directional_diagnostic"]
+    lines.extend(
+        [
+            "",
+            f"Relay onset drain: {diagnostic['total_onset_relay_attempts']} attempts; "
+            f"sustained outage: {diagnostic['total_sustained_relay_attempts']} attempts.",
+        ]
+    )
     return "\n".join(lines) + "\n"
 
 
@@ -254,7 +274,9 @@ def main() -> int:
         "scheduled_outage_enforced": all(run["group_miss_enforcement"] for run in runs),
         "outage_assignments_resolved": all(run["outage_assignment_resolved"] for run in runs),
         "weight_epochs_complete": all(run["weight_epoch_coverage"] for run in runs),
-        "outage_relays_silent": all(run["outage_relay_attempts"] == 0 for run in runs),
+        "outage_relays_silent_after_onset": all(
+            run["outage_sustained_relay_attempts"] == 0 for run in runs
+        ),
         "eta0_weight_equals_stake": all(
             run["eta0_weight_error"] <= run["eta0_weight_tolerance"]
             for run in runs
@@ -269,6 +291,15 @@ def main() -> int:
             "positive_miss_rate_pairs": sum(pair["miss_rate_improvement"] > 0 for pair in pairs),
             "positive_expected_miss_rate_pairs": sum(
                 pair["expected_miss_rate_improvement"] > 0 for pair in pairs
+            ),
+            "total_onset_relay_attempts": sum(
+                run["outage_onset_relay_attempts"] for run in runs
+            ),
+            "max_onset_relay_attempts_per_run": max(
+                (run["outage_onset_relay_attempts"] for run in runs), default=0
+            ),
+            "total_sustained_relay_attempts": sum(
+                run["outage_sustained_relay_attempts"] for run in runs
             ),
             "total_pairs": len(pairs),
             "max_eta0_weight_error": max(

@@ -648,12 +648,22 @@ impl WorldState {
     pub async fn next_epoch(&mut self) {
         let current_slot = self.current_slot.read().await.clone();
         let _current_epoch = current_slot.current_epoch;
+        let next_epoch = current_slot.current_epoch + 1;
+        // Close the asynchronous onset window before exposing an outage epoch.
+        // Recovery remains after the old-epoch sample so resumed forwarding is
+        // attributed to the new online epoch rather than the final outage one.
+        if self.scheduled_outage_active(next_epoch) {
+            self.update_scheduled_availability(next_epoch);
+        }
         //更新epoch中调用consensus的on_epoch_end
         let blocks = self.blockchain.read().await.get_last_epoch_block();
         let validators = self.validators.read().await.clone();
         self.consensus.on_epoch_end(&blocks, &validators);
         self.collect_epoch_metrics(current_slot.current_epoch, &blocks, &validators)
             .await;
+        if !self.scheduled_outage_active(next_epoch) {
+            self.update_scheduled_availability(next_epoch);
+        }
         let seed_block_index = if self.outage_common_slot_randomness {
             0
         } else {
@@ -661,14 +671,14 @@ impl WorldState {
         };
         let next_seed = derive_election_seed(
             self.election_seed,
-            current_slot.current_epoch + 1,
+            next_epoch,
             0,
             seed_block_index,
         );
         self.current_slot = Arc::new(RwLock::new(SlotManager {
             randao_seeds: vec![],
             slot_duration: self.slot_duration,
-            current_epoch: current_slot.current_epoch + 1,
+            current_epoch: next_epoch,
             current_slot: 0,
             next_seed,
             start_timestamp: get_timestamp(),

@@ -133,7 +133,8 @@ The report additionally derives the expected missed-slot rate from the
 outage group's frozen proposer-weight share. This expectation removes finite
 slot-lottery noise; the realized missed-slot rate remains the primary observed
 outcome. Node-metric weights are aligned to their actual effective epoch, and
-the relay-silence audit includes the first outage epoch.
+the relay-silence audit reports the asynchronous onset drain separately and
+requires zero forwarding in every subsequent sustained-outage epoch.
 
 Before expanding the formal matrix, screen three five-seed, random-outage
 environments at 33% target stake with 30 warm-up and 100 outage epochs:
