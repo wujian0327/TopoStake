@@ -317,7 +317,7 @@ def main() -> int:
     write_line_pdf(
         FIGURES / "devnet_delay_load.pdf",
         "Offered load (tx/slot)",
-        "p95 inclusion delay (s)",
+        "p95 delay (s)",
         load_delay,
         [60, 120, 180, 240, 300, 360],
         ymin=0.0,
@@ -333,7 +333,7 @@ def main() -> int:
     write_line_pdf(
         FIGURES / "devnet_delay_nodes.pdf",
         "Number of nodes",
-        "p95 inclusion delay (s)",
+        "p95 delay (s)",
         node_delay,
         sorted({point[0] for points in node_delay.values() for point in points}),
         ymin=0.0,

@@ -142,14 +142,14 @@ def main() -> int:
         FIGURES / "path_padding_weight_score.pdf",
         "Path-padding adversary weight and score",
         "Padding identities",
-        "Share / real stake share",
+        "Share / stake share",
         weight_score_series,
     )
     write_line_pdf(
         FIGURES / "path_padding_reward_credit.pdf",
         "Path-padding adversary relay reward and credit",
         "Padding identities",
-        "Share / real stake share",
+        "Share / stake share",
         reward_credit_series,
     )
     flooding = defaultdict(list)
@@ -230,7 +230,7 @@ def main() -> int:
         FIGURES / "transaction_flooding_latency.pdf",
         "Transaction flooding latency",
         "Attack transaction multiplier",
-        "p95 confirmation latency (s)",
+        "p95 latency (s)",
         {key: sorted(value) for key, value in latency_series.items()},
         include_zero=True,
         y_min=0.0,

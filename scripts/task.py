@@ -28,6 +28,17 @@ FIGURE_SCRIPTS = [
     "analysis/plot_churn.py",
 ]
 
+PAPER_FIGURE_SCRIPTS = FIGURE_SCRIPTS + [
+    "analysis/plot_relay_participation.py",
+    "analysis/plot_path_padding_sim.py",
+    "analysis/plot_flooding_sim.py",
+    "analysis/plot_devnet_overhead.py",
+    "analysis/plot_devnet_prompt41_42.py",
+    "analysis/plot_frozen_evidence.py",
+    "analysis/plot_frozen_security.py",
+    "analysis/plot_frozen_devnet.py",
+]
+
 
 def run(cmd: List[str], env: dict[str, str] | None = None, check: bool = True) -> subprocess.CompletedProcess[str]:
     printable = " ".join(cmd)
@@ -65,6 +76,26 @@ def task_summarize_config(config: str) -> None:
 def task_figures(_args: argparse.Namespace) -> None:
     for script in FIGURE_SCRIPTS:
         run([PYTHON, script])
+
+
+def task_paper_figures(_args: argparse.Namespace) -> None:
+    for script in PAPER_FIGURE_SCRIPTS:
+        run([PYTHON, script])
+    for script, config in (
+        (
+            "analysis/plot_fee_bonus_long_horizon.py",
+            "experiments/configs/frozen_v1_fee_bonus_main.yaml",
+        ),
+        (
+            "analysis/plot_organic_capture.py",
+            "experiments/configs/frozen_v1_organic_capture_main.yaml",
+        ),
+        (
+            "analysis/plot_sustained_outage.py",
+            "experiments/configs/frozen_v1_sustained_outage_main.yaml",
+        ),
+    ):
+        run([PYTHON, script, "--config", config])
 
 
 def task_experiments_smoke(args: argparse.Namespace) -> None:
@@ -356,6 +387,7 @@ TASKS: Dict[str, Callable[[argparse.Namespace], None]] = {
     "frozen-devnet-main": task_frozen_devnet_main,
     "summarize": task_summarize,
     "figures": task_figures,
+    "paper-figures": task_paper_figures,
 }
 
 

@@ -86,7 +86,7 @@ def render_metric(
     rows: list[dict[str, str]],
     metric: str,
     ylabel: str,
-    title: str,
+    _title: str,
     output: Path,
     minimum_lazy_fraction: float = 0.0,
 ) -> None:
@@ -125,11 +125,10 @@ def render_metric(
         )
     axis.set_xlabel("Lazy relayers (%)")
     axis.set_ylabel(ylabel)
-    axis.set_title(title)
     axis.set_xticks([0, 25, 50, 75])
     axis.grid(axis="y", color="#E6E6E6", linewidth=0.7)
     axis.legend(frameon=False, loc="best")
-    fig.subplots_adjust(bottom=0.18, left=0.20, right=0.97, top=0.88)
+    fig.subplots_adjust(bottom=0.18, left=0.20, right=0.97, top=0.97)
     output.parent.mkdir(parents=True, exist_ok=True)
     for suffix in ("pdf", "png"):
         fig.savefig(output.with_suffix(f".{suffix}"), dpi=300, facecolor="white")
@@ -137,7 +136,11 @@ def render_metric(
 
 
 def render_paired_difference(
-    rows: list[dict[str, str]], metric: str, ylabel: str, title: str, output: Path
+    rows: list[dict[str, str]],
+    metric: str,
+    ylabel: str,
+    _title: str,
+    output: Path,
 ) -> None:
     points = sorted(
         (
@@ -169,10 +172,9 @@ def render_paired_difference(
     axis.axhline(0.0, color="#666666", linewidth=0.9, linestyle="--")
     axis.set_xlabel("Lazy relayers (%)")
     axis.set_ylabel(ylabel)
-    axis.set_title(title)
     axis.set_xticks([25, 50, 75])
     axis.grid(axis="y", color="#E6E6E6", linewidth=0.7)
-    fig.subplots_adjust(bottom=0.18, left=0.20, right=0.97, top=0.88)
+    fig.subplots_adjust(bottom=0.18, left=0.20, right=0.97, top=0.97)
     output.parent.mkdir(parents=True, exist_ok=True)
     for suffix in ("pdf", "png"):
         fig.savefig(output.with_suffix(f".{suffix}"), dpi=300, facecolor="white")
@@ -193,67 +195,59 @@ def main() -> int:
     specifications = [
         (
             "p95_inclusion_latency_s_pooled",
-            "Pooled p95 latency (s)",
-            "Long-horizon inclusion latency",
+            "p95 latency (s)",
             "fee_bonus_long_horizon_a",
         ),
         (
             "credit_eligible_rate",
-            "Credit-eligible path rate",
-            "Accepted propagation evidence",
+            "Eligible-path rate",
             "fee_bonus_long_horizon_b",
         ),
         (
             "relay_reward_per_stake_gini",
-            "Relay reward/stake Gini",
-            "Relay-reward concentration",
+            "Reward/stake Gini",
             "fee_bonus_long_horizon_c",
         ),
         (
             "top_degree_quartile_relay_reward_share",
-            "Top-degree-quartile reward share",
-            "Topology-linked reward capture",
+            "Top-degree reward share",
             "fee_bonus_long_horizon_d",
         ),
         (
             "participation_break_even_cost_per_forward",
-            "Reward premium / extra forward",
-            "Participation cost threshold",
+            "Reward / extra forward",
             "fee_bonus_long_horizon_e",
             0.01,
         ),
         (
             "forward_attempts_per_included_tx",
-            "Forward attempts / included tx",
-            "Relay work",
+            "Forwards / included tx",
             "fee_bonus_long_horizon_f",
             0.0,
         ),
         (
             "participation_reward_premium_per_stake",
-            "Active-minus-lazy total reward / stake",
-            "Participation reward premium",
+            "Reward/stake premium",
             "fee_bonus_long_horizon_g",
             0.01,
         ),
         (
             "participation_weight_multiplier_premium",
-            "Active-minus-lazy weight/stake multiplier",
-            "Expected proposer-opportunity premium",
+            "Weight/stake premium",
             "fee_bonus_long_horizon_i",
             0.01,
         ),
     ]
     normalized_specs = [
-        (*specification, 0.0) if len(specification) == 4 else specification
+        (*specification, 0.0) if len(specification) == 3 else specification
         for specification in specifications
     ]
-    for metric, ylabel, title, stem, minimum_lazy_fraction in normalized_specs:
+    for metric, ylabel, stem, minimum_lazy_fraction in normalized_specs:
         render_metric(
             rows,
             metric,
             ylabel,
-            title,
+            "",
             args.output_dir / stem,
             minimum_lazy_fraction,
         )
@@ -261,7 +255,7 @@ def main() -> int:
         rows,
         "participation_reward_premium_per_stake",
         "Full-minus-fee-only premium",
-        "Incremental proposer-bonus incentive",
+        "",
         args.output_dir / "fee_bonus_long_horizon_h",
     )
     print(f"generated {(len(specifications) + 1) * 2} files from {groups_path}")

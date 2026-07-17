@@ -332,13 +332,12 @@ def finish_axis(fig: Any, axis: Axes, loads: list[int]) -> None:
     axis.grid(axis="y", color="#E6E6E6", linewidth=0.7)
     axis.axhline(0.0, color="#666666", linewidth=0.9, linestyle="--", zorder=1)
     axis.legend(frameon=False, ncol=2, loc="best")
-    fig.subplots_adjust(bottom=0.18, left=0.20, right=0.97, top=0.88)
+    fig.subplots_adjust(bottom=0.18, left=0.20, right=0.97, top=0.97)
 
 
 def plot_paired_metric(
     summaries: list[dict[str, Any]],
     metric: str,
-    title: str,
     ylabel: str,
     stem: Path,
 ) -> list[Path]:
@@ -364,7 +363,6 @@ def plot_paired_metric(
             linewidth=1.1,
             label=LABELS[variant],
         )
-    axis.set_title(title)
     axis.set_ylabel(ylabel)
     finish_axis(fig, axis, loads)
     return save_figure(fig, stem)
@@ -398,8 +396,7 @@ def plot_verification(
             linewidth=1.1,
             label=label,
         )
-    axis.set_title("Inline evidence verification")
-    axis.set_ylabel("Block verification time (ms)")
+    axis.set_ylabel("Verification time (ms)")
     finish_axis(fig, axis, loads)
     return save_figure(fig, stem)
 
@@ -411,48 +408,41 @@ def render_figures(
     specs = [
         (
             "throughput_change_percent",
-            "Inclusion throughput",
-            "Change vs. baseline (%)",
+            "Throughput change (%)",
             "frozen_devnet_performance_a",
         ),
         (
             "p95_latency_change_seconds",
-            "p95 inclusion latency",
-            "Change vs. baseline (s)",
+            "p95 latency change (s)",
             "frozen_devnet_performance_b",
         ),
         (
             "aggregate_cpu_change_percentage_points",
-            "Aggregate client CPU",
-            "Change vs. baseline (percentage points)",
+            "CPU change (pp)",
             "frozen_devnet_resources_a",
         ),
         (
             "aggregate_memory_change_mib",
-            "Aggregate client memory",
-            "Change vs. baseline (MiB)",
+            "Memory change (MiB)",
             "frozen_devnet_resources_b",
         ),
         (
             "aggregate_network_change_mib",
-            "Aggregate network traffic",
-            "Change vs. baseline (MiB)",
+            "Network change (MiB)",
             "frozen_devnet_resources_c",
         ),
         (
             "additional_block_bytes_per_tx",
-            "Serialized block overhead",
-            "Additional bytes/included tx",
+            "Bytes / included tx",
             "frozen_devnet_evidence_a",
         ),
     ]
     outputs: list[Path] = []
-    for metric, title, ylabel, filename in specs:
+    for metric, ylabel, filename in specs:
         outputs.extend(
             plot_paired_metric(
                 summaries,
                 metric,
-                title,
                 ylabel,
                 output_dir / filename,
             )

@@ -93,7 +93,7 @@ def render_metric(
     rows: list[dict[str, str]],
     metric: str,
     ylabel: str,
-    title: str,
+    _title: str,
     output: Path,
     reference: Callable[[float], float],
     reference_label: str,
@@ -147,7 +147,6 @@ def render_metric(
     )
     axis.set_xlabel("Coalition stake (%)")
     axis.set_ylabel(ylabel)
-    axis.set_title(title)
     axis.set_xticks(xs)
     axis.set_ylim(bottom=0.0)
     axis.grid(axis="y", color="#E6E6E6", linewidth=0.7)
@@ -162,7 +161,7 @@ def render_metric(
         columnspacing=0.8,
         handlelength=1.8,
     )
-    fig.subplots_adjust(bottom=0.19, left=0.20, right=0.97, top=0.88)
+    fig.subplots_adjust(bottom=0.19, left=0.20, right=0.97, top=0.97)
     save_figure(fig, output)
     plt.close(fig)
 
@@ -206,8 +205,7 @@ def render_paired_capture(rows: list[dict[str, str]], output: Path) -> None:
         )
     axis.axhline(0.0, color="#333333", linewidth=0.8, linestyle=":")
     axis.set_xlabel("Coalition stake target (%)")
-    axis.set_ylabel("Reward-share gain (percentage points)")
-    axis.set_title("Organic relay-capture gain (b)")
+    axis.set_ylabel("Reward-share gain (pp)")
     axis.set_xticks([10.0, 20.0, 30.0])
     axis.grid(axis="y", color="#E6E6E6", linewidth=0.7)
     axis.legend(
@@ -217,7 +215,7 @@ def render_paired_capture(rows: list[dict[str, str]], output: Path) -> None:
         framealpha=0.9,
         loc="upper left",
     )
-    fig.subplots_adjust(bottom=0.19, left=0.20, right=0.97, top=0.88)
+    fig.subplots_adjust(bottom=0.19, left=0.20, right=0.97, top=0.97)
     save_figure(fig, output)
     plt.close(fig)
 
@@ -254,8 +252,7 @@ def render_score_to_proposer_gain(rows: list[dict[str, str]], output: Path) -> N
             )
     axis.axhline(0.0, color="#333333", linewidth=0.8, linestyle=":")
     axis.set_xlabel("Coalition stake target (%)")
-    axis.set_ylabel("Stress-induced gain (percentage points)")
-    axis.set_title("Score-to-proposer attenuation (c)")
+    axis.set_ylabel("Stress gain (pp)")
     axis.set_xticks([10.0, 20.0, 30.0])
     axis.grid(axis="y", color="#E6E6E6", linewidth=0.7)
     legend_handles = [
@@ -296,7 +293,7 @@ def render_score_to_proposer_gain(rows: list[dict[str, str]], output: Path) -> N
         columnspacing=1.0,
         handlelength=2.0,
     )
-    fig.subplots_adjust(bottom=0.19, left=0.20, right=0.97, top=0.88)
+    fig.subplots_adjust(bottom=0.19, left=0.20, right=0.97, top=0.97)
     save_figure(fig, output)
     plt.close(fig)
 
@@ -315,8 +312,8 @@ def main() -> int:
     render_metric(
         rows,
         "adversary_organic_relay_reward_share",
-        "Organic relay reward share (%)",
-        "Organic relay-reward capture (a)",
+        "Relay reward share (%)",
+        "",
         args.output_dir / "organic_capture_a",
         lambda stake: stake,
         "Stake",

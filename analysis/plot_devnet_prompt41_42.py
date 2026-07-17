@@ -116,7 +116,7 @@ def plot_prompt41(rows: list[dict[str, str]]) -> None:
     grouped_bars(
         categories,
         ratio,
-        ylabel="Achieved tx/slot (% offered)",
+        ylabel="Achieved load (%)",
         xlabel="Topology",
         output=FIGURES / "devnet_topology_achieved_ratio.pdf",
         ylim=(0, 1.12),
@@ -125,7 +125,7 @@ def plot_prompt41(rows: list[dict[str, str]]) -> None:
     grouped_bars(
         categories,
         delay,
-        ylabel="p95 inclusion delay (s)",
+        ylabel="p95 delay (s)",
         xlabel="Topology",
         output=FIGURES / "devnet_topology_delay.pdf",
     )
@@ -150,7 +150,7 @@ def plot_prompt42(rows: list[dict[str, str]]) -> None:
     grouped_bars(
         loads,
         ratio,
-        ylabel="Achieved tx/slot (% offered)",
+        ylabel="Achieved load (%)",
         xlabel="Offered load (tx/slot)",
         output=FIGURES / "devnet_load_achieved_ratio_bar.pdf",
         ylim=(0, 1.12),
@@ -168,7 +168,7 @@ def plot_prompt42(rows: list[dict[str, str]]) -> None:
     grouped_bars(
         nodes,
         delay,
-        ylabel="p95 inclusion delay (s)",
+        ylabel="p95 delay (s)",
         xlabel="Number of nodes",
         output=FIGURES / "devnet_nodes_delay_bar.pdf",
     )

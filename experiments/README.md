@@ -22,11 +22,14 @@ python scripts/task.py frozen-devnet-pilot --dry-run
 python scripts/task.py tdsc-fast
 python scripts/task.py experiments-main
 python scripts/task.py figures
+python scripts/task.py paper-figures
 ```
 
 The Python task runner is the recommended cross-platform entry point,
 especially on Windows where `make` is usually not installed. The Makefile keeps
 equivalent shortcuts for environments that already have `make`.
+`paper-figures` only redraws figures from existing raw/processed data; it does
+not rerun any experiment.
 
 `frozen-evidence-bench` measures path construction, individual BLS
 verification, aggregation, cold aggregate verification, and encoded evidence
