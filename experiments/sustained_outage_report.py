@@ -85,6 +85,7 @@ def summarize_run(run_dir: Path) -> Dict[str, Any]:
         "selection": meta["outage_selection"],
         "target_stake_fraction": float(meta["outage_target_stake_fraction"]),
         "realized_stake_fraction": stake_total / all_stake if all_stake else 0.0,
+        "outage_validator_count": len(outage_ids),
         "assignment_sha256": meta["outage_assignment_sha256"],
         "completed": completed,
         "outage_slots": len(outage_duties),
@@ -110,6 +111,10 @@ def summarize_run(run_dir: Path) -> Dict[str, Any]:
             [abs(value - (stake_total / all_stake if all_stake else 0.0)) for value in weights_by_epoch.values()]
             or [0.0]
         ),
+        # node_epoch_metrics.csv stores each validator weight with six decimal
+        # places. Summing a coalition therefore accumulates serialization
+        # error; scale the audit tolerance with the number of selected rows.
+        "eta0_weight_tolerance": max(1e-6, (len(outage_ids) + 2) * 1e-6),
         "duty_slot_keys": sorted((int(row["epoch"]), int(row["slot"])) for row in duties),
     }
 
@@ -201,7 +206,7 @@ def main() -> int:
         "scheduled_outage_enforced": all(run["group_miss_enforcement"] for run in runs),
         "outage_relays_silent": all(run["outage_relay_attempts_after_start"] == 0 for run in runs),
         "eta0_weight_equals_stake": all(
-            run["eta0_weight_error"] <= 1e-6
+            run["eta0_weight_error"] <= run["eta0_weight_tolerance"]
             for run in runs
             if run["protocol_label"] == "topostake_eta0"
         ),
@@ -213,6 +218,22 @@ def main() -> int:
         "directional_diagnostic": {
             "positive_miss_rate_pairs": sum(pair["miss_rate_improvement"] > 0 for pair in pairs),
             "total_pairs": len(pairs),
+            "max_eta0_weight_error": max(
+                (
+                    run["eta0_weight_error"]
+                    for run in runs
+                    if run["protocol_label"] == "topostake_eta0"
+                ),
+                default=0.0,
+            ),
+            "max_eta0_weight_tolerance": max(
+                (
+                    run["eta0_weight_tolerance"]
+                    for run in runs
+                    if run["protocol_label"] == "topostake_eta0"
+                ),
+                default=0.0,
+            ),
         },
     }
     out = PROCESSED_ROOT / spec["suite"]

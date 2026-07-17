@@ -8,6 +8,7 @@ if str(EXPERIMENTS) not in sys.path:
     sys.path.insert(0, str(EXPERIMENTS))
 
 from run_sustained_outage import assignment_for, closest_prefix
+from sustained_outage_report import paired_rows
 
 
 class SustainedOutageAssignmentTests(unittest.TestCase):
@@ -41,6 +42,23 @@ class SustainedOutageAssignmentTests(unittest.TestCase):
         right = assignment_for(list(reversed(self.rows)), "random", 0.40, 123)
         self.assertEqual(left["validator_ids"], right["validator_ids"])
         self.assertEqual(left["assignment_sha256"], right["assignment_sha256"])
+
+    def test_pairing_preserves_directional_miss_delta(self):
+        common = {
+            "seed_index": 0,
+            "selection": "random",
+            "target_stake_fraction": 0.25,
+            "realized_stake_fraction": 0.24,
+            "assignment_sha256": "same",
+            "duty_slot_keys": [(10, 0)],
+            "steady_group_weight": 0.2,
+            "chain_growth_ratio": 0.8,
+            "steady_p95_inclusion_latency_s": 2.0,
+        }
+        eta0 = dict(common, protocol_label="topostake_eta0", miss_rate=0.25)
+        full = dict(common, protocol_label="topostake", miss_rate=0.20)
+        pair = paired_rows([eta0, full])[0]
+        self.assertAlmostEqual(pair["miss_rate_improvement"], 0.05)
 
 
 if __name__ == "__main__":
