@@ -22,7 +22,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::io::Write;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc::{Receiver, Sender};
@@ -46,6 +46,7 @@ pub struct WorldState {
     pub node_mempools: HashMap<String, Arc<RwLock<HashMap<String, Arc<TransactionPaths>>>>>,
     pub node_relay_profiles: HashMap<String, String>,
     pub node_relay_forward_counters: HashMap<String, Arc<AtomicU64>>,
+    pub node_availability: HashMap<String, Arc<AtomicBool>>,
     pub blockchain: Arc<RwLock<Blockchain>>,
     pub consensus: Box<dyn Consensus>,
     consensus_name: String,
@@ -58,11 +59,18 @@ pub struct WorldState {
     inclusion_samples_filename: PathBuf,
     inclusion_samples_file: Option<std::fs::File>,
     run_summary_filename: PathBuf,
+    proposer_duties_filename: PathBuf,
+    proposer_duties_file: Option<std::fs::File>,
     run_id: String,
     slot_duration: Duration,
     real_slot_duration: Duration,
     slot_per_epoch: u64,
     election_seed: u64,
+    outage_start_epoch: u64,
+    outage_duration_epochs: u64,
+    outage_validator_indices: HashSet<u32>,
+    outage_validator_addresses: HashSet<String>,
+    outage_common_slot_randomness: bool,
     pub logical_slot_counter: Arc<AtomicU64>,
     generated_tx_counter: Arc<AtomicU64>,
     last_generated_tx_counter: u64,
@@ -250,11 +258,13 @@ impl WorldState {
         let node_epoch_metrics_filename = output_dir.join("node_epoch_metrics.csv");
         let inclusion_samples_filename = output_dir.join("inclusion_samples.csv");
         let run_summary_filename = output_dir.join("run_summary.json");
+        let proposer_duties_filename = output_dir.join("proposer_duties.csv");
         let _ = std::fs::remove_file(&metrics_path);
         let _ = std::fs::remove_file(&epoch_metrics_filename);
         let _ = std::fs::remove_file(&node_epoch_metrics_filename);
         let _ = std::fs::remove_file(&inclusion_samples_filename);
         let _ = std::fs::remove_file(&run_summary_filename);
+        let _ = std::fs::remove_file(&proposer_duties_filename);
         let metrics_slots_file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -275,6 +285,11 @@ impl WorldState {
             .append(true)
             .open(&inclusion_samples_filename)
             .ok();
+        let proposer_duties_file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&proposer_duties_filename)
+            .ok();
 
         (
             WorldState {
@@ -293,6 +308,7 @@ impl WorldState {
                 node_mempools: HashMap::new(),
                 node_relay_profiles: HashMap::new(),
                 node_relay_forward_counters: HashMap::new(),
+                node_availability: HashMap::new(),
                 blockchain: Arc::new(RwLock::new(blockchain)),
                 consensus,
                 consensus_name,
@@ -305,11 +321,18 @@ impl WorldState {
                 inclusion_samples_filename,
                 inclusion_samples_file,
                 run_summary_filename,
+                proposer_duties_filename,
+                proposer_duties_file,
                 run_id,
                 slot_duration,
                 real_slot_duration,
                 slot_per_epoch,
                 election_seed,
+                outage_start_epoch: u64::MAX,
+                outage_duration_epochs: 0,
+                outage_validator_indices: HashSet::new(),
+                outage_validator_addresses: HashSet::new(),
+                outage_common_slot_randomness: false,
                 logical_slot_counter: Arc::new(AtomicU64::new(0)),
                 generated_tx_counter,
                 last_generated_tx_counter: 0,
@@ -337,6 +360,126 @@ impl WorldState {
         )
     }
 
+    /// Configure an evaluation-only sustained outage after node indices and
+    /// shared availability flags have been registered by the network builder.
+    pub fn configure_scheduled_outage(
+        &mut self,
+        start_epoch: u64,
+        duration_epochs: u64,
+        validator_ids: &str,
+        common_slot_randomness: bool,
+    ) {
+        self.outage_start_epoch = start_epoch;
+        self.outage_duration_epochs = duration_epochs;
+        self.outage_common_slot_randomness = common_slot_randomness;
+        self.outage_validator_indices = validator_ids
+            .split(',')
+            .filter_map(|value| {
+                let trimmed = value.trim();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    match trimmed.parse::<u32>() {
+                        Ok(index) => Some(index),
+                        Err(_) => {
+                            warn!("Ignoring invalid outage validator id: {}", trimmed);
+                            None
+                        }
+                    }
+                }
+            })
+            .collect();
+        self.outage_validator_addresses = self
+            .nodes_index
+            .iter()
+            .filter_map(|(address, index)| {
+                self.outage_validator_indices
+                    .contains(index)
+                    .then(|| address.clone())
+            })
+            .collect();
+        if !self.outage_validator_indices.is_empty()
+            && self.outage_validator_addresses.len() != self.outage_validator_indices.len()
+        {
+            warn!(
+                "Scheduled outage resolved {} of {} validator ids",
+                self.outage_validator_addresses.len(),
+                self.outage_validator_indices.len()
+            );
+        }
+        info!(
+            "Scheduled outage: start_epoch={}, duration_epochs={}, validators={:?}, common_slot_randomness={}",
+            self.outage_start_epoch,
+            self.outage_duration_epochs,
+            self.outage_validator_indices,
+            self.outage_common_slot_randomness
+        );
+    }
+
+    fn scheduled_outage_active(&self, epoch: u64) -> bool {
+        if self.outage_validator_addresses.is_empty() || epoch < self.outage_start_epoch {
+            return false;
+        }
+        self.outage_duration_epochs == 0
+            || epoch < self.outage_start_epoch.saturating_add(self.outage_duration_epochs)
+    }
+
+    fn update_scheduled_availability(&self, epoch: u64) {
+        let outage_active = self.scheduled_outage_active(epoch);
+        for (address, available) in &self.node_availability {
+            let should_be_online =
+                !outage_active || !self.outage_validator_addresses.contains(address);
+            available.store(should_be_online, Ordering::Relaxed);
+        }
+    }
+
+    fn write_proposer_duty(
+        &mut self,
+        slot: &SlotManager,
+        proposer: &Validator,
+        proposer_weight: f64,
+        scheduled_online: bool,
+        block_produced: bool,
+        failure_reason: &str,
+    ) {
+        if self.proposer_duties_file.is_none() {
+            self.proposer_duties_file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&self.proposer_duties_filename)
+                .ok();
+        }
+        if let Some(file) = self.proposer_duties_file.as_mut() {
+            if file.metadata().map(|metadata| metadata.len()).unwrap_or(0) == 0 {
+                let _ = writeln!(
+                    file,
+                    "epoch,slot,validator_id,proposer_address,proposer_stake,proposer_weight,outage_active,outage_group,scheduled_online,block_produced,failure_reason"
+                );
+            }
+            let validator_id = self
+                .nodes_index
+                .get(&proposer.address)
+                .map(|index| index.to_string())
+                .unwrap_or_default();
+            let _ = writeln!(
+                file,
+                "{},{},{},{},{:.9},{:.9},{},{},{},{},{}",
+                slot.current_epoch,
+                slot.current_slot,
+                validator_id,
+                proposer.address,
+                proposer.stake,
+                proposer_weight,
+                self.scheduled_outage_active(slot.current_epoch),
+                self.outage_validator_addresses.contains(&proposer.address),
+                scheduled_online,
+                block_produced,
+                failure_reason,
+            );
+            let _ = file.flush();
+        }
+    }
+
     pub async fn next_slot(&mut self) {
         let current_slot = self.current_slot.read().await.clone();
         let block_index = self.blockchain.read().await.get_last_index();
@@ -347,11 +490,16 @@ impl WorldState {
             self.next_epoch().await;
         } else {
             let next_slot = current_slot.current_slot + 1;
+            let seed_block_index = if self.outage_common_slot_randomness {
+                0
+            } else {
+                block_index + 1
+            };
             let next_seed = derive_election_seed(
                 self.election_seed,
                 current_slot.current_epoch,
                 next_slot,
-                block_index + 1,
+                seed_block_index,
             );
             self.current_slot = Arc::new(RwLock::new(SlotManager {
                 randao_seeds: vec![],
@@ -365,6 +513,7 @@ impl WorldState {
         self.consensus.next_slot(&validators, block_index);
         self.logical_slot_counter.fetch_add(1, Ordering::Relaxed);
         let current_slot = self.get_current_slot().await;
+        self.update_scheduled_availability(current_slot.current_epoch);
         let selection_seed = current_slot.next_seed;
         info!(
             "World State change slot to: epoch[{}] slot[{}] consensus[{}] seed{:?}",
@@ -417,40 +566,81 @@ impl WorldState {
             "World State find miner: {}",
             miner_validator.address.clone()
         );
-        match self
-            .build_canonical_block(
-                &miner_validator,
-                current_slot.current_epoch,
-                current_slot.current_slot,
-            )
-            .await
-        {
-            Ok(block) => {
-                if let Err(e) = self.apply_canonical_block(&block).await {
-                    error!("World State Add Block Error: {}", e);
-                    self.block_production_failed += 1;
-                } else {
-                    let block_arc = Arc::new(block);
-                    let miner_address = miner_validator.address.clone();
-                    for sender in self.nodes_sender.values() {
-                        let _ = sender.try_send(Message::new_block_msg(
-                            block_arc.clone(),
-                            miner_address.clone(),
-                        ));
+        let scheduled_online = self
+            .node_availability
+            .get(&miner_validator.address)
+            .map(|available| available.load(Ordering::Relaxed))
+            .unwrap_or(true);
+        let mut produced = false;
+        let mut failure_reason = "";
+        if !scheduled_online {
+            warn!(
+                "Scheduled outage: proposer {} missed epoch {} slot {}",
+                miner_validator.address, current_slot.current_epoch, current_slot.current_slot
+            );
+            self.block_production_failed += 1;
+            failure_reason = "scheduled_outage";
+        } else {
+            match self
+                .build_canonical_block(
+                    &miner_validator,
+                    current_slot.current_epoch,
+                    current_slot.current_slot,
+                )
+                .await
+            {
+                Ok(block) => {
+                    if let Err(e) = self.apply_canonical_block(&block).await {
+                        error!("World State Add Block Error: {}", e);
+                        self.block_production_failed += 1;
+                        failure_reason = "apply_failed";
+                    } else {
+                        produced = true;
+                        let block_arc = Arc::new(block);
+                        let miner_address = miner_validator.address.clone();
+                        for sender in self.nodes_sender.values() {
+                            let _ = sender.try_send(Message::new_block_msg(
+                                block_arc.clone(),
+                                miner_address.clone(),
+                            ));
+                        }
                     }
                 }
-            }
-            Err(e) => {
-                error!(
-                    "World State error: failed to build canonical block for miner {}: {}",
-                    miner_validator.address, e
-                );
-                self.block_production_failed += 1;
+                Err(e) => {
+                    error!(
+                        "World State error: failed to build canonical block for miner {}: {}",
+                        miner_validator.address, e
+                    );
+                    self.block_production_failed += 1;
+                    failure_reason = "build_failed";
+                }
             }
         }
 
-        // Collect slot metrics
-        self.collect_slot_metrics(&miner_validator).await;
+        let duty_snapshot = self.consensus.metrics_snapshot();
+        let proposer_weight = if duty_snapshot.normalized_proposer_weights.is_empty() {
+            TopoStakeConsensus::normalized_stake(&validators)
+                .get(&miner_validator.address)
+                .copied()
+                .unwrap_or(0.0)
+        } else {
+            duty_snapshot
+                .normalized_proposer_weights
+                .get(&miner_validator.address)
+                .copied()
+                .unwrap_or(0.0)
+        };
+        self.write_proposer_duty(
+            &current_slot,
+            &miner_validator,
+            proposer_weight,
+            scheduled_online,
+            produced,
+            failure_reason,
+        );
+        if produced {
+            self.collect_slot_metrics(&miner_validator).await;
+        }
     }
 
     pub async fn next_epoch(&mut self) {
@@ -462,11 +652,16 @@ impl WorldState {
         self.consensus.on_epoch_end(&blocks, &validators);
         self.collect_epoch_metrics(current_slot.current_epoch, &blocks, &validators)
             .await;
+        let seed_block_index = if self.outage_common_slot_randomness {
+            0
+        } else {
+            self.blockchain.read().await.get_last_index() + 1
+        };
         let next_seed = derive_election_seed(
             self.election_seed,
             current_slot.current_epoch + 1,
             0,
-            self.blockchain.read().await.get_last_index() + 1,
+            seed_block_index,
         );
         self.current_slot = Arc::new(RwLock::new(SlotManager {
             randao_seeds: vec![],

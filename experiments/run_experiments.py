@@ -46,6 +46,10 @@ DIMENSION_KEYS = [
     "attack_tx_rate_multiplier",
     "unstable_fraction",
     "offline_probability",
+    "outage_start_epoch",
+    "outage_duration_epochs",
+    "outage_validator_ids",
+    "outage_common_slot_randomness",
     "attack_mode",
 ]
 
@@ -90,6 +94,9 @@ CLI_KEYS = {
     "lazy_fraction": "--lazy-fraction",
     "unstable_fraction": "--unstable-fraction",
     "offline_probability": "--offline-probability",
+    "outage_start_epoch": "--outage-start-epoch",
+    "outage_duration_epochs": "--outage-duration-epochs",
+    "outage_validator_ids": "--outage-validator-ids",
     "adversary_stake_fraction": "--adversary-stake-fraction",
     "adversary_placement": "--adversary-placement",
     "attack_mode": "--attack-mode",
@@ -284,6 +291,8 @@ def command_for_run(binary: str, run: Dict[str, Any]) -> List[str]:
         cmd.extend([f"--{key.replace('_', '-')}", str(run[key])])
     if run.get("real_time"):
         cmd.append("--real-time")
+    if run.get("outage_common_slot_randomness"):
+        cmd.append("--outage-common-slot-randomness")
     return cmd
 
 

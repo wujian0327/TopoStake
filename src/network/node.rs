@@ -15,7 +15,7 @@ use rand::SeedableRng;
 // use serde_json;
 use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::RwLock;
@@ -36,6 +36,10 @@ pub struct Node {
     pub node_type: NodeType,
     pub sybil_nodes: Vec<Node>,
     pub is_online: bool,
+    /// Scenario-controlled availability shared with WorldState. This is
+    /// independent of the legacy one-epoch unstable-node failure model.
+    pub scheduled_online: Arc<AtomicBool>,
+    scheduled_online_last_slot: bool,
     pub offline_until_epoch: Option<u64>,
     pub offline_probability: f64,
     pub sync_in_progress: bool,
@@ -110,6 +114,8 @@ impl Node {
             node_type: NodeType::Honest,
             sybil_nodes: Vec::new(),
             is_online: true,
+            scheduled_online: Arc::new(AtomicBool::new(true)),
+            scheduled_online_last_slot: true,
             offline_until_epoch: None,
             offline_probability: 0.1,
             sync_in_progress: false,
@@ -151,6 +157,8 @@ impl Node {
             node_type: NodeType::Honest,
             sybil_nodes: Vec::new(),
             is_online: true,
+            scheduled_online: Arc::new(AtomicBool::new(true)),
+            scheduled_online_last_slot: true,
             offline_until_epoch: None,
             offline_probability: 0.1,
             sync_in_progress: false,
@@ -213,6 +221,8 @@ impl Node {
             node_type: NodeType::Sybil,
             sybil_nodes,
             is_online: true,
+            scheduled_online: Arc::new(AtomicBool::new(true)),
+            scheduled_online_last_slot: true,
             offline_until_epoch: None,
             offline_probability: 0.1,
             sync_in_progress: false,
@@ -431,7 +441,9 @@ impl Node {
         while let Some(msg) = self.receiver.recv().await {
             // 离线逻辑：如果节点离线，跳过大多数消息处理
             // 但 UpdateSlot 消息用于恢复在线逻辑，需要处理
-            if !self.is_online && !matches!(msg, Message::UpdateSlot(_)) {
+            if (!self.is_online || !self.scheduled_online.load(Ordering::Relaxed))
+                && !matches!(msg, Message::UpdateSlot(_))
+            {
                 debug!("Node[{}] is offline, skipping message", self.index);
                 match msg {
                     Message::GenerateBlock => {
@@ -984,6 +996,29 @@ impl Node {
                     let old_epoch = self.epoch;
                     self.slot = slot.current_slot;
                     self.epoch = slot.current_epoch;
+
+                    let scheduled_online = self.scheduled_online.load(Ordering::Relaxed);
+                    if scheduled_online && !self.scheduled_online_last_slot {
+                        let last_block_index =
+                            { self.blockchain.read().await.blocks.len() as u64 - 1 };
+                        for neighbor in &self.neighbors {
+                            let self_address = self.get_address();
+                            let sender = neighbor.sender.clone();
+                            tokio::spawn(async move {
+                                let _ = sender
+                                    .send(Message::new_request_block_sync_msg(
+                                        last_block_index,
+                                        self_address,
+                                    ))
+                                    .await;
+                            });
+                        }
+                        warn!(
+                            "Node[{}] recovered from scheduled outage at epoch {}",
+                            self.index, self.epoch
+                        );
+                    }
+                    self.scheduled_online_last_slot = scheduled_online;
 
                     // 恢复在线时向邻居请求块同步（仅对不稳定节点）
                     if matches!(self.node_type, NodeType::Unstable) {

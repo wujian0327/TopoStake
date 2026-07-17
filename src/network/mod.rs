@@ -125,6 +125,14 @@ pub struct SimulationConfig {
     pub unstable_node_num: u32,
     pub unstable_fraction: f64,
     pub offline_probability: f64,
+    /// First epoch in which the explicit outage validator set is unavailable.
+    pub outage_start_epoch: u64,
+    /// Number of unavailable epochs. Zero means the outage is permanent.
+    pub outage_duration_epochs: u64,
+    /// Comma-separated validator indices selected by the experiment runner.
+    pub outage_validator_ids: String,
+    /// Keep election randomness keyed only by epoch and slot during outage runs.
+    pub outage_common_slot_randomness: bool,
     pub trans_num_per_second: u32,
     pub slot_duration: u64,
     pub slot_per_epoch: u64,
@@ -430,6 +438,16 @@ pub async fn start_network(config: SimulationConfig) {
         .iter()
         .map(|(address, node)| (address.clone(), node.relay_forward_attempts.clone()))
         .collect();
+    world.node_availability = node_map
+        .iter()
+        .map(|(address, node)| (address.clone(), node.scheduled_online.clone()))
+        .collect();
+    world.configure_scheduled_outage(
+        config.outage_start_epoch,
+        config.outage_duration_epochs,
+        &config.outage_validator_ids,
+        config.outage_common_slot_randomness,
+    );
     for node in node_map.values() {
         for sybil in &node.sybil_nodes {
             world

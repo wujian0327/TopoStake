@@ -38,6 +38,22 @@ struct Args {
     #[clap(long, default_value = "0.5")]
     offline_probability: f64,
 
+    /// First epoch of a deterministic sustained outage
+    #[clap(long, default_value_t = u64::MAX)]
+    outage_start_epoch: u64,
+
+    /// Outage length in epochs; zero keeps selected validators offline permanently
+    #[clap(long, default_value = "0")]
+    outage_duration_epochs: u64,
+
+    /// Comma-separated validator indices assigned to the sustained outage
+    #[clap(long, default_value = "")]
+    outage_validator_ids: String,
+
+    /// Derive election draws from seed/epoch/slot, independent of chain growth
+    #[clap(long, default_value_t = false)]
+    outage_common_slot_randomness: bool,
+
     /// 每秒交易个数（泊松分布）(Number of transactions per second)
     #[clap(short, long, default_value = "10")]
     trans_num: u32,
@@ -315,6 +331,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         unstable_node_num: args.unstable_node_num,
         unstable_fraction: args.unstable_fraction,
         offline_probability: args.offline_probability,
+        outage_start_epoch: args.outage_start_epoch,
+        outage_duration_epochs: args.outage_duration_epochs,
+        outage_validator_ids: args.outage_validator_ids,
+        outage_common_slot_randomness: args.outage_common_slot_randomness,
         trans_num_per_second: args.trans_num,
         slot_duration: args.slot_duration,
         slot_per_epoch: args.slot_per_epoch,
