@@ -205,8 +205,8 @@ def render_weight_response(
     axis.axhline(0.0, color="#666666", linewidth=0.9, linestyle="--")
     axis.set_xlabel("Outage-group stake target (%)")
     axis.set_ylabel(
-        "Offline-group weight shift (pp)\n"
-        + r"Full ($\eta{=}0.5$) $-$ fee-only ($\eta{=}0$)"
+        "Change from fee-only baseline (pp)\n"
+        + r"Full TopoStake ($\eta{=}0.5$)"
     )
     axis.set_xticks([10, 25, 40])
     axis.set_xlim(7, 43)
@@ -282,8 +282,8 @@ def render_missed_slots(
     axis.axhline(0.0, color="#666666", linewidth=0.9, linestyle="--")
     axis.set_xlabel("Outage-group stake target (%)")
     axis.set_ylabel(
-        "Miss-rate improvement (pp)\n"
-        + r"Fee-only ($\eta{=}0$) $-$ full ($\eta{=}0.5$)"
+        "Miss-rate reduction vs. fee-only (pp)\n"
+        + r"Full TopoStake ($\eta{=}0.5$)"
     )
     axis.set_xticks([10, 25, 40])
     axis.set_xlim(7, 43)
