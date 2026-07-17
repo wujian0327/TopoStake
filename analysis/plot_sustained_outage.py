@@ -102,12 +102,12 @@ def configure_style() -> None:
     plt.rcParams.update(
         {
             "font.family": "DejaVu Sans",
-            "font.size": 8.5,
-            "axes.labelsize": 8.5,
-            "axes.titlesize": 9.0,
-            "legend.fontsize": 6.8,
-            "xtick.labelsize": 7.5,
-            "ytick.labelsize": 7.5,
+            "font.size": 6.5,
+            "axes.labelsize": 6.5,
+            "axes.titlesize": 6.5,
+            "legend.fontsize": 5.5,
+            "xtick.labelsize": 6.0,
+            "ytick.labelsize": 6.0,
             "axes.spines.top": False,
             "axes.spines.right": False,
             "pdf.fonttype": 42,
@@ -187,7 +187,7 @@ def render_weight_share(
     if not fee_only or not full_onset or not full_steady:
         raise ValueError("sustained-outage run pairs are incomplete")
 
-    fig, axis = plt.subplots(figsize=(3.45, 2.55))
+    fig, axis = plt.subplots(figsize=(1.72, 1.65))
     for grouped, color, linestyle, marker, label in (
         (fee_only, GRAY, "--", "s", r"Fee-only ($\eta{=}0$)"),
         (full_onset, ORANGE, "--", "^", r"Full onset ($\eta{=}0.5$)"),
@@ -203,26 +203,18 @@ def render_weight_share(
             markerfacecolor="white",
             markeredgecolor=color,
             linestyle=linestyle,
-            linewidth=1.2,
-            markersize=4.5,
-            capsize=2.5,
+            linewidth=1.0,
+            markersize=3.6,
+            capsize=1.8,
             label=label,
         )
-    axis.set_xlabel("Outage-group stake target (%)")
-    axis.set_ylabel("Offline-group proposer share (%)")
+    axis.set_xlabel("Outage stake (%)")
+    axis.set_ylabel("Proposer share (%)")
     axis.set_xticks([10, 25, 40])
     axis.set_xlim(7, 43)
     axis.set_ylim(5, 45)
     axis.grid(axis="y", color="#E6E6E6", linewidth=0.7)
-    axis.legend(
-        frameon=False,
-        loc="upper center",
-        bbox_to_anchor=(0.5, 1.20),
-        ncol=2,
-        columnspacing=0.7,
-        handlelength=1.4,
-    )
-    fig.subplots_adjust(bottom=0.20, left=0.22, right=0.97, top=0.78)
+    fig.subplots_adjust(bottom=0.23, left=0.25, right=0.97, top=0.97)
     return save_figure(fig, output)
 
 
@@ -235,7 +227,7 @@ def render_missed_slot_rate(
     if not fee_only or not full or not reduction:
         raise ValueError("no sustained-outage paired rows")
 
-    fig, axis = plt.subplots(figsize=(3.45, 2.55))
+    fig, axis = plt.subplots(figsize=(1.72, 1.65))
     plotted: dict[str, list[tuple[float, float, float]]] = {}
     for name, grouped, offset, color, linestyle, marker, label in (
         ("fee_only", fee_only, -0.45, GRAY, "--", "s", r"Fee-only ($\eta{=}0$)"),
@@ -252,9 +244,9 @@ def render_missed_slot_rate(
             markerfacecolor="white",
             markeredgecolor=color,
             linestyle=linestyle,
-            linewidth=1.2,
-            markersize=4.5,
-            capsize=2.5,
+            linewidth=1.0,
+            markersize=3.6,
+            capsize=1.8,
             label=label,
         )
     fee_by_target = {point[0]: point for point in plotted["fee_only"]}
@@ -272,22 +264,24 @@ def render_missed_slot_rate(
             else f"{-reduction_mean:.1f} pp higher"
         )
         y = max(fee_point[1] + fee_point[2], full_point[1] + full_point[2]) + 1.0
-        axis.text(x, y, label, fontsize=6.5, color="#333333", ha="center", va="bottom")
-    axis.set_xlabel("Outage-group stake target (%)")
-    axis.set_ylabel("Missed-slot rate during outage (%)")
+        text_x = 42.2 if x >= 40.0 else x
+        text_align = "right" if x >= 40.0 else "center"
+        axis.text(
+            text_x,
+            y,
+            label,
+            fontsize=5.1,
+            color="#333333",
+            ha=text_align,
+            va="bottom",
+        )
+    axis.set_xlabel("Outage stake (%)")
+    axis.set_ylabel("Missed slots (%)")
     axis.set_xticks([10, 25, 40])
     axis.set_xlim(7, 43)
     axis.set_ylim(0, 48)
     axis.grid(axis="y", color="#E6E6E6", linewidth=0.7)
-    axis.legend(
-        frameon=False,
-        loc="upper center",
-        bbox_to_anchor=(0.5, 1.20),
-        ncol=2,
-        columnspacing=0.8,
-        handlelength=1.4,
-    )
-    fig.subplots_adjust(bottom=0.20, left=0.22, right=0.97, top=0.78)
+    fig.subplots_adjust(bottom=0.23, left=0.25, right=0.97, top=0.97)
     return save_figure(fig, output)
 
 
