@@ -442,6 +442,13 @@ impl WorldState {
         block_produced: bool,
         failure_reason: &str,
     ) {
+        let validator_id = self
+            .nodes_index
+            .get(&proposer.address)
+            .map(|index| index.to_string())
+            .unwrap_or_default();
+        let outage_active = self.scheduled_outage_active(slot.current_epoch);
+        let outage_group = self.outage_validator_addresses.contains(&proposer.address);
         if self.proposer_duties_file.is_none() {
             self.proposer_duties_file = std::fs::OpenOptions::new()
                 .create(true)
@@ -456,11 +463,6 @@ impl WorldState {
                     "epoch,slot,validator_id,proposer_address,proposer_stake,proposer_weight,outage_active,outage_group,scheduled_online,block_produced,failure_reason"
                 );
             }
-            let validator_id = self
-                .nodes_index
-                .get(&proposer.address)
-                .map(|index| index.to_string())
-                .unwrap_or_default();
             let _ = writeln!(
                 file,
                 "{},{},{},{},{:.9},{:.9},{},{},{},{},{}",
@@ -470,8 +472,8 @@ impl WorldState {
                 proposer.address,
                 proposer.stake,
                 proposer_weight,
-                self.scheduled_outage_active(slot.current_epoch),
-                self.outage_validator_addresses.contains(&proposer.address),
+                outage_active,
+                outage_group,
                 scheduled_online,
                 block_produced,
                 failure_reason,
