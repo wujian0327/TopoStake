@@ -167,6 +167,19 @@ def grouped_pair_metric(
     return dict(grouped)
 
 
+def label_fee_only_baseline(axis: Any) -> None:
+    axis.text(
+        42.4,
+        0.12,
+        r"Fee-only baseline ($\eta{=}0$)",
+        color="#555555",
+        fontsize=6.5,
+        ha="right",
+        va="bottom",
+        bbox={"facecolor": "white", "edgecolor": "none", "pad": 0.8},
+    )
+
+
 def render_weight_response(
     runs: list[dict[str, str]], output: Path
 ) -> list[Path]:
@@ -203,10 +216,11 @@ def render_weight_response(
                 capsize=2.5,
             )
     axis.axhline(0.0, color="#666666", linewidth=0.9, linestyle="--")
+    label_fee_only_baseline(axis)
     axis.set_xlabel("Outage-group stake target (%)")
     axis.set_ylabel(
-        "Change from fee-only baseline (pp)\n"
-        + r"Full TopoStake ($\eta{=}0.5$)"
+        "Offline-group weight change (pp)\n"
+        + r"Full ($\eta{=}0.5$) vs. fee-only ($\eta{=}0$)"
     )
     axis.set_xticks([10, 25, 40])
     axis.set_xlim(7, 43)
@@ -280,10 +294,11 @@ def render_missed_slots(
             label=LABELS[selection],
         )
     axis.axhline(0.0, color="#666666", linewidth=0.9, linestyle="--")
+    label_fee_only_baseline(axis)
     axis.set_xlabel("Outage-group stake target (%)")
     axis.set_ylabel(
-        "Miss-rate reduction vs. fee-only (pp)\n"
-        + r"Full TopoStake ($\eta{=}0.5$)"
+        "Miss-rate reduction (pp)\n"
+        + r"Full ($\eta{=}0.5$) vs. fee-only ($\eta{=}0$)"
     )
     axis.set_xticks([10, 25, 40])
     axis.set_xlim(7, 43)
