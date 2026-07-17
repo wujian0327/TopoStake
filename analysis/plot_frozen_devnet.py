@@ -42,12 +42,22 @@ COLORS = {
 }
 MARKERS = {"pathobs": "o", "fee_only": "s", "bonus_only": "^", "topostake": "D"}
 LABELS = {
-    "pathobs": "Path observation",
+    "pathobs": "Path obs.",
     "fee_only": "Fee only",
     "bonus_only": "Bonus only",
-    "topostake": "TopoStake",
+    "topostake": "Full",
 }
 OFFSETS = {"pathobs": -0.18, "fee_only": -0.06, "bonus_only": 0.06, "topostake": 0.18}
+
+# These four independent panels are the compact main-paper row.  The remaining
+# resource and verification panels are still emitted for the table/appendix.
+PRIMARY_FIGURE_STEMS = (
+    "frozen_devnet_performance_a",
+    "frozen_devnet_performance_b",
+    "frozen_devnet_resources_a",
+    "frozen_devnet_evidence_a",
+)
+FOUR_UP_FIGSIZE = (3.0, 2.25)
 
 FIGURE_CONTENTS = {
     "frozen_devnet_performance_a": "paired inclusion-throughput change versus baseline",
@@ -299,12 +309,12 @@ def configure_style() -> None:
     plt.rcParams.update(
         {
             "font.family": "DejaVu Sans",
-            "font.size": 8.5,
-            "axes.labelsize": 8.5,
-            "axes.titlesize": 9.0,
-            "legend.fontsize": 7.0,
-            "xtick.labelsize": 7.5,
-            "ytick.labelsize": 7.5,
+            "font.size": 11.0,
+            "axes.labelsize": 11.0,
+            "axes.titlesize": 11.0,
+            "legend.fontsize": 8.5,
+            "xtick.labelsize": 9.5,
+            "ytick.labelsize": 9.5,
             "axes.spines.top": False,
             "axes.spines.right": False,
             "pdf.fonttype": 42,
@@ -326,13 +336,26 @@ def save_figure(fig: Any, stem: Path) -> list[Path]:
     return outputs
 
 
-def finish_axis(fig: Any, axis: Axes, loads: list[int]) -> None:
+def finish_axis(
+    fig: Any,
+    axis: Axes,
+    loads: list[int],
+    *,
+    show_legend: bool,
+) -> None:
     axis.set_xticks(range(len(loads)), [str(load) for load in loads])
-    axis.set_xlabel("Offered load (transactions/slot)")
+    axis.set_xlabel("Load (tx/slot)")
     axis.grid(axis="y", color="#E6E6E6", linewidth=0.7)
     axis.axhline(0.0, color="#666666", linewidth=0.9, linestyle="--", zorder=1)
-    axis.legend(frameon=False, ncol=2, loc="best")
-    fig.subplots_adjust(bottom=0.18, left=0.20, right=0.97, top=0.97)
+    if show_legend:
+        axis.legend(
+            frameon=False,
+            ncol=2,
+            loc="best",
+            columnspacing=0.8,
+            handletextpad=0.4,
+        )
+    fig.subplots_adjust(bottom=0.24, left=0.25, right=0.97, top=0.97)
 
 
 def plot_paired_metric(
@@ -340,6 +363,8 @@ def plot_paired_metric(
     metric: str,
     ylabel: str,
     stem: Path,
+    *,
+    show_legend: bool,
 ) -> list[Path]:
     selected = [
         row
@@ -347,7 +372,7 @@ def plot_paired_metric(
         if row["metric"] == metric and row["reference"] == BASELINE
     ]
     loads = sorted({int(row["load_tx_per_slot"]) for row in selected})
-    fig, axis = plt.subplots(figsize=(3.45, 2.75))
+    fig, axis = plt.subplots(figsize=FOUR_UP_FIGSIZE)
     for variant in EVIDENCE_VARIANTS:
         by_load = {int(row["load_tx_per_slot"]): row for row in selected if row["variant"] == variant}
         x = [index + OFFSETS[variant] for index in range(len(loads))]
@@ -364,7 +389,7 @@ def plot_paired_metric(
             label=LABELS[variant],
         )
     axis.set_ylabel(ylabel)
-    finish_axis(fig, axis, loads)
+    finish_axis(fig, axis, loads, show_legend=show_legend)
     return save_figure(fig, stem)
 
 
@@ -373,7 +398,7 @@ def plot_verification(
 ) -> list[Path]:
     selected = [row for row in summaries if row["comparison"] == "topostake-absolute"]
     loads = sorted({int(row["load_tx_per_slot"]) for row in selected})
-    fig, axis = plt.subplots(figsize=(3.45, 2.75))
+    fig, axis = plt.subplots(figsize=FOUR_UP_FIGSIZE)
     styles = [
         ("evidence_verify_mean_ms", "Mean", "#0072B2", "o", -0.08),
         ("evidence_verify_p95_ms", "p95", "#D55E00", "s", 0.08),
@@ -397,7 +422,7 @@ def plot_verification(
             label=label,
         )
     axis.set_ylabel("Verification time (ms)")
-    finish_axis(fig, axis, loads)
+    finish_axis(fig, axis, loads, show_legend=True)
     return save_figure(fig, stem)
 
 
@@ -408,32 +433,32 @@ def render_figures(
     specs = [
         (
             "throughput_change_percent",
-            "Throughput change (%)",
+            "Throughput $\\Delta$ (%)",
             "frozen_devnet_performance_a",
         ),
         (
             "p95_latency_change_seconds",
-            "p95 latency change (s)",
+            "p95 delay $\\Delta$ (s)",
             "frozen_devnet_performance_b",
         ),
         (
             "aggregate_cpu_change_percentage_points",
-            "CPU change (pp)",
+            "CPU $\\Delta$ (pp)",
             "frozen_devnet_resources_a",
         ),
         (
             "aggregate_memory_change_mib",
-            "Memory change (MiB)",
+            "Memory $\\Delta$ (MiB)",
             "frozen_devnet_resources_b",
         ),
         (
             "aggregate_network_change_mib",
-            "Network change (MiB)",
+            "Network $\\Delta$ (MiB)",
             "frozen_devnet_resources_c",
         ),
         (
             "additional_block_bytes_per_tx",
-            "Bytes / included tx",
+            "Block bytes $\\Delta$ / tx",
             "frozen_devnet_evidence_a",
         ),
     ]
@@ -445,6 +470,10 @@ def render_figures(
                 metric,
                 ylabel,
                 output_dir / filename,
+                show_legend=(
+                    filename == PRIMARY_FIGURE_STEMS[0]
+                    or filename not in PRIMARY_FIGURE_STEMS
+                ),
             )
         )
     outputs.extend(
@@ -548,6 +577,7 @@ def write_manifest(
         "statistics": "paired two-sided 95% Student-t interval; seed is the pairing unit",
         "resource_scope": "aggregate EL+CL user-service containers on one physical host",
         "figure_contents": FIGURE_CONTENTS,
+        "primary_four_panel_row": list(PRIMARY_FIGURE_STEMS),
         "figures": [str(output) for output in outputs],
         "figure_data": str(data_path),
         "latex_table": str(table_path),

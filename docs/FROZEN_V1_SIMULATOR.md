@@ -157,12 +157,14 @@ python scripts/task.py frozen-devnet-figures
 
 The command requires all protocol-acceptance and measurement-quality gates to
 pass. It pairs runs by seed and reports two-sided 95% Student-t intervals for
-each difference from baseline. Output panels are independent single-axis files
-under `figures/frozen_v1_devnet/`: performance (`_a` throughput, `_b` p95
-latency), aggregate single-host resources (`_a` CPU, `_b` memory, `_c` network
-traffic), and evidence overhead (`_a` additional serialized bytes per included
-transaction, `_b` block-level inline-evidence verification). The manifest
-records the exact source, seed set, statistical method, and resource scope.
+each difference from baseline. The compact main-paper row uses four independent
+single-axis files: performance (`_a` throughput, `_b` p95 latency), aggregate
+single-host CPU (`resources_a`), and additional serialized bytes per included
+transaction (`evidence_a`). Only the first panel carries the shared variant
+legend. Memory, network traffic, and block-level inline-evidence verification
+remain separate outputs for the table or appendix. The manifest records the
+four primary stems, exact source, seed set, statistical method, and resource
+scope.
 
 The score-floor sweep crosses `kappa = {0.1, 1, 10}` with low-to-normal offered
 loads. This is intentional: at high score mass, changing `kappa` has little

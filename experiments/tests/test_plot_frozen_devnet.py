@@ -12,6 +12,7 @@ sys.path.insert(0, str(ROOT / "analysis"))
 
 from plot_frozen_devnet import (  # noqa: E402
     EXPECTED_VARIANTS,
+    PRIMARY_FIGURE_STEMS,
     paired_summaries,
     read_runs,
     render_figures,
@@ -107,6 +108,15 @@ class FrozenDevnetPlotTests(unittest.TestCase):
             self.assertEqual(len(outputs), 14)
             self.assertTrue(all(path.suffix in {".pdf", ".png"} for path in outputs))
             self.assertEqual(len({path.stem for path in outputs}), 7)
+            self.assertEqual(
+                PRIMARY_FIGURE_STEMS,
+                (
+                    "frozen_devnet_performance_a",
+                    "frozen_devnet_performance_b",
+                    "frozen_devnet_resources_a",
+                    "frozen_devnet_evidence_a",
+                ),
+            )
             table = root / "table.tex"
             render_table(summaries, table)
             contents = table.read_text()
