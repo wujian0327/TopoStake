@@ -199,6 +199,41 @@ def task_organic_capture_figures(args: argparse.Namespace) -> None:
     run([PYTHON, "analysis/plot_organic_capture.py", "--config", config])
 
 
+def task_sustained_outage(args: argparse.Namespace, config: str) -> None:
+    cmd = [PYTHON, "experiments/run_sustained_outage.py", "--config", config]
+    if args.force:
+        cmd.append("--force")
+    if args.dry_run:
+        cmd.append("--dry-run")
+    run(cmd)
+    if args.dry_run:
+        return
+    run([PYTHON, "experiments/sustained_outage_report.py", "--config", config])
+    run([PYTHON, "analysis/plot_sustained_outage.py", "--config", config])
+
+
+def task_sustained_outage_pilot(args: argparse.Namespace) -> None:
+    task_sustained_outage(
+        args, "experiments/configs/frozen_v1_sustained_outage_pilot.yaml"
+    )
+
+
+def task_sustained_outage_main(args: argparse.Namespace) -> None:
+    task_sustained_outage(
+        args, "experiments/configs/frozen_v1_sustained_outage_main.yaml"
+    )
+
+
+def task_sustained_outage_report(args: argparse.Namespace) -> None:
+    config = args.config or "experiments/configs/frozen_v1_sustained_outage_main.yaml"
+    run([PYTHON, "experiments/sustained_outage_report.py", "--config", config])
+
+
+def task_sustained_outage_figures(args: argparse.Namespace) -> None:
+    config = args.config or "experiments/configs/frozen_v1_sustained_outage_main.yaml"
+    run([PYTHON, "analysis/plot_sustained_outage.py", "--config", config])
+
+
 def task_frozen_devnet_figures(_args: argparse.Namespace) -> None:
     run([PYTHON, "analysis/plot_frozen_devnet.py"])
 
@@ -280,6 +315,10 @@ TASKS: Dict[str, Callable[[argparse.Namespace], None]] = {
     "frozen-organic-capture-main": task_organic_capture_main,
     "frozen-organic-capture-report": task_organic_capture_report,
     "frozen-organic-capture-figures": task_organic_capture_figures,
+    "frozen-sustained-outage-pilot": task_sustained_outage_pilot,
+    "frozen-sustained-outage-main": task_sustained_outage_main,
+    "frozen-sustained-outage-report": task_sustained_outage_report,
+    "frozen-sustained-outage-figures": task_sustained_outage_figures,
     "frozen-evidence-bench": task_frozen_evidence_bench,
     "frozen-padding-check": task_frozen_padding_check,
     "frozen-devnet-check": task_frozen_devnet_check,
@@ -301,7 +340,7 @@ def main() -> int:
         help="Rerun experiment tasks even when existing summaries are present.",
     )
     parser.add_argument("--artifact", help="Devnet summary.json for frozen-devnet-check.")
-    parser.add_argument("--config", help="Config override for frozen-security-report.")
+    parser.add_argument("--config", help="Config override for report or figure tasks.")
     parser.add_argument(
         "--allow-incomplete",
         action="store_true",

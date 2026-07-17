@@ -14,6 +14,8 @@ python scripts/task.py frozen-evidence-bench
 python scripts/task.py frozen-security-pilot
 python scripts/task.py frozen-security-main --dry-run
 python scripts/task.py frozen-security-figures
+python scripts/task.py frozen-sustained-outage-main --dry-run
+python scripts/task.py frozen-sustained-outage-figures
 python scripts/task.py frozen-devnet-check
 python scripts/task.py frozen-devnet-figures
 python scripts/task.py frozen-devnet-pilot --dry-run
@@ -114,6 +116,15 @@ metric is exported as a separate PDF/PNG under
 `figures/frozen_v1_devnet/`; the task also writes an inspectable figure-data
 CSV, a compact LaTeX table, and a manifest that records the aggregate-resource
 and single-host measurement scope.
+
+The sustained-outage suite pairs Full TopoStake with the `eta=0` baseline
+using the same seed-specific validator assignment. It evaluates random and
+high-score outage groups at 10%, 25%, and 40% target stake. The report audits
+outage enforcement, silent relays, paired assignments, the `eta=0` stake
+baseline, and proposer-weight-envelope compliance. The figure task writes
+`sustained_outage_weight_response` and `sustained_outage_missed_slots` as
+separate PDF/PNG files under `figures/frozen_v1_sustained_outage/`; LaTeX may
+assemble those independent canvases as subfigures.
 
 ## Frozen-v1 Devnet Acceptance
 

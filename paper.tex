@@ -1181,7 +1181,7 @@ Timing information is used only for epochs and scoring windows.
 \section{Evaluation}
 \label{sec:evaluation}
 
-We evaluate TopoStake with four goals. First, we measure whether propagation accountability can be added to a PoS blockchain with moderate end-to-end overhead. Second, we quantify the cryptographic cost of two-sided BLS path certificates and aggregate verification. Third, we test whether the real-stake-bounded proposer influence derived in Section~\ref{sec:security} holds under adversaries with advantageous network positions. Fourth, we evaluate the robustness of the reward mechanism against path padding, transaction flooding, and heterogeneous relay behavior.
+We evaluate TopoStake with five goals. First, we measure whether propagation accountability can be added to a PoS blockchain with moderate end-to-end overhead. Second, we quantify the cryptographic cost of two-sided BLS path certificates and aggregate verification. Third, we test whether the real-stake-bounded proposer influence derived in Section~\ref{sec:security} holds under adversaries with advantageous network positions. Fourth, we evaluate the robustness of the reward mechanism against path padding, transaction flooding, and heterogeneous relay behavior. Fifth, we isolate whether the persistent, bounded proposer bonus provides a dependability benefit beyond transaction-scoped relay fees under sustained validator outages.
 
 \subsection{Experimental Setup}
 \label{subsec:eval_setup}
@@ -1309,6 +1309,28 @@ Nevertheless, the ratio remains below the protocol cap $1+\eta b_{\max}$ in both
 No bound violation is observed in any run.
 These results support the main safety claim of TopoStake: propagation scores can reward useful relay positions, but their effect on proposer selection remains bounded by real stake and protocol parameters.
 
+\subsection{Proposer-Side Resilience under Sustained Outages}
+\label{subsec:eval_sustained_outage}
+
+\begin{figure*}[!t]
+    \centering
+    \subfloat[Offline-group proposer-weight response.\label{fig:sustained_outage_weight}]{
+        \includegraphics[width=0.47\textwidth]{figures/frozen_v1_sustained_outage/sustained_outage_weight_response.pdf}
+    }
+    \hfill
+    \subfloat[Paired missed-slot-rate improvement.\label{fig:sustained_outage_miss}]{
+        \includegraphics[width=0.47\textwidth]{figures/frozen_v1_sustained_outage/sustained_outage_missed_slots.pdf}
+    }
+    \caption{Proposer-side response to sustained validator outages. Full TopoStake is compared with the paired $\eta=0$ baseline over 20 seeds per condition and 150 outage slots per run; error bars show 95\% mean intervals. Random outages show the dependability benefit after score decay, while high-score outages expose the response delay caused by stale bonuses.}
+    \label{fig:sustained_outage}
+\end{figure*}
+
+Transaction-scoped relay fees compensate completed propagation work but cannot change future proposer scheduling once a transaction has settled. We therefore isolate the incremental effect of the persistent proposer bonus by comparing Full TopoStake with TopoStake-$\eta0$. Both variants use the same seed-specific outage assignment and randomness schedule. For each seed, a separate 20-epoch calibration fixes the outage assignment; the paired runs then use a 20-epoch warmup followed by a 30-epoch outage (150 slots). Validators controlling a target of 10\%, 25\%, or 40\% of economic stake stop relaying and producing blocks during that outage. We use 20 seeds and consider two assignment rules: \emph{random}, modelling an exogenous outage independent of prior contribution, and \emph{high-score}, a stress case in which validators with the largest pre-outage bonuses fail abruptly. The audit confirms complete paired runs, identical assignments, enforced outages, silent outage relays, a stake-consistent baseline under $\eta=0$, and no proposer-weight-envelope violation.
+
+Fig.~\ref{fig:sustained_outage_weight} reports the outage group's normalized proposer-weight shift relative to TopoStake-$\eta0$. Under random outages, the groups begin near the stake baseline and their steady-state weight shares fall by 0.91, 1.82, and 1.93 percentage points at the 10\%, 25\%, and 40\% targets, respectively. The corresponding missed-slot-rate reductions in Fig.~\ref{fig:sustained_outage_miss} are 2.13, 1.70, and 3.23 percentage points. Thus, once score decay takes effect, the persistent bonus shifts proposer opportunities away from validators that cease producing certified relay activity; a fee-only mechanism cannot provide this future scheduling response.
+
+The high-score stress case exposes the limitation of this signal. At outage onset, stale bonuses raise the failed groups' proposer-weight shares by 1.46--2.45 percentage points relative to the stake-only baseline. After decay, their steady-state shares fall by only 0.11--0.53 percentage points, and the missed-slot intervals overlap zero; at the 40\% target, the mean change is $-1.33$ percentage points. TopoStake therefore does not act as an online failure detector or provide an additional consensus-liveness guarantee beyond the underlying PoS protocol. The result instead demonstrates a bounded, delayed improvement in proposer-side chain-growth resilience under sustained absence of certified relay activity, while finality voting remains stake-only.
+
 \subsection{Path Padding and Transaction Flooding}
 \label{subsec:eval_attacks}
 
@@ -1384,5 +1406,3 @@ This should be a simple paragraph before the References to thank those individua
 
 
 \end{document}
-
-
