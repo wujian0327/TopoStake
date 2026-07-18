@@ -225,6 +225,13 @@ def render_weight_share(
     configure_target_axis(axis, fee_only)
     axis.set_ylim(5, 45)
     axis.grid(axis="y", color="#E6E6E6", linewidth=0.7)
+    axis.legend(
+        loc="upper left",
+        frameon=False,
+        handlelength=1.7,
+        labelspacing=0.3,
+        borderaxespad=0.35,
+    )
     fig.subplots_adjust(bottom=0.23, left=0.25, right=0.97, top=0.97)
     return save_figure(fig, output)
 
@@ -262,6 +269,7 @@ def render_missed_slot_rate(
         )
     fee_by_target = {point[0]: point for point in plotted["fee_only"]}
     full_by_target = {point[0]: point for point in plotted["full"]}
+    rightmost_target = max(fee_by_target, default=math.inf)
     for target, values in sorted(reduction.items()):
         x = 100.0 * target
         reduction_mean, _ci, count = mean_ci(values)
@@ -275,8 +283,8 @@ def render_missed_slot_rate(
             else f"{-reduction_mean:.1f} pp higher"
         )
         y = max(fee_point[1] + fee_point[2], full_point[1] + full_point[2]) + 1.0
-        text_x = 42.2 if x >= 40.0 else x
-        text_align = "right" if x >= 40.0 else "center"
+        text_x = x
+        text_align = "right" if x == rightmost_target else "center"
         axis.text(
             text_x,
             y,
@@ -291,7 +299,79 @@ def render_missed_slot_rate(
     configure_target_axis(axis, fee_only)
     axis.set_ylim(0, 48)
     axis.grid(axis="y", color="#E6E6E6", linewidth=0.7)
+    axis.legend(
+        loc="upper left",
+        frameon=False,
+        handlelength=1.7,
+        labelspacing=0.3,
+        borderaxespad=0.35,
+    )
     fig.subplots_adjust(bottom=0.23, left=0.25, right=0.97, top=0.97)
+    return save_figure(fig, output)
+
+
+def render_adaptation(
+    epoch_pairs: list[dict[str, str]], selection: str, output: Path
+) -> list[Path]:
+    grouped: dict[float, dict[int, list[float]]] = defaultdict(
+        lambda: defaultdict(list)
+    )
+    for row in epoch_pairs:
+        if row["selection"] != selection:
+            continue
+        target = number(row["target_stake_fraction"])
+        epoch = int(row["epoch_since_outage"])
+        grouped[target][epoch].append(100.0 * number(row["weight_share_reduction"]))
+    if not grouped:
+        raise ValueError("no epoch-level sustained-outage pairs")
+
+    fig, axis = plt.subplots(figsize=(1.72, 1.65))
+    colors = (BLUE, ORANGE, "#009E73")
+    linestyles = ("-", "--", "-.")
+    max_epoch = 0
+    for (target, epochs), color, linestyle in zip(
+        sorted(grouped.items()), colors, linestyles
+    ):
+        points = []
+        for epoch, values in sorted(epochs.items()):
+            value, ci, count = mean_ci(values)
+            if count:
+                points.append((epoch, value, ci))
+        if not points:
+            continue
+        x = [point[0] for point in points]
+        y = [point[1] for point in points]
+        ci = [point[2] for point in points]
+        max_epoch = max(max_epoch, x[-1])
+        axis.plot(
+            x,
+            y,
+            color=color,
+            linestyle=linestyle,
+            linewidth=1.1,
+            label=f"{100.0 * target:.0f}% outage",
+        )
+        axis.fill_between(
+            x,
+            [value - error for value, error in zip(y, ci)],
+            [value + error for value, error in zip(y, ci)],
+            color=color,
+            alpha=0.12,
+            linewidth=0,
+        )
+    axis.axhline(0.0, color=GRAY, linestyle=":", linewidth=0.8)
+    axis.set_xlabel("Epochs since outage")
+    axis.set_ylabel("Share reduction (pp)")
+    axis.set_xlim(0, max_epoch)
+    axis.grid(axis="y", color="#E6E6E6", linewidth=0.7)
+    axis.legend(
+        loc="upper left",
+        frameon=False,
+        handlelength=1.7,
+        labelspacing=0.3,
+        borderaxespad=0.35,
+    )
+    fig.subplots_adjust(bottom=0.23, left=0.28, right=0.97, top=0.97)
     return save_figure(fig, output)
 
 
@@ -300,6 +380,7 @@ def main() -> int:
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
     parser.add_argument("--runs", type=Path)
     parser.add_argument("--pairs", type=Path)
+    parser.add_argument("--epoch-pairs", type=Path)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT)
     args = parser.parse_args()
 
@@ -307,9 +388,13 @@ def main() -> int:
     processed = PROCESSED / str(spec["suite"])
     runs_path = args.runs or processed / "sustained_outage_runs.csv"
     pairs_path = args.pairs or processed / "sustained_outage_paired.csv"
+    epoch_pairs_path = (
+        args.epoch_pairs or processed / "sustained_outage_epoch_paired.csv"
+    )
     configure_style()
     runs = read_csv(runs_path)
     pairs = read_csv(pairs_path)
+    epoch_pairs = read_csv(epoch_pairs_path)
     outputs = []
     suffixes = {"random": "random", "high-score": "high_score"}
     for selection in map(str, spec["outage"]["selections"]):
@@ -326,6 +411,13 @@ def main() -> int:
                 pairs,
                 selection,
                 args.output_dir / f"sustained_outage_missed_slots_{suffix}",
+            )
+        )
+        outputs.extend(
+            render_adaptation(
+                epoch_pairs,
+                selection,
+                args.output_dir / f"sustained_outage_adaptation_{suffix}",
             )
         )
     print("Generated: " + ", ".join(str(path) for path in outputs))

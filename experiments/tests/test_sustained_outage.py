@@ -12,6 +12,7 @@ from run_sustained_outage import assignment_for, closest_prefix
 from sustained_outage_report import (
     effective_weight_epoch,
     group_weight_series,
+    paired_epoch_rows,
     paired_rows,
     relay_attempts_by_epoch,
     relay_attempts_during_outage,
@@ -99,6 +100,27 @@ class SustainedOutageAssignmentTests(unittest.TestCase):
         self.assertEqual(weights, {10: 0.25, 11: 0.20})
         self.assertEqual(bonuses, {10: [0.4], 11: [0.3]})
 
+    def test_epoch_pairing_preserves_weight_reduction_trace(self):
+        common = {
+            "seed_index": 0,
+            "selection": "random",
+            "target_stake_fraction": 0.2,
+            "outage_start_epoch": 30,
+        }
+        eta0 = dict(
+            common,
+            protocol_label="topostake_eta0",
+            group_weight_by_epoch={30: 0.20, 31: 0.20},
+        )
+        full = dict(
+            common,
+            protocol_label="topostake",
+            group_weight_by_epoch={30: 0.20, 31: 0.18},
+        )
+        rows = paired_epoch_rows([eta0, full])
+        self.assertEqual([row["epoch_since_outage"] for row in rows], [0, 1])
+        self.assertAlmostEqual(rows[1]["weight_share_reduction"], 0.02)
+
     def test_relay_audit_includes_first_outage_epoch(self):
         rows = [
             {"epoch": "9", "validator_id": "1", "relay_forward_attempts": "7"},
@@ -119,6 +141,7 @@ class SustainedOutageAssignmentTests(unittest.TestCase):
             self.assertEqual(spec["defaults"]["stake_gini"], 0.1)
             self.assertEqual(spec["defaults"]["eta"], 0.5)
             self.assertEqual(spec["outage"]["stake_fractions"], [0.10, 0.20, 0.30])
+            self.assertEqual(spec["outage"]["selections"], ["random"])
             self.assertTrue(
                 all(value < (1.0 / 3.0) for value in spec["outage"]["stake_fractions"])
             )

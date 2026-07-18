@@ -41,7 +41,7 @@
     "warmup_epochs": 30,
     "duration_epochs": 100,
     "stake_fractions": [0.10, 0.20, 0.30],
-    "selections": ["random", "high-score"],
+    "selections": ["random"],
     "calibration_protocol": "topostake",
     "protocols": ["topostake_eta0", "topostake"]
   }

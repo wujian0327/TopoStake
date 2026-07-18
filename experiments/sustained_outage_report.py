@@ -127,6 +127,7 @@ def summarize_run(run_dir: Path) -> Dict[str, Any]:
         "protocol_label": meta["protocol_label"],
         "seed_index": int(meta["seed_index"]),
         "selection": meta["outage_selection"],
+        "outage_start_epoch": start,
         "target_stake_fraction": float(meta["outage_target_stake_fraction"]),
         "realized_stake_fraction": stake_total / all_stake if all_stake else 0.0,
         "outage_validator_count": len(outage_ids),
@@ -144,6 +145,7 @@ def summarize_run(run_dir: Path) -> Dict[str, Any]:
         "outage_onset_relay_attempts": onset_relay_attempts,
         "outage_sustained_relay_attempts": sustained_relay_attempts,
         "weight_epoch_coverage": sorted(weights_by_epoch) == expected_weight_epochs,
+        "group_weight_by_epoch": weights_by_epoch,
         "initial_group_weight": weights_by_epoch.get(start, 0.0),
         "mean_group_weight": mean_group_weight,
         "expected_miss_rate": mean_group_weight,
@@ -221,6 +223,39 @@ def paired_rows(runs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return pairs
 
 
+def paired_epoch_rows(runs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Pair the outage-group proposer-weight trace for each simulated epoch."""
+    groups: Dict[tuple[Any, ...], Dict[str, Dict[str, Any]]] = defaultdict(dict)
+    for run in runs:
+        key = (run["seed_index"], run["selection"], run["target_stake_fraction"])
+        groups[key][run["protocol_label"]] = run
+
+    rows = []
+    for key, variants in sorted(groups.items()):
+        if "topostake_eta0" not in variants or "topostake" not in variants:
+            continue
+        eta0 = variants["topostake_eta0"]
+        full = variants["topostake"]
+        eta0_weights = eta0["group_weight_by_epoch"]
+        full_weights = full["group_weight_by_epoch"]
+        shared_epochs = sorted(set(eta0_weights) & set(full_weights))
+        start = int(full["outage_start_epoch"])
+        for epoch in shared_epochs:
+            rows.append(
+                {
+                    "seed_index": key[0],
+                    "selection": key[1],
+                    "target_stake_fraction": key[2],
+                    "epoch_since_outage": epoch - start,
+                    "eta0_group_weight": eta0_weights[epoch],
+                    "full_group_weight": full_weights[epoch],
+                    "weight_share_reduction": eta0_weights[epoch]
+                    - full_weights[epoch],
+                }
+            )
+    return rows
+
+
 def markdown_summary(pairs: List[Dict[str, Any]], acceptance: Dict[str, Any]) -> str:
     grouped: Dict[tuple[str, float], List[Dict[str, Any]]] = defaultdict(list)
     for pair in pairs:
@@ -265,7 +300,20 @@ def main() -> int:
     spec = load_yaml((ROOT / args.config).resolve())
     run_root = RAW_ROOT / spec["suite"] / "sustained_outage"
     runs = [summarize_run(path) for path in sorted(run_root.iterdir()) if path.is_dir()]
+    allowed_selections = set(map(str, spec["outage"]["selections"]))
+    allowed_targets = set(map(float, spec["outage"]["stake_fractions"]))
+    allowed_protocols = set(map(str, spec["outage"]["protocols"]))
+    allowed_seed_indices = set(range(len(spec["seeds"])))
+    runs = [
+        run
+        for run in runs
+        if run["selection"] in allowed_selections
+        and run["target_stake_fraction"] in allowed_targets
+        and run["protocol_label"] in allowed_protocols
+        and run["seed_index"] in allowed_seed_indices
+    ]
     pairs = paired_rows(runs)
+    epoch_pairs = paired_epoch_rows(runs)
     checks = {
         "all_runs_complete": bool(runs) and all(run["completed"] for run in runs),
         "all_pairs_present": len(pairs) * 2 == len(runs),
@@ -324,8 +372,13 @@ def main() -> int:
         },
     }
     out = PROCESSED_ROOT / spec["suite"]
-    write_csv(out / "sustained_outage_runs.csv", runs, {"duty_slot_keys"})
+    write_csv(
+        out / "sustained_outage_runs.csv",
+        runs,
+        {"duty_slot_keys", "group_weight_by_epoch"},
+    )
     write_csv(out / "sustained_outage_paired.csv", pairs)
+    write_csv(out / "sustained_outage_epoch_paired.csv", epoch_pairs)
     write_json(out / "sustained_outage_acceptance.json", acceptance)
     (out / "sustained_outage_summary.md").write_text(markdown_summary(pairs, acceptance))
     print(json.dumps(acceptance, indent=2))

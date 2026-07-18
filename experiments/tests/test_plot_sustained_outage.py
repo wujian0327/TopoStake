@@ -13,6 +13,7 @@ sys.path.insert(0, str(ROOT / "analysis"))
 from plot_sustained_outage import (  # noqa: E402
     grouped_run_metric,
     mean_ci,
+    render_adaptation,
     render_missed_slot_rate,
     render_weight_share,
 )
@@ -70,6 +71,24 @@ class SustainedOutagePlotTests(unittest.TestCase):
                     )
         return rows
 
+    def epoch_pairs(self) -> list[dict[str, str]]:
+        rows = []
+        for seed in range(3):
+            for target in (0.10, 0.20, 0.30):
+                for epoch in range(5):
+                    rows.append(
+                        {
+                            "seed_index": str(seed),
+                            "selection": "random",
+                            "target_stake_fraction": str(target),
+                            "epoch_since_outage": str(epoch),
+                            "weight_share_reduction": str(
+                                target * epoch / 100.0
+                            ),
+                        }
+                    )
+        return rows
+
     def test_grouped_run_metric_selects_protocol(self) -> None:
         grouped = grouped_run_metric(
             self.runs(), "steady_group_weight", "random", "topostake"
@@ -87,9 +106,14 @@ class SustainedOutagePlotTests(unittest.TestCase):
                 render_missed_slot_rate(
                     self.pairs(), selection, output / f"miss_{suffix}"
                 )
+            render_adaptation(
+                self.epoch_pairs(), "random", output / "adaptation_random"
+            )
             for stem in ("weight_random", "weight_high", "miss_random", "miss_high"):
                 self.assertTrue((output / f"{stem}.pdf").exists())
                 self.assertTrue((output / f"{stem}.png").exists())
+            self.assertTrue((output / "adaptation_random.pdf").exists())
+            self.assertTrue((output / "adaptation_random.png").exists())
 
 
 if __name__ == "__main__":

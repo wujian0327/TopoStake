@@ -112,6 +112,7 @@ def task_paper_figures(_args: argparse.Namespace) -> None:
     required_inputs = (
         str(processed / "sustained_outage_runs.csv"),
         str(processed / "sustained_outage_paired.csv"),
+        str(processed / "sustained_outage_epoch_paired.csv"),
     )
     run_figure_if_ready(
         "analysis/plot_sustained_outage.py",
