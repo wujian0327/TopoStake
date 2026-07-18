@@ -121,16 +121,18 @@ CSV, a compact LaTeX table, and a manifest that records the aggregate-resource
 and single-host measurement scope.
 
 The sustained-outage suite pairs Full TopoStake with the `eta=0` baseline
-using the same seed-specific validator assignment. It evaluates random and
-high-score outage groups at 10%, 20%, and 30% target stake on a 100-node BA
-network with Gini 0.1 and 64 transactions per slot. All conditions remain
-strictly below the one-third finality threshold. The report audits
+using the same seed-specific validator assignment. It evaluates random outage
+groups at 10%, 20%, and 30% target stake on a 100-node BA network with Gini 0.1
+and 64 transactions per slot. All conditions remain strictly below the
+one-third finality threshold. The report audits
 outage enforcement, silent relays, paired assignments, the `eta=0` stake
 baseline, and proposer-weight-envelope compliance. The figure task writes
-separate random and high-score proposer-weight and missed-slot panels as four
-PDF/PNG pairs under `figures/frozen_v1_sustained_outage/`; LaTeX may assemble
-those independent canvases as subfigures. The missed-slot panels show both
-absolute mechanisms and annotate Full TopoStake's paired change from fee-only.
+three independent, standard-aspect-ratio panels under
+`figures/frozen_v1_sustained_outage/`: proposer share, missed slots, and the
+post-outage proposer-share adaptation trace. The adaptation trace uses a
+five-epoch trailing mean computed within each seed before its cross-seed 95%
+interval. The missed-slot panel shows both absolute mechanisms and annotates
+Full TopoStake's paired change from fee-only.
 The report additionally derives the expected missed-slot rate from the
 outage group's frozen proposer-weight share. This expectation removes finite
 slot-lottery noise; the realized missed-slot rate remains the primary observed

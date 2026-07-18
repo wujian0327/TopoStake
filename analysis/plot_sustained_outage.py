@@ -25,6 +25,8 @@ ROOT = Path(__file__).resolve().parents[1]
 PROCESSED = ROOT / "results" / "processed"
 DEFAULT_CONFIG = ROOT / "experiments" / "configs" / "frozen_v1_sustained_outage_main.yaml"
 DEFAULT_OUTPUT = ROOT / "figures" / "frozen_v1_sustained_outage"
+PANEL_FIGSIZE = (3.45, 2.55)
+ADAPTATION_SMOOTHING_EPOCHS = 5
 BLUE = "#0072B2"
 ORANGE = "#E69F00"
 GRAY = "#666666"
@@ -102,12 +104,12 @@ def configure_style() -> None:
     plt.rcParams.update(
         {
             "font.family": "DejaVu Sans",
-            "font.size": 6.5,
-            "axes.labelsize": 6.5,
-            "axes.titlesize": 6.5,
-            "legend.fontsize": 5.5,
-            "xtick.labelsize": 6.0,
-            "ytick.labelsize": 6.0,
+            "font.size": 8.5,
+            "axes.labelsize": 8.5,
+            "axes.titlesize": 9.0,
+            "legend.fontsize": 7.0,
+            "xtick.labelsize": 7.5,
+            "ytick.labelsize": 7.5,
             "axes.spines.top": False,
             "axes.spines.right": False,
             "pdf.fonttype": 42,
@@ -184,6 +186,23 @@ def configure_target_axis(axis: Any, targets: Iterable[float]) -> None:
         axis.set_xlim(ticks[0] - padding, ticks[-1] + padding)
 
 
+def trailing_means(
+    values_by_epoch: dict[int, float], window: int = ADAPTATION_SMOOTHING_EPOCHS
+) -> dict[int, float]:
+    """Return a trailing mean without blending observations across seeds."""
+    if window <= 0:
+        raise ValueError("trailing-mean window must be positive")
+    smoothed = {}
+    for epoch in sorted(values_by_epoch):
+        values = [
+            value
+            for candidate, value in values_by_epoch.items()
+            if epoch - window < candidate <= epoch
+        ]
+        smoothed[epoch] = statistics.fmean(values)
+    return smoothed
+
+
 def render_weight_share(
     runs: list[dict[str, str]], selection: str, output: Path
 ) -> list[Path]:
@@ -199,7 +218,7 @@ def render_weight_share(
     if not fee_only or not full_onset or not full_steady:
         raise ValueError("sustained-outage run pairs are incomplete")
 
-    fig, axis = plt.subplots(figsize=(1.72, 1.65))
+    fig, axis = plt.subplots(figsize=PANEL_FIGSIZE)
     for grouped, color, linestyle, marker, label in (
         (fee_only, GRAY, "--", "s", r"Fee-only ($\eta{=}0$)"),
         (full_onset, ORANGE, "--", "^", r"Full onset ($\eta{=}0.5$)"),
@@ -223,16 +242,19 @@ def render_weight_share(
     axis.set_xlabel("Outage stake (%)")
     axis.set_ylabel("Proposer share (%)")
     configure_target_axis(axis, fee_only)
-    axis.set_ylim(5, 45)
+    axis.set_ylim(5, 35)
     axis.grid(axis="y", color="#E6E6E6", linewidth=0.7)
     axis.legend(
         loc="upper left",
-        frameon=False,
+        frameon=True,
+        facecolor="white",
+        edgecolor="none",
+        framealpha=0.9,
         handlelength=1.7,
         labelspacing=0.3,
         borderaxespad=0.35,
     )
-    fig.subplots_adjust(bottom=0.23, left=0.25, right=0.97, top=0.97)
+    fig.subplots_adjust(bottom=0.18, left=0.20, right=0.97, top=0.97)
     return save_figure(fig, output)
 
 
@@ -245,7 +267,7 @@ def render_missed_slot_rate(
     if not fee_only or not full or not reduction:
         raise ValueError("no sustained-outage paired rows")
 
-    fig, axis = plt.subplots(figsize=(1.72, 1.65))
+    fig, axis = plt.subplots(figsize=PANEL_FIGSIZE)
     plotted: dict[str, list[tuple[float, float, float]]] = {}
     for name, grouped, offset, color, linestyle, marker, label in (
         ("fee_only", fee_only, -0.45, GRAY, "--", "s", r"Fee-only ($\eta{=}0$)"),
@@ -289,7 +311,7 @@ def render_missed_slot_rate(
             text_x,
             y,
             label,
-            fontsize=5.1,
+            fontsize=7.0,
             color="#333333",
             ha=text_align,
             va="bottom",
@@ -297,41 +319,51 @@ def render_missed_slot_rate(
     axis.set_xlabel("Outage stake (%)")
     axis.set_ylabel("Missed slots (%)")
     configure_target_axis(axis, fee_only)
-    axis.set_ylim(0, 48)
+    axis.set_ylim(0, 38)
     axis.grid(axis="y", color="#E6E6E6", linewidth=0.7)
     axis.legend(
         loc="upper left",
-        frameon=False,
+        frameon=True,
+        facecolor="white",
+        edgecolor="none",
+        framealpha=0.9,
         handlelength=1.7,
         labelspacing=0.3,
         borderaxespad=0.35,
     )
-    fig.subplots_adjust(bottom=0.23, left=0.25, right=0.97, top=0.97)
+    fig.subplots_adjust(bottom=0.18, left=0.20, right=0.97, top=0.97)
     return save_figure(fig, output)
 
 
 def render_adaptation(
     epoch_pairs: list[dict[str, str]], selection: str, output: Path
 ) -> list[Path]:
-    grouped: dict[float, dict[int, list[float]]] = defaultdict(
-        lambda: defaultdict(list)
+    traces: dict[float, dict[int, dict[int, float]]] = defaultdict(
+        lambda: defaultdict(dict)
     )
     for row in epoch_pairs:
         if row["selection"] != selection:
             continue
         target = number(row["target_stake_fraction"])
+        seed = int(row["seed_index"])
         epoch = int(row["epoch_since_outage"])
-        grouped[target][epoch].append(100.0 * number(row["weight_share_reduction"]))
-    if not grouped:
+        traces[target][seed][epoch] = 100.0 * number(
+            row["weight_share_reduction"]
+        )
+    if not traces:
         raise ValueError("no epoch-level sustained-outage pairs")
 
-    fig, axis = plt.subplots(figsize=(1.72, 1.65))
+    fig, axis = plt.subplots(figsize=PANEL_FIGSIZE)
     colors = (BLUE, ORANGE, "#009E73")
     linestyles = ("-", "--", "-.")
     max_epoch = 0
-    for (target, epochs), color, linestyle in zip(
-        sorted(grouped.items()), colors, linestyles
+    for (target, seed_traces), color, linestyle in zip(
+        sorted(traces.items()), colors, linestyles
     ):
+        epochs: dict[int, list[float]] = defaultdict(list)
+        for values_by_epoch in seed_traces.values():
+            for epoch, value in trailing_means(values_by_epoch).items():
+                epochs[epoch].append(value)
         points = []
         for epoch, values in sorted(epochs.items()):
             value, ci, count = mean_ci(values)
@@ -365,13 +397,16 @@ def render_adaptation(
     axis.set_xlim(0, max_epoch)
     axis.grid(axis="y", color="#E6E6E6", linewidth=0.7)
     axis.legend(
-        loc="upper left",
-        frameon=False,
+        loc="lower right",
+        frameon=True,
+        facecolor="white",
+        edgecolor="none",
+        framealpha=0.9,
         handlelength=1.7,
         labelspacing=0.3,
         borderaxespad=0.35,
     )
-    fig.subplots_adjust(bottom=0.23, left=0.28, right=0.97, top=0.97)
+    fig.subplots_adjust(bottom=0.18, left=0.20, right=0.97, top=0.97)
     return save_figure(fig, output)
 
 

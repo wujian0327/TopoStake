@@ -16,6 +16,7 @@ from plot_sustained_outage import (  # noqa: E402
     render_adaptation,
     render_missed_slot_rate,
     render_weight_share,
+    trailing_means,
 )
 
 
@@ -95,6 +96,13 @@ class SustainedOutagePlotTests(unittest.TestCase):
         )
         self.assertEqual(len(grouped[0.10]), 3)
         self.assertAlmostEqual(grouped[0.10][0], 9.0)
+
+    def test_adaptation_smoothing_is_trailing_and_seed_local(self) -> None:
+        values = {0: 0.0, 1: 1.0, 2: 2.0, 3: 3.0}
+        self.assertEqual(
+            trailing_means(values, window=3),
+            {0: 0.0, 1: 0.5, 2: 1.0, 3: 2.0},
+        )
 
     def test_panels_are_independent_files(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
