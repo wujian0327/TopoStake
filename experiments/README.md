@@ -11,6 +11,7 @@ python scripts/task.py experiments-smoke
 python scripts/task.py frozen-smoke
 python scripts/task.py frozen-eth-empirical-dry-run --dry-run
 python scripts/task.py frozen-topology-scale-pilot --dry-run
+python scripts/task.py frozen-topology-scale-timing-probe --dry-run
 python scripts/task.py frozen-padding-check
 python scripts/task.py frozen-evidence-bench
 python scripts/task.py frozen-security-pilot
@@ -98,6 +99,17 @@ and a Markdown summary under `results/processed/`.
 ```bash
 env TOKIO_WORKER_THREADS=32 \
   python scripts/task.py frozen-topology-scale-pilot
+```
+
+If all 1,000-node pilot runs complete but contain no valid organic relay path,
+run the four-condition timing probe before repeating the matrix. It preserves
+the logical workload but raises `time_scale` from 0.02 to 0.5 so Tokio has
+enough wall-clock time to process forwarding, two-sided signatures, and path
+aggregation before each proposal:
+
+```bash
+env TOKIO_WORKER_THREADS=32 \
+  python scripts/task.py frozen-topology-scale-timing-probe
 ```
 
 Every simulator run also writes `inclusion_samples.csv`. The security report
