@@ -9,6 +9,7 @@ Python standard library; if PyYAML is installed, normal YAML is also accepted.
 ```bash
 python scripts/task.py experiments-smoke
 python scripts/task.py frozen-smoke
+python scripts/task.py frozen-eth-empirical-dry-run --dry-run
 python scripts/task.py frozen-padding-check
 python scripts/task.py frozen-evidence-bench
 python scripts/task.py frozen-security-pilot
@@ -65,6 +66,19 @@ check exhaustively validates padding non-amplification against the Rust reward
 formulas. The security report writes run-level, grouped, paired-CI, and
 acceptance artifacts under `results/processed/`. Run the pilot before the main
 matrix; use `--dry-run` to inspect exact commands.
+
+`frozen_v1_eth_empirical_dry_run.yaml` is a single-run resource probe for the
+1,000-validator Rust simulator. Its `eth_empirical` topology is a connected,
+preferential-attachment graph calibrated to an average degree of approximately
+18 and a heavy-tailed degree profile. It represents public Ethereum crawl
+statistics rather than a recovered mainnet adjacency snapshot. The profile is
+deliberately short (six epochs), uses one seed and `max_parallel=1`, and is not
+a paper result. On a 32-core server, run it with a bounded Tokio worker pool:
+
+```bash
+/usr/bin/time -v env TOKIO_WORKER_THREADS=32 \
+  python scripts/task.py frozen-eth-empirical-dry-run
+```
 
 Every simulator run also writes `inclusion_samples.csv`. The security report
 defines its post-warmup cohort by transaction creation slot, then uses the
