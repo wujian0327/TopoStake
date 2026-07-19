@@ -61,9 +61,9 @@ FOUR_UP_FIGSIZE = (3.0, 2.25)
 LEGEND_LOCATIONS = {
     "throughput_change_percent": "upper left",
     "p95_latency_change_seconds": "lower right",
-    "aggregate_cpu_change_percentage_points": "upper left",
-    "aggregate_memory_change_mib": "upper left",
-    "aggregate_network_change_mib": "upper left",
+    "per_node_cpu_change_percentage_points": "upper left",
+    "per_node_memory_change_mib": "upper left",
+    "per_node_network_change_mib": "upper left",
     "additional_block_bytes_per_tx": "lower left",
     "verification": "lower left",
 }
@@ -71,9 +71,9 @@ LEGEND_LOCATIONS = {
 FIGURE_CONTENTS = {
     "frozen_devnet_performance_a": "paired inclusion-throughput change versus baseline",
     "frozen_devnet_performance_b": "paired p95 inclusion-latency change versus baseline",
-    "frozen_devnet_resources_a": "paired aggregate CPU change versus baseline",
-    "frozen_devnet_resources_b": "paired aggregate memory change versus baseline",
-    "frozen_devnet_resources_c": "paired aggregate network-traffic change versus baseline",
+    "frozen_devnet_resources_a": "paired mean per-node CPU change versus baseline",
+    "frozen_devnet_resources_b": "paired mean per-node peak-memory change versus baseline",
+    "frozen_devnet_resources_c": "paired mean per-node network-traffic change versus baseline",
     "frozen_devnet_evidence_a": "paired additional serialized block bytes per included transaction",
     "frozen_devnet_evidence_b": "TopoStake block-level inline-evidence verification time",
 }
@@ -225,22 +225,26 @@ PAIRED_METRICS: dict[str, tuple[str, Metric]] = {
         lambda row, ref: numeric(row, "p95_inclusion_delay_seconds")
         - numeric(ref, "p95_inclusion_delay_seconds"),
     ),
-    "aggregate_cpu_change_percentage_points": (
+    "per_node_cpu_change_percentage_points": (
         "percentage points",
-        lambda row, ref: numeric(row, "cpu_mean_percent") - numeric(ref, "cpu_mean_percent"),
+        lambda row, ref: numeric(row, "per_node_cpu_mean_percent")
+        - numeric(ref, "per_node_cpu_mean_percent"),
     ),
-    "aggregate_memory_change_mib": (
-        "MiB",
-        lambda row, ref: (numeric(row, "memory_max_bytes") - numeric(ref, "memory_max_bytes"))
-        / MIB,
-    ),
-    "aggregate_network_change_mib": (
+    "per_node_memory_change_mib": (
         "MiB",
         lambda row, ref: (
-            numeric(row, "network_rx_delta_bytes")
-            + numeric(row, "network_tx_delta_bytes")
-            - numeric(ref, "network_rx_delta_bytes")
-            - numeric(ref, "network_tx_delta_bytes")
+            numeric(row, "per_node_memory_peak_mean_bytes")
+            - numeric(ref, "per_node_memory_peak_mean_bytes")
+        )
+        / MIB,
+    ),
+    "per_node_network_change_mib": (
+        "MiB",
+        lambda row, ref: (
+            numeric(row, "per_node_network_rx_delta_mean_bytes")
+            + numeric(row, "per_node_network_tx_delta_mean_bytes")
+            - numeric(ref, "per_node_network_rx_delta_mean_bytes")
+            - numeric(ref, "per_node_network_tx_delta_mean_bytes")
         )
         / MIB,
     ),
@@ -459,18 +463,18 @@ def render_figures(
             "frozen_devnet_performance_b",
         ),
         (
-            "aggregate_cpu_change_percentage_points",
-            "CPU $\\Delta$ (pp)",
+            "per_node_cpu_change_percentage_points",
+            "Per-node CPU $\\Delta$ (pp)",
             "frozen_devnet_resources_a",
         ),
         (
-            "aggregate_memory_change_mib",
-            "Memory $\\Delta$ (MiB)",
+            "per_node_memory_change_mib",
+            "Per-node memory $\\Delta$ (MiB)",
             "frozen_devnet_resources_b",
         ),
         (
-            "aggregate_network_change_mib",
-            "Network $\\Delta$ (MiB)",
+            "per_node_network_change_mib",
+            "Per-node network $\\Delta$ (MiB)",
             "frozen_devnet_resources_c",
         ),
         (
@@ -559,8 +563,8 @@ def render_table(summaries: list[dict[str, Any]], path: Path) -> None:
     for load in loads:
         throughput, _ = summary_value(summaries, load, "throughput_change_percent")
         latency, _ = summary_value(summaries, load, "p95_latency_change_seconds")
-        cpu, _ = summary_value(summaries, load, "aggregate_cpu_change_percentage_points")
-        memory, _ = summary_value(summaries, load, "aggregate_memory_change_mib")
+        cpu, _ = summary_value(summaries, load, "per_node_cpu_change_percentage_points")
+        memory, _ = summary_value(summaries, load, "per_node_memory_change_mib")
         block_bytes, _ = summary_value(summaries, load, "additional_block_bytes_per_tx")
         verify, _ = verification_value(summaries, load, "evidence_verify_p95_ms")
         lines.append(
@@ -588,7 +592,10 @@ def write_manifest(
         "loads_tx_per_slot": sorted({int(numeric(row, "load_tx_per_slot")) for row in rows}),
         "seeds": sorted({int(numeric(row, "seed")) for row in rows}),
         "statistics": "paired two-sided 95% Student-t interval; seed is the pairing unit",
-        "resource_scope": "aggregate EL+CL user-service containers on one physical host",
+        "resource_scope": (
+            "mean per-node EL+CL resource consumption; paired by run seed on one "
+            "physical host"
+        ),
         "figure_contents": FIGURE_CONTENTS,
         "primary_four_panel_row": list(PRIMARY_FIGURE_STEMS),
         "figures": [str(output) for output in outputs],

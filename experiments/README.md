@@ -117,8 +117,11 @@ After the main matrix completes, `frozen-devnet-figures` validates every row
 and writes paired, seed-level 95% Student-t comparisons against baseline. Each
 metric is exported as a separate PDF/PNG under
 `figures/frozen_v1_devnet/`; the task also writes an inspectable figure-data
-CSV, a compact LaTeX table, and a manifest that records the aggregate-resource
-and single-host measurement scope.
+CSV, a compact LaTeX table, and a manifest. Before plotting, the task
+reprocesses each run's `resources.jsonl`: it pairs Geth and Lighthouse by node
+index, computes CPU, peak memory, and network traffic per node, and then uses
+the run-level mean across nodes. Confidence intervals remain paired by seed;
+the eight colocated nodes are not treated as independent repetitions.
 
 The sustained-outage suite pairs Full TopoStake with the `eta=0` baseline
 using the same seed-specific validator assignment. It evaluates random outage

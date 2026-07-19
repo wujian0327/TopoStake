@@ -46,6 +46,22 @@ def devnet_rows() -> list[dict[str, object]]:
                         "memory_max_bytes": (1_100 if evidence else 1_000) * 1024 * 1024,
                         "network_rx_delta_bytes": (120 if evidence else 100) * 1024 * 1024,
                         "network_tx_delta_bytes": (150 if evidence else 100) * 1024 * 1024,
+                        "per_node_cpu_mean_percent": 10.0 if evidence else 6.25,
+                        "per_node_memory_peak_mean_bytes": (
+                            140 if evidence else 125
+                        )
+                        * 1024
+                        * 1024,
+                        "per_node_network_rx_delta_mean_bytes": (
+                            15 if evidence else 12.5
+                        )
+                        * 1024
+                        * 1024,
+                        "per_node_network_tx_delta_mean_bytes": (
+                            18.75 if evidence else 12.5
+                        )
+                        * 1024
+                        * 1024,
                         "block_ssz_mean_bytes": 1_000 + (load * 10 if evidence else 0),
                         "block_ssz_count": 40,
                         "success_count": load * 10,

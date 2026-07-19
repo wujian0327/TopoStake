@@ -518,6 +518,11 @@ def client_kind(name: str) -> str | None:
     return None
 
 
+def client_node_index(name: str) -> int | None:
+    match = re.search(r"(?:^|\b)(?:el|cl)-(\d+)-", name.lower())
+    return int(match.group(1)) if match else None
+
+
 def summarize_resources(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {"error": "resource JSONL missing", "samples": 0}
@@ -538,6 +543,7 @@ def summarize_resources(path: Path) -> dict[str, Any]:
             "network_tx_bytes": 0.0,
             "el_cpu_percent": 0.0,
             "cl_cpu_percent": 0.0,
+            "nodes": {},
         }
         clients = 0
         for container in record.get("docker", []):
@@ -556,6 +562,10 @@ def summarize_resources(path: Path) -> dict[str, Any]:
                 kind = client_kind(str(container.get("Name", "")))
             if kind is None:
                 continue
+            service_name = str(
+                container.get("TopoStakeService") or container.get("Name", "")
+            )
+            node_index = client_node_index(service_name)
             clients += 1
             cpu = float(str(container.get("CPUPerc", "0")).strip().rstrip("%") or 0.0)
             memory = parse_bytes(str(container.get("MemUsage", "")).split("/")[0])
@@ -567,6 +577,22 @@ def summarize_resources(path: Path) -> dict[str, Any]:
             row["network_rx_bytes"] += rx
             row["network_tx_bytes"] += tx
             row[f"{kind}_cpu_percent"] += cpu
+            if node_index is not None:
+                node = row["nodes"].setdefault(
+                    node_index,
+                    {
+                        "kinds": set(),
+                        "cpu_percent": 0.0,
+                        "memory_bytes": 0.0,
+                        "network_rx_bytes": 0.0,
+                        "network_tx_bytes": 0.0,
+                    },
+                )
+                node["kinds"].add(kind)
+                node["cpu_percent"] += cpu
+                node["memory_bytes"] += memory
+                node["network_rx_bytes"] += rx
+                node["network_tx_bytes"] += tx
         if clients:
             aggregates.append(row)
     if not aggregates:
@@ -581,6 +607,32 @@ def summarize_resources(path: Path) -> dict[str, Any]:
     memory = [row["memory_bytes"] for row in aggregates]
     rx = [row["network_rx_bytes"] for row in aggregates]
     tx = [row["network_tx_bytes"] for row in aggregates]
+    node_samples: dict[int, list[dict[str, float]]] = {}
+    for row in aggregates:
+        for node_index, node in row["nodes"].items():
+            if node["kinds"] != {"el", "cl"}:
+                continue
+            node_samples.setdefault(node_index, []).append(node)
+
+    per_node_cpu = []
+    per_node_memory_peak = []
+    per_node_rx_delta = []
+    per_node_tx_delta = []
+    for samples in node_samples.values():
+        per_node_cpu.append(
+            sum(sample["cpu_percent"] for sample in samples) / len(samples)
+        )
+        per_node_memory_peak.append(
+            max(sample["memory_bytes"] for sample in samples)
+        )
+        node_rx = [sample["network_rx_bytes"] for sample in samples]
+        node_tx = [sample["network_tx_bytes"] for sample in samples]
+        per_node_rx_delta.append(max(0.0, max(node_rx) - min(node_rx)))
+        per_node_tx_delta.append(max(0.0, max(node_tx) - min(node_tx)))
+
+    def mean(values: list[float]) -> float:
+        return sum(values) / len(values) if values else 0.0
+
     return {
         "samples": len(aggregates),
         "cpu_mean_percent": sum(cpu) / len(cpu) if cpu else 0.0,
@@ -598,6 +650,11 @@ def summarize_resources(path: Path) -> dict[str, Any]:
             if aggregates
             else 0.0
         ),
+        "node_count": len(node_samples),
+        "per_node_cpu_mean_percent": mean(per_node_cpu),
+        "per_node_memory_peak_mean_bytes": mean(per_node_memory_peak),
+        "per_node_network_rx_delta_mean_bytes": mean(per_node_rx_delta),
+        "per_node_network_tx_delta_mean_bytes": mean(per_node_tx_delta),
     }
 
 
@@ -646,6 +703,19 @@ def build_row(spec: RunSpec, run_dir: Path, status: str, error: str = "") -> dic
             "memory_max_bytes": formal.get("resources", {}).get("memory_max_bytes", 0.0),
             "network_rx_delta_bytes": formal.get("resources", {}).get("network_rx_delta_bytes", 0.0),
             "network_tx_delta_bytes": formal.get("resources", {}).get("network_tx_delta_bytes", 0.0),
+            "node_count": formal.get("resources", {}).get("node_count", 0),
+            "per_node_cpu_mean_percent": formal.get("resources", {}).get(
+                "per_node_cpu_mean_percent", 0.0
+            ),
+            "per_node_memory_peak_mean_bytes": formal.get("resources", {}).get(
+                "per_node_memory_peak_mean_bytes", 0.0
+            ),
+            "per_node_network_rx_delta_mean_bytes": formal.get("resources", {}).get(
+                "per_node_network_rx_delta_mean_bytes", 0.0
+            ),
+            "per_node_network_tx_delta_mean_bytes": formal.get("resources", {}).get(
+                "per_node_network_tx_delta_mean_bytes", 0.0
+            ),
             "evidence_verify_count": formal.get("prometheus", {}).get("evidence_verify_count", 0.0),
             "evidence_verify_mean_seconds": formal.get("prometheus", {}).get(
                 "evidence_verify_mean_seconds", 0.0

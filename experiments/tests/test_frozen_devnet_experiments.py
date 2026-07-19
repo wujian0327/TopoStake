@@ -231,6 +231,12 @@ UUID: 72e82fd99b0f
         self.assertEqual(summary["samples"], 2)
         self.assertEqual(summary["cpu_mean_percent"], 32.0)
         self.assertEqual(summary["network_rx_delta_bytes"], 3_000_000.0)
+        self.assertEqual(summary["node_count"], 1)
+        self.assertEqual(summary["per_node_cpu_mean_percent"], 32.0)
+        self.assertEqual(summary["per_node_memory_peak_mean_bytes"], 5 * 1024**2)
+        self.assertEqual(
+            summary["per_node_network_rx_delta_mean_bytes"], 3_000_000.0
+        )
         self.assertEqual(parse_bytes("1.5 GiB"), 1.5 * 1024**3)
 
     def test_measurement_quality_requires_evidence_timing_off_baseline(self) -> None:

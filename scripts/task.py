@@ -289,6 +289,7 @@ def task_sustained_outage_figures(args: argparse.Namespace) -> None:
 
 
 def task_frozen_devnet_figures(_args: argparse.Namespace) -> None:
+    run([PYTHON, "experiments/reprocess_frozen_devnet_resources.py"])
     run([PYTHON, "analysis/plot_frozen_devnet.py"])
 
 
