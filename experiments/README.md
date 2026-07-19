@@ -95,6 +95,10 @@ unpaired runs, assignment drift, mixed revisions, malformed or disconnected
 graphs, an out-of-profile 1,000-node empirical graph, accounting errors, and
 any proposer-envelope violation. It also writes inspectable topology profiles
 and a Markdown summary under `results/processed/`.
+The checked-in profile uses `time_scale=0.5`; a four-run timing probe showed
+that the earlier 0.02 acceleration starved 1,000-node path processing and
+produced zero valid relay paths, while 0.5 restored valid paths for both BA
+and `eth_empirical` graphs.
 
 ```bash
 env TOKIO_WORKER_THREADS=32 \
