@@ -10,6 +10,7 @@ Python standard library; if PyYAML is installed, normal YAML is also accepted.
 python scripts/task.py experiments-smoke
 python scripts/task.py frozen-smoke
 python scripts/task.py frozen-eth-empirical-dry-run --dry-run
+python scripts/task.py frozen-topology-scale-pilot --dry-run
 python scripts/task.py frozen-padding-check
 python scripts/task.py frozen-evidence-bench
 python scripts/task.py frozen-security-pilot
@@ -82,6 +83,21 @@ worker pool and retain the host resource report separately:
 /usr/bin/time -v -o eth_empirical_dry_run_time.txt \
   env TOKIO_WORKER_THREADS=32 \
   python scripts/task.py frozen-eth-empirical-dry-run
+```
+
+`frozen_v1_topology_scale_pilot.yaml` is the 32-run, one-seed quality gate for
+the RQ3 topology/scale extension. It crosses 100/1,000 validators, BA and
+`eth_empirical` graphs, 10/30% coalition stake, random/high-degree placement,
+and normal/favorable-path conditions. It runs serially and reports each
+node-count/topology cell separately. The report rejects incomplete or
+unpaired runs, assignment drift, mixed revisions, malformed or disconnected
+graphs, an out-of-profile 1,000-node empirical graph, accounting errors, and
+any proposer-envelope violation. It also writes inspectable topology profiles
+and a Markdown summary under `results/processed/`.
+
+```bash
+env TOKIO_WORKER_THREADS=32 \
+  python scripts/task.py frozen-topology-scale-pilot
 ```
 
 Every simulator run also writes `inclusion_samples.csv`. The security report
