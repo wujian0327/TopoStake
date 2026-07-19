@@ -7,7 +7,7 @@
   "timeout_seconds": 3600,
   "seeds": [0],
   "defaults": {
-    "run_revision": "topology-scale-pilot-v1",
+    "run_revision": "topology-scale-pilot-v2-stable-timing",
     "node_num": 100,
     "sybil_node_num": 0,
     "fake_node_num": 0,
@@ -22,7 +22,7 @@
     "max_epochs": 20,
     "warmup_epochs": 5,
     "max_tx_per_block": 80,
-    "time_scale": 0.02,
+    "time_scale": 0.5,
     "topostake_target_depth": 4,
     "beta": 0.8,
     "topostake_saturation_k": 1.0,
