@@ -152,6 +152,8 @@ def aggregate_run(run: dict[str, Any]) -> dict[str, Any]:
         "protocol_version": run.get("protocol_version", ""),
         "experiment": run.get("experiment", ""),
         "run_id": run.get("run_id", ""),
+        "node_num": int(number(run.get("node_num"))),
+        "topology": str(run.get("topology", "")),
         "seed_index": int(number(run.get("seed_index"))),
         "adversary_stake_fraction": number(run.get("adversary_stake_fraction")),
         "adversary_placement": str(run.get("adversary_placement", "")),
@@ -183,6 +185,9 @@ def aggregate_run(run: dict[str, Any]) -> dict[str, Any]:
         "proposer_weight_share_lift": proposer_share - stake_share,
         "theoretical_proposer_weight_bound": epoch_mean(
             "theoretical_proposer_weight_bound"
+        ),
+        "score_dependent_proposer_weight_bound": epoch_mean(
+            "score_dependent_proposer_weight_bound"
         ),
         "bound_violation_count": sum(
             truthy(row.get("bound_violation")) for row in usable_epochs
