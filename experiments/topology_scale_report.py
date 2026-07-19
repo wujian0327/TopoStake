@@ -286,6 +286,29 @@ def main() -> int:
     profiles = topology_profiles(expected)
     complete = [row for row in runs if row.get("complete")]
 
+    def describe_runs(rows: list[dict[str, Any]], limit: int = 6) -> str:
+        labels = [
+            "n={node_num},topology={topology},stake={stake:.2f},placement={placement},mode={mode}".format(
+                node_num=int(number(row.get("node_num"))),
+                topology=str(row.get("topology", "")),
+                stake=number(row.get("adversary_stake_fraction")),
+                placement=str(row.get("adversary_placement", "")),
+                mode=str(row.get("attack_mode", "")),
+            )
+            for row in rows[:limit]
+        ]
+        suffix = "" if len(rows) <= limit else f"; ... and {len(rows) - limit} more"
+        return "; ".join(labels) + suffix
+
+    zero_organic_runs = [
+        row for row in complete if number(row.get("organic_included_tx")) <= 0.0
+    ]
+    zero_valid_path_runs = [
+        row
+        for row in complete
+        if number(row.get("organic_valid_path_count")) <= 0.0
+    ]
+
     expected_conditions = {condition_key(run) for run in expected}
     assignment_index: dict[tuple[int, str, int, float, str], set[str]] = defaultdict(
         set
@@ -351,13 +374,19 @@ def main() -> int:
         },
         {
             "name": "organic-traffic-observed",
-            "passed": bool(complete)
-            and all(
-                number(row.get("organic_included_tx")) > 0.0
-                and number(row.get("organic_valid_path_count")) > 0.0
-                for row in complete
+            "passed": bool(complete) and not zero_organic_runs,
+            "detail": f"zero-organic runs={len(zero_organic_runs)}"
+            + (f"; {describe_runs(zero_organic_runs)}" if zero_organic_runs else ""),
+        },
+        {
+            "name": "valid-organic-paths-observed",
+            "passed": bool(complete) and not zero_valid_path_runs,
+            "detail": f"zero-valid-path runs={len(zero_valid_path_runs)}"
+            + (
+                f"; {describe_runs(zero_valid_path_runs)}"
+                if zero_valid_path_runs
+                else ""
             ),
-            "detail": "requires organic transactions and valid paths in every run",
         },
         {
             "name": "organic-capture-accounting",
