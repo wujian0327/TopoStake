@@ -258,6 +258,25 @@ def task_organic_capture_figures(args: argparse.Namespace) -> None:
     run([PYTHON, "analysis/plot_organic_capture.py", "--config", config])
 
 
+def task_topology_scale_pilot(args: argparse.Namespace) -> None:
+    config = "experiments/configs/frozen_v1_topology_scale_pilot.yaml"
+    task_run_experiments(config, force=args.force, dry_run=args.dry_run)
+    if args.dry_run:
+        return
+    cmd = [PYTHON, "experiments/topology_scale_report.py", "--config", config]
+    if args.allow_incomplete:
+        cmd.append("--allow-incomplete")
+    run(cmd)
+
+
+def task_topology_scale_report(args: argparse.Namespace) -> None:
+    config = args.config or "experiments/configs/frozen_v1_topology_scale_pilot.yaml"
+    cmd = [PYTHON, "experiments/topology_scale_report.py", "--config", config]
+    if args.allow_incomplete:
+        cmd.append("--allow-incomplete")
+    run(cmd)
+
+
 def task_sustained_outage(args: argparse.Namespace, config: str) -> None:
     cmd = [PYTHON, "experiments/run_sustained_outage.py", "--config", config]
     if args.force:
@@ -376,6 +395,8 @@ TASKS: Dict[str, Callable[[argparse.Namespace], None]] = {
     "frozen-organic-capture-main": task_organic_capture_main,
     "frozen-organic-capture-report": task_organic_capture_report,
     "frozen-organic-capture-figures": task_organic_capture_figures,
+    "frozen-topology-scale-pilot": task_topology_scale_pilot,
+    "frozen-topology-scale-report": task_topology_scale_report,
     "frozen-sustained-outage-pilot": task_sustained_outage_pilot,
     "frozen-sustained-outage-main": task_sustained_outage_main,
     "frozen-sustained-outage-report": task_sustained_outage_report,
