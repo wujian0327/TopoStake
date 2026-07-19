@@ -474,6 +474,9 @@ pub async fn start_network(config: SimulationConfig) {
         TopologyType::ER => graph::random_er_graph(nodes_address.clone(), 0.1, graph_seed),
         TopologyType::BA => graph::random_ba_graph(nodes_address.clone(), graph_seed),
         TopologyType::WS => graph::random_ws_graph(nodes_address.clone(), 4, 0.1, graph_seed),
+        TopologyType::EthEmpirical => {
+            graph::random_eth_empirical_graph(nodes_address.clone(), graph_seed)
+        }
     };
     graph::write_graph_json(&graph, output_dir.join("graph.json"));
     info!("Generate network graph[{}]", topology);
@@ -1265,7 +1268,12 @@ mod tests {
     fn deterministic_setup_covers_all_topologies() {
         use crate::network::graph::TopologyType;
 
-        for topology in [TopologyType::ER, TopologyType::BA, TopologyType::WS] {
+        for topology in [
+            TopologyType::ER,
+            TopologyType::BA,
+            TopologyType::WS,
+            TopologyType::EthEmpirical,
+        ] {
             let (_, edges1) = setup_network_state(20, 0.6, 888, 999, topology);
             let (_, edges2) = setup_network_state(20, 0.6, 888, 999, topology);
             assert_eq!(
@@ -1453,6 +1461,9 @@ mod tests {
             }
             crate::network::graph::TopologyType::WS => {
                 graph::random_ws_graph(nodes_address.clone(), 4, 0.1, graph_seed)
+            }
+            crate::network::graph::TopologyType::EthEmpirical => {
+                graph::random_eth_empirical_graph(nodes_address.clone(), graph_seed)
             }
         };
 
