@@ -73,10 +73,14 @@ preferential-attachment graph calibrated to an average degree of approximately
 18 and a heavy-tailed degree profile. It represents public Ethereum crawl
 statistics rather than a recovered mainnet adjacency snapshot. The profile is
 deliberately short (six epochs), uses one seed and `max_parallel=1`, and is not
-a paper result. On a 32-core server, run it with a bounded Tokio worker pool:
+a paper result. It writes only to
+`results/raw/frozen_v1_eth_empirical_dry_run/` and does not replace the generic
+processed experiment tables. On a 32-core server, run it with a bounded Tokio
+worker pool and retain the host resource report separately:
 
 ```bash
-/usr/bin/time -v env TOKIO_WORKER_THREADS=32 \
+/usr/bin/time -v -o eth_empirical_dry_run_time.txt \
+  env TOKIO_WORKER_THREADS=32 \
   python scripts/task.py frozen-eth-empirical-dry-run
 ```
 
