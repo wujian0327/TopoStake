@@ -148,6 +148,13 @@ def task_frozen_smoke(args: argparse.Namespace) -> None:
     task_summarize_config(config)
 
 
+def task_eth_empirical_dry_run(args: argparse.Namespace) -> None:
+    config = "experiments/configs/frozen_v1_eth_empirical_dry_run.yaml"
+    task_run_experiments(config, force=args.force, dry_run=args.dry_run)
+    if not args.dry_run:
+        task_summarize_config(config)
+
+
 def task_frozen_security(args: argparse.Namespace, config: str) -> None:
     task_run_experiments(config, force=args.force, dry_run=args.dry_run)
     if args.dry_run:
@@ -358,6 +365,7 @@ TASKS: Dict[str, Callable[[argparse.Namespace], None]] = {
     "experiments-main": task_experiments_main,
     "tdsc-fast": task_tdsc_fast,
     "frozen-smoke": task_frozen_smoke,
+    "frozen-eth-empirical-dry-run": task_eth_empirical_dry_run,
     "frozen-security-pilot": task_frozen_security_pilot,
     "frozen-security-main": task_frozen_security_main,
     "frozen-security-report": task_frozen_security_report,
