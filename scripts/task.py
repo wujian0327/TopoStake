@@ -151,8 +151,6 @@ def task_frozen_smoke(args: argparse.Namespace) -> None:
 def task_eth_empirical_dry_run(args: argparse.Namespace) -> None:
     config = "experiments/configs/frozen_v1_eth_empirical_dry_run.yaml"
     task_run_experiments(config, force=args.force, dry_run=args.dry_run)
-    if not args.dry_run:
-        task_summarize_config(config)
 
 
 def task_frozen_security(args: argparse.Namespace, config: str) -> None:
