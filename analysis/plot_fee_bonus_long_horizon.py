@@ -257,7 +257,6 @@ def main() -> int:
             series_order=("topostake",)
             if latency_panel
             else ("topostake_eta0", "topostake"),
-            show_legend=not latency_panel,
         )
     render_paired_difference(
         rows,
