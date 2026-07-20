@@ -15,6 +15,8 @@ pub enum TopologyType {
     ER,
     BA,
     WS,
+    #[value(name = "eth_empirical", alias = "eth-empirical")]
+    EthEmpirical,
 }
 
 impl Display for TopologyType {
@@ -28,6 +30,9 @@ impl Display for TopologyType {
             }
             TopologyType::WS => {
                 write!(f, "ws")
+            }
+            TopologyType::EthEmpirical => {
+                write!(f, "eth_empirical")
             }
         }
     }
@@ -171,6 +176,58 @@ pub fn random_ba_graph(nodes_address: Vec<String>, seed: u64) -> Graph<String, (
     graph
 }
 
+/// Generate a connected, Ethereum-measurement-calibrated synthetic topology.
+///
+/// Public Ethereum topology measurements do not provide a reusable mainnet
+/// adjacency snapshot. They do, however, consistently describe a sparse,
+/// heavy-tailed peer graph. We therefore use preferential attachment with nine
+/// links per arriving node. At 1,000 nodes this yields an average degree of
+/// approximately 18, while retaining the observed pattern in which most nodes
+/// have modest degree and a small minority form high-degree hubs.
+///
+/// This is an empirical *profile*, not a reconstruction of a specific crawl.
+pub fn random_eth_empirical_graph(nodes_address: Vec<String>, seed: u64) -> Graph<String, ()> {
+    const LINKS_PER_NEW_NODE: usize = 9;
+    const INITIAL_CLIQUE_SIZE: usize = LINKS_PER_NEW_NODE + 1;
+
+    let node_number = nodes_address.len();
+    let initial_clique = node_number.min(INITIAL_CLIQUE_SIZE);
+    let links_per_new_node = LINKS_PER_NEW_NODE.min(initial_clique.saturating_sub(1));
+
+    let mut graph = Graph::<String, ()>::new();
+    let node_indices: Vec<NodeIndex> = nodes_address
+        .iter()
+        .map(|address| graph.add_node(address.clone()))
+        .collect();
+
+    if node_number < 2 {
+        print_graph(&graph);
+        return graph;
+    }
+
+    let network = BANetwork::generate_ba_network(
+        node_number,
+        initial_clique,
+        links_per_new_node,
+        seed,
+    );
+    let mut edges = Vec::new();
+    for (source, neighbors) in network.adjacency {
+        for target in neighbors {
+            if source < target {
+                edges.push((source, target));
+            }
+        }
+    }
+    edges.sort_unstable();
+    for (source, target) in edges {
+        graph.add_edge(node_indices[source], node_indices[target], ());
+    }
+
+    print_graph(&graph);
+    graph
+}
+
 // Watts-Strogatz (WS) 小世界网络模型
 pub fn random_ws_graph(
     nodes_address: Vec<String>,
@@ -270,7 +327,10 @@ pub fn graph_edges(graph: &Graph<String, ()>) -> Vec<(String, String)> {
 
 #[cfg(test)]
 mod tests {
-    use crate::network::graph::{print_graph, BANetwork};
+    use crate::network::graph::{
+        graph_edges, print_graph, random_eth_empirical_graph, BANetwork, TopologyType,
+    };
+    use clap::ValueEnum;
     use log::info;
     use petgraph::dot::{Config, Dot};
     use petgraph::graph::NodeIndex;
@@ -280,6 +340,49 @@ mod tests {
     use rand::Rng;
     use rand::SeedableRng;
     use std::collections::HashMap;
+
+    #[test]
+    fn eth_empirical_cli_name_is_stable() {
+        assert_eq!(
+            TopologyType::from_str("eth_empirical", false),
+            Ok(TopologyType::EthEmpirical)
+        );
+        assert_eq!(
+            TopologyType::from_str("eth-empirical", false),
+            Ok(TopologyType::EthEmpirical)
+        );
+        assert_eq!(TopologyType::EthEmpirical.to_string(), "eth_empirical");
+    }
+
+    #[test]
+    fn eth_empirical_profile_is_deterministic_connected_and_calibrated() {
+        let node_count = 1_000;
+        let addresses: Vec<String> = (0..node_count)
+            .map(|index| format!("validator-{index}"))
+            .collect();
+        let graph = random_eth_empirical_graph(addresses.clone(), 42);
+        let repeated = random_eth_empirical_graph(addresses, 42);
+
+        assert_eq!(graph_edges(&graph), graph_edges(&repeated));
+        assert_eq!(graph.node_count(), node_count);
+
+        let mut degrees = vec![0usize; node_count];
+        for edge in graph.edge_references() {
+            degrees[edge.source().index()] += 1;
+            degrees[edge.target().index()] += 1;
+        }
+        let average_degree = degrees.iter().sum::<usize>() as f64 / node_count as f64;
+        let modest_degree_fraction =
+            degrees.iter().filter(|&&degree| degree <= 16).count() as f64 / node_count as f64;
+        let below_fifty_fraction =
+            degrees.iter().filter(|&&degree| degree < 50).count() as f64 / node_count as f64;
+
+        assert!((17.5..=18.5).contains(&average_degree));
+        assert!(modest_degree_fraction >= 0.5);
+        assert!(below_fifty_fraction >= 0.93);
+
+        assert_eq!(petgraph::algo::connected_components(&graph), 1);
+    }
 
     #[test]
     fn ba_network() {

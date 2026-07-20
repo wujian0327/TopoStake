@@ -1,62 +1,52 @@
-# Experiment Pipeline
+# Experiment Layout
 
-The pipeline is driven by YAML experiment specifications in `experiments/configs/`.
-The checked-in specs are JSON-compatible YAML so the scripts work with only the
-Python standard library; if PyYAML is installed, normal YAML is also accepted.
+The root [`README.md`](../README.md) is the canonical reproduction guide. This
+directory contains the experiment specifications and the Python runners that
+support the current frozen-v1 evaluation.
 
-## Commands
+## Current suites
+
+- `frozen_v1_security_{pilot,main}.yaml`: security envelope, path manipulation,
+  flooding, and relay-participation stress.
+- `frozen_v1_fee_bonus_{pilot,main}.yaml`: long-horizon fee and proposer-bonus
+  ablation.
+- `frozen_v1_organic_capture_{pilot,main}.yaml`: organic-traffic capture under
+  favorable placement.
+- `frozen_v1_sustained_outage_{pilot,main}.yaml`: random sustained outages and
+  proposer-side adaptation.
+- `frozen_v1_devnet_{pilot,main}.yaml`: paired real-client Ethereum devnet
+  feasibility and overhead.
+
+The shared protocol parameters are defined in
+`configs/protocol_frozen_v1.yaml`. `frozen_v1_smoke.yaml` is the fast simulator
+correctness check. The `eth_empirical` and topology-scale profiles are retained
+as optional scalability diagnostics; they are not part of the paper's five
+main experiment groups.
+
+## Entry points
+
+Run experiments through `scripts/task.py` from the repository root. The usual
+pattern is:
 
 ```bash
-python scripts/task.py experiments-smoke
-python scripts/task.py tdsc-fast
-python scripts/task.py experiments-main
-python scripts/task.py figures
+python scripts/task.py frozen-smoke
+python scripts/task.py <suite>-pilot
+python scripts/task.py <suite>-main --dry-run
+python scripts/task.py <suite>-main
+python scripts/task.py <suite>-figures
 ```
 
-The Python task runner is the recommended cross-platform entry point,
-especially on Windows where `make` is usually not installed. The Makefile keeps
-equivalent shortcuts for environments that already have `make`.
+Use the exact suite commands and devnet prerequisites listed in the root
+README. Lower-level modules in this directory implement matrix execution,
+acceptance checks, aggregation, and report generation; they are not separate
+experiment definitions.
 
-To run the lower-level scripts directly:
+## Outputs
 
-```bash
-python experiments/run_experiments.py --config experiments/configs/smoke.yaml
-python experiments/summarize.py --config experiments/configs/smoke.yaml
-python analysis/plot_performance.py
-```
+- `results/raw/<suite>/`: per-run logs, resolved configurations, and metrics.
+- `results/processed/`: acceptance JSON, grouped and paired tables, summaries,
+  and figure inputs.
+- `figures/`: generated PDF and PNG figures.
 
-## Experiment Profiles
-
-`experiments/configs/tdsc_fast.yaml` is the compact paper-figure profile. It uses deterministic seeds `[0, 1, 2]`, a shorter epoch horizon with warmup, and reduced sweeps for the TDSC submission figures.
-
-`experiments/configs/main.yaml` is the extended experiment profile. Keep it for broader validation runs and appendix-scale sweeps; use `tdsc_fast.yaml` when regenerating the core paper figures quickly.
-
-## Reproducibility
-
-Each run gets its own directory under `results/raw/<suite>/<experiment>/<run-id>/`
-with:
-
-- `experiment_meta.json`
-- `runner_status.json`
-- `run.log`
-- simulator `run_config.json`
-- simulator `run_summary.json`
-- simulator CSV outputs
-
-The runner supports resume by skipping runs that already contain complete
-`run_config.json`, `run_summary.json`, and an `ok` runner status. Use `--force`
-to rerun them. Failed and timed-out runs keep their per-run `runner_status.json`;
-failures are also appended as JSON lines to `results/processed/failed_runs.log`.
-
-## Processed Outputs
-
-`experiments/summarize.py` writes:
-
-- `results/processed/runs.csv`
-- `results/processed/epoch_metrics_all.csv`
-- `results/processed/node_epoch_metrics_all.csv`
-- `results/processed/aggregate_metrics.csv`
-- `results/processed/paper_summary.md`
-
-The summary file reports available data and source CSVs only; it does not invent
-conclusions when runs are missing.
+Formal matrices are resumable. Use `--force` only when intentionally replacing
+completed simulator runs, and `--resume` for interrupted devnet matrices.

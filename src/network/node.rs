@@ -15,6 +15,7 @@ use rand::SeedableRng;
 // use serde_json;
 use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::RwLock;
@@ -35,6 +36,10 @@ pub struct Node {
     pub node_type: NodeType,
     pub sybil_nodes: Vec<Node>,
     pub is_online: bool,
+    /// Scenario-controlled availability shared with WorldState. This is
+    /// independent of the legacy one-epoch unstable-node failure model.
+    pub scheduled_online: Arc<AtomicBool>,
+    scheduled_online_last_slot: bool,
     pub offline_until_epoch: Option<u64>,
     pub offline_probability: f64,
     pub sync_in_progress: bool,
@@ -46,6 +51,9 @@ pub struct Node {
     pub hash_power: f64,           // 节点算力
     pub tx_propagation_delay: u64, // 交易传播延迟(ms)
     pub relay_profile: RelayProfile,
+    /// Signed outbound relay-path messages attempted by this node.  The
+    /// world-state sampler converts this cumulative counter into epoch deltas.
+    pub relay_forward_attempts: Arc<AtomicU64>,
     failure_rng: StdRng,
 }
 
@@ -106,6 +114,8 @@ impl Node {
             node_type: NodeType::Honest,
             sybil_nodes: Vec::new(),
             is_online: true,
+            scheduled_online: Arc::new(AtomicBool::new(true)),
+            scheduled_online_last_slot: true,
             offline_until_epoch: None,
             offline_probability: 0.1,
             sync_in_progress: false,
@@ -117,6 +127,7 @@ impl Node {
             hash_power: 1.0,
             tx_propagation_delay: 50, // 默认50ms
             relay_profile: RelayProfile::Normal,
+            relay_forward_attempts: Arc::new(AtomicU64::new(0)),
             failure_rng: StdRng::seed_from_u64(wallet_seed ^ index as u64),
         }
     }
@@ -146,6 +157,8 @@ impl Node {
             node_type: NodeType::Honest,
             sybil_nodes: Vec::new(),
             is_online: true,
+            scheduled_online: Arc::new(AtomicBool::new(true)),
+            scheduled_online_last_slot: true,
             offline_until_epoch: None,
             offline_probability: 0.1,
             sync_in_progress: false,
@@ -157,6 +170,7 @@ impl Node {
             hash_power: 1.0,
             tx_propagation_delay: 50, // 默认50ms
             relay_profile: RelayProfile::Normal,
+            relay_forward_attempts: Arc::new(AtomicU64::new(0)),
             failure_rng: StdRng::seed_from_u64(index as u64),
         }
     }
@@ -207,6 +221,8 @@ impl Node {
             node_type: NodeType::Sybil,
             sybil_nodes,
             is_online: true,
+            scheduled_online: Arc::new(AtomicBool::new(true)),
+            scheduled_online_last_slot: true,
             offline_until_epoch: None,
             offline_probability: 0.1,
             sync_in_progress: false,
@@ -218,6 +234,7 @@ impl Node {
             hash_power: 1.0,
             tx_propagation_delay: 50, // 默认50ms
             relay_profile: RelayProfile::Normal,
+            relay_forward_attempts: Arc::new(AtomicU64::new(0)),
             failure_rng: StdRng::seed_from_u64(wallet_seed ^ index as u64),
         }
     }
@@ -243,21 +260,22 @@ impl Node {
 
     pub fn set_relay_profile(&mut self, relay_profile: RelayProfile) {
         self.relay_profile = relay_profile;
-        self.tx_propagation_delay = match relay_profile {
-            RelayProfile::Active => 5,
-            RelayProfile::Normal | RelayProfile::Mixed => 80,
-            RelayProfile::Lazy => 200,
-        };
         for sybil in self.sybil_nodes.iter_mut() {
             sybil.set_relay_profile(relay_profile);
         }
     }
 
-    fn should_forward_relay_path(&mut self) -> bool {
+    fn relay_forward_probability(&self) -> f64 {
         match self.relay_profile {
-            RelayProfile::Active | RelayProfile::Normal | RelayProfile::Mixed => true,
-            RelayProfile::Lazy => self.failure_rng.gen_bool(0.2),
+            RelayProfile::Active => 1.0,
+            RelayProfile::Normal | RelayProfile::Mixed => 0.75,
+            RelayProfile::Lazy => 0.25,
         }
+    }
+
+    fn should_forward_relay_path(&mut self) -> bool {
+        self.failure_rng
+            .gen_bool(self.relay_forward_probability())
     }
 
     pub fn set_failure_seed(&mut self, seed: u64) {
@@ -423,7 +441,9 @@ impl Node {
         while let Some(msg) = self.receiver.recv().await {
             // 离线逻辑：如果节点离线，跳过大多数消息处理
             // 但 UpdateSlot 消息用于恢复在线逻辑，需要处理
-            if !self.is_online && !matches!(msg, Message::UpdateSlot(_)) {
+            if (!self.is_online || !self.scheduled_online.load(Ordering::Relaxed))
+                && !matches!(msg, Message::UpdateSlot(_))
+            {
                 debug!("Node[{}] is offline, skipping message", self.index);
                 match msg {
                     Message::GenerateBlock => {
@@ -638,6 +658,12 @@ impl Node {
                     //并广播到邻居
                     let neighbors = self.neighbors.clone();
                     for neighbor_sender in &neighbors {
+                        // The shared outage flag may change while a message is
+                        // being handled. Recheck at the forwarding boundary so
+                        // an in-flight handler cannot fan out after onset.
+                        if !self.scheduled_online.load(Ordering::Relaxed) {
+                            break;
+                        }
                         if from == neighbor_sender.address {
                             continue;
                         }
@@ -651,6 +677,7 @@ impl Node {
                         ) {
                             continue;
                         }
+                        self.relay_forward_attempts.fetch_add(1, Ordering::Relaxed);
                         debug!(
                             "Node[{}] send transaction[{}] paths[{}] to Node[{}]",
                             self.short_address_with_index(),
@@ -739,10 +766,11 @@ impl Node {
                 }
                 Message::GenerateTransactionPaths { to } => {
                     // 检查余额是否充足
-                    if !self.deduct_balance(self.transaction_fee) {
+                    let total_transaction_cost = 2.0 * self.transaction_fee;
+                    if !self.deduct_balance(total_transaction_cost) {
                         warn!(
                             "Node[{}] insufficient balance: {} < {}",
-                            self.index, self.balance, self.transaction_fee
+                            self.index, self.balance, total_transaction_cost
                         );
                         continue;
                     }
@@ -974,6 +1002,29 @@ impl Node {
                     let old_epoch = self.epoch;
                     self.slot = slot.current_slot;
                     self.epoch = slot.current_epoch;
+
+                    let scheduled_online = self.scheduled_online.load(Ordering::Relaxed);
+                    if scheduled_online && !self.scheduled_online_last_slot {
+                        let last_block_index =
+                            { self.blockchain.read().await.blocks.len() as u64 - 1 };
+                        for neighbor in &self.neighbors {
+                            let self_address = self.get_address();
+                            let sender = neighbor.sender.clone();
+                            tokio::spawn(async move {
+                                let _ = sender
+                                    .send(Message::new_request_block_sync_msg(
+                                        last_block_index,
+                                        self_address,
+                                    ))
+                                    .await;
+                            });
+                        }
+                        warn!(
+                            "Node[{}] recovered from scheduled outage at epoch {}",
+                            self.index, self.epoch
+                        );
+                    }
+                    self.scheduled_online_last_slot = scheduled_online;
 
                     // 恢复在线时向邻居请求块同步（仅对不稳定节点）
                     if matches!(self.node_type, NodeType::Unstable) {
@@ -1550,5 +1601,25 @@ mod tests {
 
         assert!(!node.deduct_balance(10.0));
         assert_eq!(node.get_balance(), 0.0);
+    }
+
+    #[test]
+    fn relay_profiles_change_forwarding_probability_not_delay() {
+        let (world_tx, _world_rx) = tokio::sync::mpsc::channel::<Message>(8);
+        let bc = Blockchain::new(Block::gen_genesis_block());
+        let mut node = Node::new(0, 0, 0, bc, world_tx, 1000, ConsensusType::TopoStake, 0);
+        node.set_tx_propagation_delay(123);
+
+        node.set_relay_profile(RelayProfile::Active);
+        assert_eq!(node.tx_propagation_delay, 123);
+        assert_eq!(node.relay_forward_probability(), 1.0);
+
+        node.set_relay_profile(RelayProfile::Normal);
+        assert_eq!(node.tx_propagation_delay, 123);
+        assert_eq!(node.relay_forward_probability(), 0.75);
+
+        node.set_relay_profile(RelayProfile::Lazy);
+        assert_eq!(node.tx_propagation_delay, 123);
+        assert_eq!(node.relay_forward_probability(), 0.25);
     }
 }

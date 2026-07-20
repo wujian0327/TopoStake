@@ -16,7 +16,7 @@ use std::{
     io::{Read, Write},
     net::{IpAddr, TcpStream, ToSocketAddrs, UdpSocket},
     sync::{OnceLock, RwLock},
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tree_hash::TreeHash;
 use typenum::Unsigned;
@@ -260,8 +260,25 @@ fn record_topostake_tx_gossip_metadata_for_block<E: EthSpec, Payload: AbstractEx
     if inline_records.is_empty() {
         return vec![];
     }
+    if inline_records
+        .iter()
+        .any(|record| record.epoch > epoch.as_u64())
+    {
+        return record_topostake_invalid_tx_gossip_metadata_evidence(
+            epoch,
+            inline_records.len(),
+            spec,
+        );
+    }
     let registry = topostake_relay_public_registry();
-    if !verify_topostake_inline_block_aggregate(inline_records.as_ref(), registry, spec) {
+    let verify_started = Instant::now();
+    let verified =
+        verify_topostake_inline_block_aggregate(inline_records.as_ref(), registry, spec);
+    metrics::observe_duration(
+        &state_processing_metrics::TOPOSTAKE_INLINE_EVIDENCE_VERIFY_SECONDS,
+        verify_started.elapsed(),
+    );
+    if !verified {
         return record_topostake_invalid_tx_gossip_metadata_evidence(
             epoch,
             inline_records.len(),
@@ -269,19 +286,29 @@ fn record_topostake_tx_gossip_metadata_for_block<E: EthSpec, Payload: AbstractEx
         );
     }
 
+    let stale_count = inline_records
+        .iter()
+        .filter(|record| record.epoch < epoch.as_u64())
+        .count();
     let inline_paths = inline_records
         .iter()
+        .filter(|record| record.epoch == epoch.as_u64())
         .filter_map(topostake_path_evidence_from_inline_record)
         .collect::<Vec<_>>();
+    let mut outcomes = if stale_count == 0 {
+        Vec::new()
+    } else {
+        record_topostake_invalid_tx_gossip_metadata_evidence(epoch, stale_count, spec)
+    };
     if !inline_paths.is_empty() {
-        return record_topostake_tx_gossip_metadata_evidence(
+        outcomes.extend(record_topostake_tx_gossip_metadata_evidence(
             epoch,
             proposer_index,
             inline_paths,
             spec,
-        );
+        ));
     }
-    vec![]
+    outcomes
 }
 
 fn topostake_path_evidence_from_inline_record<E: EthSpec>(
@@ -301,6 +328,7 @@ fn topostake_path_evidence_from_inline_record<E: EthSpec>(
         tx_hash: hash256_hex(record.tx_hash),
         path,
         fee_budget_wei: record.priority_fee_wei,
+        irrecoverable_cost_wei: record.irrecoverable_cost_wei,
     })
 }
 
@@ -311,6 +339,12 @@ fn verify_topostake_inline_block_aggregate<E: EthSpec>(
 ) -> bool {
     if records.is_empty() {
         return true;
+    }
+    let evidence_work_units = records.iter().fold(0u64, |work, record| {
+        work.saturating_add(record.relay_path.len() as u64)
+    });
+    if evidence_work_units > spec.topostake_config.evidence_work_limit {
+        return false;
     }
     let mut aggregate_signature = None;
     let mut signature_records = Vec::new();
@@ -631,6 +665,8 @@ struct TopoStakeTxEvidence {
     priority_fee_wei: Option<String>,
     #[serde(default)]
     base_fee_wei: Option<String>,
+    #[serde(default)]
+    irrecoverable_cost_wei: Option<String>,
     #[serde(default)]
     fee_recipient: Option<String>,
     #[serde(default)]
@@ -1054,6 +1090,10 @@ fn block_evidence_root(
         write_evidence_string(&mut input, tx.base_fee_wei.as_deref().unwrap_or(""));
         write_evidence_string(
             &mut input,
+            tx.irrecoverable_cost_wei.as_deref().unwrap_or(""),
+        );
+        write_evidence_string(
+            &mut input,
             &normalize_topostake_evidence_address(tx.fee_recipient.as_deref().unwrap_or("")),
         );
         write_evidence_string(
@@ -1383,6 +1423,7 @@ mod topostake_tx_gossip_tests {
             effective_gas_tip_wei: Some("3".to_string()),
             priority_fee_wei: Some("63000".to_string()),
             base_fee_wei: Some("1".to_string()),
+            irrecoverable_cost_wei: Some("21000".to_string()),
             fee_recipient: Some("0x000000000000000000000000000000000000c0de".to_string()),
             escrow_recipient: Some("0x0000000000000000000000000000000000705000".to_string()),
             metadata,
@@ -1409,6 +1450,7 @@ mod topostake_tx_gossip_tests {
             tx_hash: Hash256::from_slice(&tx_hash),
             epoch,
             priority_fee_wei: 42_000,
+            irrecoverable_cost_wei: 21_000,
             relay_path: ssz_types::VariableList::new(relay_path).expect("path length should fit"),
             aggregate_signature: ssz_types::FixedVector::new(aggregate_signature.to_vec())
                 .expect("signature length should fit"),
@@ -1470,6 +1512,14 @@ mod topostake_tx_gossip_tests {
             &[record.clone()],
             &registry,
             &spec
+        ));
+
+        let mut work_limited_spec = spec.clone();
+        work_limited_spec.topostake_config.evidence_work_limit = 1;
+        assert!(!verify_topostake_inline_block_aggregate(
+            &[record.clone()],
+            &registry,
+            &work_limited_spec
         ));
 
         let origin_only_tx_hash = [0x52; 32];

@@ -31,9 +31,11 @@ import (
 )
 
 const (
-	Domain          = "TOPOSTAKE_TX_PATH_V1"
-	DefaultChainID  = uint64(7_032_030)
-	DefaultMaxBytes = 64 * 1024
+	Domain                = "TOPOSTAKE_TX_PATH_V1"
+	DefaultChainID        = uint64(7_032_030)
+	DefaultMaxBytes       = 64 * 1024
+	DefaultSecondsPerSlot = uint64(12)
+	DefaultSlotsPerEpoch  = uint64(32)
 
 	serviceLookupTimeout = 75 * time.Millisecond
 )
@@ -98,6 +100,9 @@ type Store struct {
 	localAddress          string
 	chainID               uint64
 	epoch                 atomic.Uint64
+	dynamicEpoch          bool
+	secondsPerSlot        uint64
+	slotsPerEpoch         uint64
 	maxBytes              int
 	secret                *blst.SecretKey
 	publicKey             []byte
@@ -135,15 +140,16 @@ type BlockEvidence struct {
 }
 
 type BlockTransactionEvidence struct {
-	Index              int             `json:"index"`
-	TxHash             string          `json:"tx_hash"`
-	GasUsed            uint64          `json:"gas_used,omitempty"`
-	EffectiveGasTipWei string          `json:"effective_gas_tip_wei,omitempty"`
-	PriorityFeeWei     string          `json:"priority_fee_wei,omitempty"`
-	BaseFeeWei         string          `json:"base_fee_wei,omitempty"`
-	FeeRecipient       string          `json:"fee_recipient,omitempty"`
-	EscrowRecipient    string          `json:"escrow_recipient,omitempty"`
-	Metadata           json.RawMessage `json:"metadata"`
+	Index                int             `json:"index"`
+	TxHash               string          `json:"tx_hash"`
+	GasUsed              uint64          `json:"gas_used,omitempty"`
+	EffectiveGasTipWei   string          `json:"effective_gas_tip_wei,omitempty"`
+	PriorityFeeWei       string          `json:"priority_fee_wei,omitempty"`
+	BaseFeeWei           string          `json:"base_fee_wei,omitempty"`
+	IrrecoverableCostWei string          `json:"irrecoverable_cost_wei,omitempty"`
+	FeeRecipient         string          `json:"fee_recipient,omitempty"`
+	EscrowRecipient      string          `json:"escrow_recipient,omitempty"`
+	Metadata             json.RawMessage `json:"metadata"`
 }
 
 type SettlementPayload struct {
@@ -238,6 +244,9 @@ func DefaultStore() *Store {
 func NewStoreFromEnv() *Store {
 	store := &Store{
 		chainID:               getenvUint64("TOPOSTAKE_CHAIN_ID", DefaultChainID),
+		dynamicEpoch:          getenvBool("TOPOSTAKE_DYNAMIC_RELAY_EPOCH", false),
+		secondsPerSlot:        getenvUint64("TOPOSTAKE_SECONDS_PER_SLOT", DefaultSecondsPerSlot),
+		slotsPerEpoch:         getenvUint64("TOPOSTAKE_SLOTS_PER_EPOCH", DefaultSlotsPerEpoch),
 		maxBytes:              int(getenvUint64("TOPOSTAKE_TX_METADATA_MAX_BYTES", DefaultMaxBytes)),
 		metadata:              make(map[common.Hash]TxMetadata),
 		relayPubkeys:          make(map[uint64][]byte),
@@ -284,6 +293,33 @@ func NewStoreFromEnv() *Store {
 
 func (s *Store) Enabled() bool {
 	return s != nil && s.enabled
+}
+
+// UpdateRelayEpochFromBlockTime updates the epoch used for newly created path
+// certificates from the canonical execution head. Existing metadata remains
+// bound to the epoch in which it was signed and can therefore become stale at
+// an epoch boundary without being silently re-signed.
+func (s *Store) UpdateRelayEpochFromBlockTime(genesisTime, blockTime uint64) uint64 {
+	if s == nil || !s.dynamicEpoch || blockTime < genesisTime {
+		if s == nil {
+			return 0
+		}
+		return s.epoch.Load()
+	}
+	if s.secondsPerSlot == 0 || s.slotsPerEpoch == 0 || s.secondsPerSlot > ^uint64(0)/s.slotsPerEpoch {
+		return s.epoch.Load()
+	}
+	epochDuration := s.secondsPerSlot * s.slotsPerEpoch
+	epoch := (blockTime - genesisTime) / epochDuration
+	s.epoch.Store(epoch)
+	return epoch
+}
+
+func (s *Store) RelayEpoch() uint64 {
+	if s == nil {
+		return 0
+	}
+	return s.epoch.Load()
 }
 
 func (s *Store) EnsureLocalTransactions(txs types.Transactions) {
@@ -592,6 +628,10 @@ func (s *Store) attachFeeEvidence(evidence *BlockTransactionEvidence, tx *types.
 	evidence.PriorityFeeWei = priorityFee.String()
 	if baseFee != nil {
 		evidence.BaseFeeWei = baseFee.String()
+		evidence.IrrecoverableCostWei = new(big.Int).Mul(
+			new(big.Int).SetUint64(receipt.GasUsed),
+			baseFee,
+		).String()
 	}
 	if feeRecipient != (common.Address{}) {
 		evidence.FeeRecipient = feeRecipient.Hex()
@@ -1497,6 +1537,7 @@ func blockEvidenceRoot(blockHash common.Hash, blockNumber uint64, records []bloc
 		writeEvidenceString(digest, tx.EffectiveGasTipWei)
 		writeEvidenceString(digest, tx.PriorityFeeWei)
 		writeEvidenceString(digest, tx.BaseFeeWei)
+		writeEvidenceString(digest, tx.IrrecoverableCostWei)
 		writeEvidenceString(digest, normalizeRelayAddress(tx.FeeRecipient))
 		writeEvidenceString(digest, normalizeRelayAddress(tx.EscrowRecipient))
 	}
@@ -1790,6 +1831,21 @@ func getenvUint64(key string, fallback uint64) uint64 {
 		return fallback
 	}
 	return value
+}
+
+func getenvBool(key string, fallback bool) bool {
+	raw := strings.ToLower(strings.TrimSpace(os.Getenv(key)))
+	if raw == "" {
+		return fallback
+	}
+	switch raw {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return fallback
+	}
 }
 
 func getenvOptionalUint64(key string) (uint64, bool) {

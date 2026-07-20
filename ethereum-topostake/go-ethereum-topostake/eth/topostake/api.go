@@ -20,6 +20,16 @@ func NewAPI(store *Store) *API {
 	return &API{store: store}
 }
 
+func (api *API) Status(ctx context.Context) map[string]any {
+	return map[string]any{
+		"enabled":             api.store.Enabled(),
+		"relay_epoch":         api.store.RelayEpoch(),
+		"dynamic_relay_epoch": api.store.dynamicEpoch,
+		"seconds_per_slot":    api.store.secondsPerSlot,
+		"slots_per_epoch":     api.store.slotsPerEpoch,
+	}
+}
+
 func (api *API) GetBlockEvidence(ctx context.Context, hash common.Hash) (*BlockEvidence, error) {
 	evidence, ok := api.store.BlockEvidence(hash)
 	if !ok {

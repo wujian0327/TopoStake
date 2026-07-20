@@ -49,16 +49,31 @@ pub struct EpochMetrics {
     pub valid_path_count: u64,
     pub invalid_path_count: u64,
     pub conflicting_receipt_count: u64,
+    pub active_score_epoch: i64,
+    pub latest_score_epoch: i64,
     pub total_proposer_reward: f64,
     pub total_relay_reward: f64,
     pub burned_relay_fee: f64,
+    /// Included transactions whose originator is outside the labelled
+    /// adversarial coalition. These transactions model user-funded organic
+    /// traffic rather than self-funded score purchases.
+    pub organic_included_tx: u64,
+    pub organic_valid_path_count: u64,
+    pub organic_relay_reward: f64,
+    pub adversary_organic_relay_reward: f64,
+    pub adversary_organic_relay_reward_share: f64,
+    pub organic_raw_contribution: f64,
+    pub adversary_organic_raw_contribution: f64,
+    pub adversary_organic_raw_contribution_share: f64,
     pub stake_gini: f64,
     pub stake_hhi: f64,
     pub proposer_weight_gini: f64,
     pub proposer_weight_hhi: f64,
     pub adversary_real_stake_share: f64,
     pub adversary_score_share: f64,
+    pub adversary_damped_score_mass: f64,
     pub adversary_proposer_weight_share: f64,
+    pub score_dependent_proposer_weight_bound: f64,
     pub theoretical_proposer_weight_bound: f64,
     pub observed_adversary_proposer_share: f64,
     pub bound_violation: bool,
@@ -69,6 +84,7 @@ pub struct NodeEpochMetrics {
     pub epoch: u64,
     pub validator_id: String,
     pub relay_profile: String,
+    pub focal_relayer: bool,
     pub adversarial: bool,
     pub economic_stake: f64,
     pub balance: f64,
@@ -84,6 +100,7 @@ pub struct NodeEpochMetrics {
     pub proposer_reward: f64,
     pub fee_spent: f64,
     pub net_income: f64,
+    pub relay_forward_attempts: u64,
     pub degree: usize,
     pub betweenness: f64,
 }
@@ -138,16 +155,18 @@ impl SlotMetrics {
 impl EpochMetrics {
     pub fn to_csv_header() -> String {
         "epoch,generated_tx,included_tx,throughput,p50_inclusion_latency_s,p95_inclusion_latency_s,p99_inclusion_latency_s,\
-         block_success_ratio,avg_path_length,p95_path_length,valid_path_count,invalid_path_count,conflicting_receipt_count,\
-         total_proposer_reward,total_relay_reward,burned_relay_fee,stake_gini,stake_hhi,proposer_weight_gini,proposer_weight_hhi,\
-         adversary_real_stake_share,adversary_score_share,adversary_proposer_weight_share,theoretical_proposer_weight_bound,\
+         block_success_ratio,avg_path_length,p95_path_length,valid_path_count,invalid_path_count,conflicting_receipt_count,active_score_epoch,latest_score_epoch,\
+         total_proposer_reward,total_relay_reward,burned_relay_fee,organic_included_tx,organic_valid_path_count,organic_relay_reward,\
+         adversary_organic_relay_reward,adversary_organic_relay_reward_share,organic_raw_contribution,adversary_organic_raw_contribution,adversary_organic_raw_contribution_share,\
+         stake_gini,stake_hhi,proposer_weight_gini,proposer_weight_hhi,\
+         adversary_real_stake_share,adversary_score_share,adversary_damped_score_mass,adversary_proposer_weight_share,score_dependent_proposer_weight_bound,theoretical_proposer_weight_bound,\
          observed_adversary_proposer_share,bound_violation"
             .to_string()
     }
 
     pub fn to_csv_row(&self) -> String {
         format!(
-            "{},{},{},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{},{},{},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{}",
+            "{},{},{},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{},{},{},{},{},{:.6},{:.6},{:.6},{},{},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{}",
             self.epoch,
             self.generated_tx,
             self.included_tx,
@@ -161,16 +180,28 @@ impl EpochMetrics {
             self.valid_path_count,
             self.invalid_path_count,
             self.conflicting_receipt_count,
+            self.active_score_epoch,
+            self.latest_score_epoch,
             self.total_proposer_reward,
             self.total_relay_reward,
             self.burned_relay_fee,
+            self.organic_included_tx,
+            self.organic_valid_path_count,
+            self.organic_relay_reward,
+            self.adversary_organic_relay_reward,
+            self.adversary_organic_relay_reward_share,
+            self.organic_raw_contribution,
+            self.adversary_organic_raw_contribution,
+            self.adversary_organic_raw_contribution_share,
             self.stake_gini,
             self.stake_hhi,
             self.proposer_weight_gini,
             self.proposer_weight_hhi,
             self.adversary_real_stake_share,
             self.adversary_score_share,
+            self.adversary_damped_score_mass,
             self.adversary_proposer_weight_share,
+            self.score_dependent_proposer_weight_bound,
             self.theoretical_proposer_weight_bound,
             self.observed_adversary_proposer_share,
             self.bound_violation,
@@ -180,18 +211,19 @@ impl EpochMetrics {
 
 impl NodeEpochMetrics {
     pub fn to_csv_header() -> String {
-        "epoch,validator_id,relay_profile,adversarial,economic_stake,balance,raw_contribution,saturated_contribution,ema_score,normalized_score,\
+        "epoch,validator_id,relay_profile,focal_relayer,adversarial,economic_stake,balance,raw_contribution,saturated_contribution,ema_score,normalized_score,\
          bonus,unnormalized_proposer_weight,normalized_proposer_weight,proposer_count,relay_reward,proposer_reward,fee_spent,\
-         net_income,degree,betweenness"
+         net_income,relay_forward_attempts,degree,betweenness"
             .to_string()
     }
 
     pub fn to_csv_row(&self) -> String {
         format!(
-            "{},{},{},{},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{},{:.6},{:.6},{:.6},{:.6},{},{}",
+            "{},{},{},{},{},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{},{:.6},{:.6},{:.6},{:.6},{},{},{}",
             self.epoch,
             self.validator_id,
             self.relay_profile,
+            self.focal_relayer,
             self.adversarial,
             self.economic_stake,
             self.balance,
@@ -207,6 +239,7 @@ impl NodeEpochMetrics {
             self.proposer_reward,
             self.fee_spent,
             self.net_income,
+            self.relay_forward_attempts,
             self.degree,
             self.betweenness,
         )

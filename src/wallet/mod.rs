@@ -238,8 +238,8 @@ impl Wallet {
         }
         let signature_bytes = decode(&signature)?;
 
-        let signature = Signature::from_bytes(signature_bytes.as_slice()).unwrap();
-        Ok(signature)
+        Signature::from_bytes(signature_bytes.as_slice())
+            .map_err(|_| WalletError::InvalidSignature)
     }
 
     pub fn bls_aggregated_sign(signatures: Vec<Signature>) -> String {
@@ -264,6 +264,14 @@ impl Wallet {
                 return false;
             }
         };
+        Wallet::bls_aggregated_verify_parsed(messages, public_keys, signature)
+    }
+
+    pub fn bls_aggregated_verify_parsed(
+        messages: Vec<Vec<u8>>,
+        public_keys: Vec<BlsPublicKey>,
+        signature: Signature,
+    ) -> bool {
         let messages: Vec<&[u8]> = messages.iter().map(|m| m.as_slice()).collect();
         let public_keys: Vec<&blst::min_sig::PublicKey> = public_keys.iter().collect();
         matches!(

@@ -691,7 +691,12 @@ def choose_origin(index: int, n: int, mode: str, seed: int) -> int:
     return rng.randrange(n)
 
 
-def collect_blocks(cl_api: str, start_slot: int, end_slot: int) -> Dict[str, Any]:
+def collect_blocks(
+    cl_api: str,
+    start_slot: int,
+    end_slot: int,
+    slots_per_epoch: int = 8,
+) -> Dict[str, Any]:
     records = []
     missed_slots = []
     for slot in range(start_slot, end_slot + 1):
@@ -705,13 +710,18 @@ def collect_blocks(cl_api: str, start_slot: int, end_slot: int) -> Dict[str, Any
         inline_records = body.get("topostake_evidence_records") or body.get("topostakeEvidenceRecords") or []
         for record_index, record in enumerate(inline_records):
             path = [int(v) for v in record.get("relay_path", [])]
+            slot = int(message["slot"])
+            evidence_epoch = int(record.get("epoch", 0))
+            inclusion_epoch = slot // slots_per_epoch
             records.append(
                 {
-                    "slot": int(message["slot"]),
+                    "slot": slot,
                     "proposer_index": int(message["proposer_index"]),
                     "record_index": record_index,
                     "tx_hash": record.get("tx_hash"),
-                    "epoch": int(record.get("epoch", 0)),
+                    "epoch": evidence_epoch,
+                    "inclusion_epoch": inclusion_epoch,
+                    "credit_eligible": evidence_epoch == inclusion_epoch,
                     "priority_fee_wei": int(record.get("priority_fee_wei", 0)),
                     "path": path,
                     "path_len": len(path),
@@ -768,6 +778,8 @@ def write_records_csv(path: Path, records: List[Dict[str, Any]]) -> None:
         "record_index",
         "tx_hash",
         "epoch",
+        "inclusion_epoch",
+        "credit_eligible",
         "priority_fee_wei",
         "path_len",
         "path",
@@ -855,6 +867,7 @@ def command_run(args: argparse.Namespace) -> Dict[str, Any]:
         endpoints.cl_apis[0],
         max(0, measurement_before["head_slot"] - args.pre_scan_slots),
         after["head_slot"],
+        args.slots_per_epoch,
     )
     result = {
         "run_id": args.run_id,
@@ -906,7 +919,12 @@ def command_collect(args: argparse.Namespace) -> Dict[str, Any]:
     endpoints = resolve_endpoints(args)
     head = beacon_head(endpoints.cl_apis[0])
     start_slot = args.start_slot if args.start_slot is not None else max(0, head["head_slot"] - args.slots_back)
-    blocks = collect_blocks(endpoints.cl_apis[0], start_slot, head["head_slot"])
+    blocks = collect_blocks(
+        endpoints.cl_apis[0],
+        start_slot,
+        head["head_slot"],
+        args.slots_per_epoch,
+    )
     result = {"beacon": head, "blocks": blocks, "prometheus": collect_prometheus(endpoints.prometheus)}
     save_result(args.output_root / args.run_id, result)
     print(json.dumps({k: v for k, v in result.items() if k != "prometheus"}, indent=2, sort_keys=True))
@@ -945,6 +963,7 @@ def main() -> None:
     collect = sub.add_parser("collect", help="Collect block-inline path records and TopoStake metrics")
     add_common_endpoint_args(collect)
     collect.add_argument("--slots-back", type=int, default=128)
+    collect.add_argument("--slots-per-epoch", type=int, default=8)
     collect.add_argument("--start-slot", type=int)
     collect.add_argument("--run-id", default="manual-collect")
     collect.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT)
@@ -972,6 +991,7 @@ def main() -> None:
     run.add_argument("--receipt-timeout", type=int, default=90)
     run.add_argument("--wait-receipts-after-send", action="store_true")
     run.add_argument("--seconds-per-slot", type=int, default=3)
+    run.add_argument("--slots-per-epoch", type=int, default=8)
     run.add_argument("--warmup-tx-count", type=int, default=0)
     run.add_argument("--warmup-finality-epochs", type=int, default=0)
     run.add_argument("--wait-finality", action="store_true")

@@ -83,6 +83,7 @@ cmd_package_local() {
     tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/topostake-geth-image.XXXXXX")
     cp "$binary_path" "$tmp_dir/geth"
     printf 'FROM %s\n' "$GETH_RUNTIME_IMAGE" > "$tmp_dir/Dockerfile"
+    printf 'LABEL org.opencontainers.image.revision="%s"\n' "$(commit_hash)" >> "$tmp_dir/Dockerfile"
     cat >> "$tmp_dir/Dockerfile" <<'EOF'
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
 COPY geth /usr/local/bin/geth

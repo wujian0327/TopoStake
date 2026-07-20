@@ -66,7 +66,7 @@ def main() -> int:
         FIGURES / "churn_latency.pdf",
         "Latency under churn",
         "Unstable fraction",
-        "p95 confirmation latency (s)",
+        "p95 latency (s)",
         churn_latency,
         y_min=0.0,
     )

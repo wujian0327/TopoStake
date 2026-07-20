@@ -94,6 +94,29 @@ fn node_relay_profile(config_profile: RelayProfile, node_index: u32) -> RelayPro
     }
 }
 
+fn select_lazy_relayer_addresses(
+    mut candidates: Vec<(u32, String)>,
+    lazy_fraction: f64,
+    failure_seed: u64,
+) -> HashSet<String> {
+    // HashMap iteration order is process-dependent. Canonicalize the candidate
+    // population before applying the seeded shuffle so paired protocol runs
+    // assign the same validator identities to the lazy strategy.
+    candidates.sort_by(|left, right| {
+        left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1))
+    });
+    let mut addresses: Vec<String> = candidates
+        .into_iter()
+        .map(|(_, address)| address)
+        .collect();
+    let mut relay_rng = StdRng::seed_from_u64(failure_seed ^ 0x5245_4c41_595f_4d49);
+    addresses.shuffle(&mut relay_rng);
+    let lazy_count =
+        ((addresses.len() as f64 * lazy_fraction.clamp(0.0, 1.0)).round() as usize)
+            .min(addresses.len());
+    addresses.into_iter().take(lazy_count).collect()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SimulationConfig {
     pub node_num: u32,
@@ -102,6 +125,14 @@ pub struct SimulationConfig {
     pub unstable_node_num: u32,
     pub unstable_fraction: f64,
     pub offline_probability: f64,
+    /// First epoch in which the explicit outage validator set is unavailable.
+    pub outage_start_epoch: u64,
+    /// Number of unavailable epochs. Zero means the outage is permanent.
+    pub outage_duration_epochs: u64,
+    /// Comma-separated validator indices selected by the experiment runner.
+    pub outage_validator_ids: String,
+    /// Keep election randomness keyed only by epoch and slot during outage runs.
+    pub outage_common_slot_randomness: bool,
     pub trans_num_per_second: u32,
     pub slot_duration: u64,
     pub slot_per_epoch: u64,
@@ -133,6 +164,9 @@ pub struct SimulationConfig {
     pub topostake_scale_latency_reduction: f64,
     pub topostake_latency_reduction_s: f64,
     pub relay_profile: RelayProfile,
+    pub relay_background_profile: RelayProfile,
+    pub focal_relayer_count: u32,
+    pub lazy_fraction: f64,
     pub adversary_stake_fraction: f64,
     pub adversary_placement: AdversaryPlacement,
     pub attack_mode: AttackMode,
@@ -182,6 +216,7 @@ impl SimulationConfig {
         self.unstable_fraction = self.unstable_fraction.clamp(0.0, 1.0);
         self.offline_probability = self.offline_probability.clamp(0.0, 1.0);
         self.adversary_stake_fraction = self.adversary_stake_fraction.clamp(0.0, 1.0);
+        self.lazy_fraction = self.lazy_fraction.clamp(0.0, 1.0);
         if self.attack_tx_rate_multiplier < 0.0 || !self.attack_tx_rate_multiplier.is_finite() {
             self.attack_tx_rate_multiplier = 0.0;
         }
@@ -260,6 +295,11 @@ pub async fn start_network(config: SimulationConfig) {
     let topostake_config = config.topostake_config.clone();
     let max_epochs = config.max_epochs;
     let relay_profile = config.relay_profile;
+    let initial_relay_profile = if config.focal_relayer_count > 0 {
+        config.relay_background_profile
+    } else {
+        relay_profile
+    };
     let generated_tx_counter = Arc::new(AtomicU64::new(0));
     let fee_spent = Arc::new(Mutex::new(HashMap::new()));
     info!("Consensus Type is {}", consensus);
@@ -326,7 +366,7 @@ pub async fn start_network(config: SimulationConfig) {
                 node.set_failure_seed(config.failure_seed);
                 node.set_transaction_fee(transaction_fee);
                 node.set_hash_power(hash_power);
-                node.set_relay_profile(node_relay_profile(relay_profile, i));
+                node.set_relay_profile(node_relay_profile(initial_relay_profile, i));
                 node.simple_print();
                 (node.get_address(), node)
             } else if i < node_num + sybil_node_num {
@@ -345,7 +385,7 @@ pub async fn start_network(config: SimulationConfig) {
                 node.set_failure_seed(config.failure_seed);
                 node.set_transaction_fee(transaction_fee);
                 node.set_hash_power(hash_power);
-                node.set_relay_profile(node_relay_profile(relay_profile, i));
+                node.set_relay_profile(node_relay_profile(initial_relay_profile, i));
                 node.simple_print();
                 (node.get_address(), node)
             } else {
@@ -365,7 +405,7 @@ pub async fn start_network(config: SimulationConfig) {
                 node.set_offline_probability(offline_probability);
                 node.set_transaction_fee(transaction_fee);
                 node.set_hash_power(hash_power);
-                node.set_relay_profile(node_relay_profile(relay_profile, i));
+                node.set_relay_profile(node_relay_profile(initial_relay_profile, i));
                 node.simple_print();
                 (node.get_address(), node)
             }
@@ -394,6 +434,20 @@ pub async fn start_network(config: SimulationConfig) {
         .iter()
         .map(|(address, node)| (address.clone(), node.relay_profile.to_string()))
         .collect();
+    world.node_relay_forward_counters = node_map
+        .iter()
+        .map(|(address, node)| (address.clone(), node.relay_forward_attempts.clone()))
+        .collect();
+    world.node_availability = node_map
+        .iter()
+        .map(|(address, node)| (address.clone(), node.scheduled_online.clone()))
+        .collect();
+    world.configure_scheduled_outage(
+        config.outage_start_epoch,
+        config.outage_duration_epochs,
+        &config.outage_validator_ids,
+        config.outage_common_slot_randomness,
+    );
     for node in node_map.values() {
         for sybil in &node.sybil_nodes {
             world
@@ -420,6 +474,9 @@ pub async fn start_network(config: SimulationConfig) {
         TopologyType::ER => graph::random_er_graph(nodes_address.clone(), 0.1, graph_seed),
         TopologyType::BA => graph::random_ba_graph(nodes_address.clone(), graph_seed),
         TopologyType::WS => graph::random_ws_graph(nodes_address.clone(), 4, 0.1, graph_seed),
+        TopologyType::EthEmpirical => {
+            graph::random_eth_empirical_graph(nodes_address.clone(), graph_seed)
+        }
     };
     graph::write_graph_json(&graph, output_dir.join("graph.json"));
     info!("Generate network graph[{}]", topology);
@@ -470,7 +527,45 @@ pub async fn start_network(config: SimulationConfig) {
 
     // 找到最大度数
     let max_degree = node_degrees.values().cloned().max().unwrap_or(1);
-    if relay_profile == RelayProfile::Mixed {
+    if config.focal_relayer_count > 0 {
+        let mut focal_candidates: Vec<(u32, String)> = node_map
+            .iter()
+            .filter(|(_, node)| node.index < node_num)
+            .map(|(address, node)| (node.index, address.clone()))
+            .collect();
+        focal_candidates.sort_by_key(|(index, _)| *index);
+        world.focal_relayer_nodes = focal_candidates
+            .into_iter()
+            .take(config.focal_relayer_count as usize)
+            .map(|(_, address)| address)
+            .collect();
+        for address in &world.focal_relayer_nodes {
+            if let Some(node) = node_map.get_mut(address) {
+                node.set_relay_profile(relay_profile);
+            }
+        }
+    } else if config.lazy_fraction > 0.0 {
+        let relay_candidates: Vec<(u32, String)> = node_map
+            .iter()
+            .filter(|(_, node)| node.index < node_num)
+            .map(|(address, node)| (node.index, address.clone()))
+            .collect();
+        let lazy_addresses = select_lazy_relayer_addresses(
+            relay_candidates,
+            config.lazy_fraction,
+            config.failure_seed,
+        );
+        for (address, node) in node_map
+            .iter_mut()
+            .filter(|(_, node)| node.index < node_num)
+        {
+            node.set_relay_profile(if lazy_addresses.contains(address) {
+                RelayProfile::Lazy
+            } else {
+                relay_profile
+            });
+        }
+    } else if relay_profile == RelayProfile::Mixed {
         let mut addresses_by_degree: Vec<String> = node_degrees.keys().cloned().collect();
         addresses_by_degree.sort_by(|a, b| {
             node_degrees
@@ -489,16 +584,16 @@ pub async fn start_network(config: SimulationConfig) {
                 node.set_relay_profile(profile);
             }
         }
-        world.node_relay_profiles = node_map
-            .iter()
-            .map(|(address, node)| (address.clone(), node.relay_profile.to_string()))
-            .collect();
-        for node in node_map.values() {
-            for sybil in &node.sybil_nodes {
-                world
-                    .node_relay_profiles
-                    .insert(sybil.get_address(), sybil.relay_profile.to_string());
-            }
+    }
+    world.node_relay_profiles = node_map
+        .iter()
+        .map(|(address, node)| (address.clone(), node.relay_profile.to_string()))
+        .collect();
+    for node in node_map.values() {
+        for sybil in &node.sybil_nodes {
+            world
+                .node_relay_profiles
+                .insert(sybil.get_address(), sybil.relay_profile.to_string());
         }
     }
     let node_betweenness = approximate_betweenness(&graph);
@@ -545,15 +640,8 @@ pub async fn start_network(config: SimulationConfig) {
         let degree = *node_degrees.get(address).unwrap_or(&1);
         // 基础延迟 50ms，度数越小，额外延迟越大 (最大额外 150ms)
         let topology_delay_ms = 50 + (150.0 * (1.0 - (degree as f64 / max_degree as f64))) as u64;
-        let mut logical_delay_ms =
+        let logical_delay_ms =
             (topology_delay_ms as f64 * config.network_delay_multiplier).round() as u64;
-        if relay_profile != RelayProfile::Normal {
-            logical_delay_ms = match node.relay_profile {
-                RelayProfile::Active => 5,
-                RelayProfile::Normal | RelayProfile::Mixed => 80,
-                RelayProfile::Lazy => 200,
-            };
-        }
         let mut delay = scale_network_delay_ms(logical_delay_ms);
         if adversarial_nodes.contains(address) && config.attack_mode == AttackMode::MaxScore {
             delay = 0;
@@ -804,7 +892,9 @@ impl TransactionGenerator {
         }
         self.generated_tx_counter.fetch_add(1, Ordering::Relaxed);
         if let Ok(mut ledger) = self.fee_spent.lock() {
-            *ledger.entry(from).or_insert(0.0) += self.transaction_fee;
+            // `with_fee` models an equal-size distributable fee and irrecoverable
+            // protocol cost. Both are paid by the transaction originator.
+            *ledger.entry(from).or_insert(0.0) += 2.0 * self.transaction_fee;
         }
     }
 }
@@ -994,6 +1084,10 @@ pub fn select_adversarial_nodes(
     let mut candidates: Vec<String> = stake_map.keys().cloned().collect();
     match placement {
         AdversaryPlacement::Random => {
+            // A seeded shuffle is reproducible only when its input order is
+            // reproducible. HashMap iteration is process-randomized, so sort
+            // first to keep paired experiment coalitions identical.
+            candidates.sort();
             let mut rng = StdRng::seed_from_u64(attack_seed);
             candidates.shuffle(&mut rng);
         }
@@ -1052,7 +1146,7 @@ pub fn split_padding_stake(total_stake: f64, padding_identities: u32) -> Vec<f64
 }
 
 pub fn flooding_fee_spent(generated_tx: u64, transaction_fee: f64) -> f64 {
-    generated_tx as f64 * transaction_fee
+    generated_tx as f64 * 2.0 * transaction_fee
 }
 
 fn approximate_betweenness(graph: &Graph<String, ()>) -> HashMap<String, f64> {
@@ -1174,7 +1268,12 @@ mod tests {
     fn deterministic_setup_covers_all_topologies() {
         use crate::network::graph::TopologyType;
 
-        for topology in [TopologyType::ER, TopologyType::BA, TopologyType::WS] {
+        for topology in [
+            TopologyType::ER,
+            TopologyType::BA,
+            TopologyType::WS,
+            TopologyType::EthEmpirical,
+        ] {
             let (_, edges1) = setup_network_state(20, 0.6, 888, 999, topology);
             let (_, edges2) = setup_network_state(20, 0.6, 888, 999, topology);
             assert_eq!(
@@ -1195,6 +1294,27 @@ mod tests {
 
         assert_eq!(summary(123), summary(123));
         assert_ne!(summary(123), summary(124));
+    }
+
+    #[test]
+    fn lazy_relayer_assignment_is_independent_of_hashmap_iteration_order() {
+        let candidates = vec![
+            (0, "validator-0".to_string()),
+            (1, "validator-1".to_string()),
+            (2, "validator-2".to_string()),
+            (3, "validator-3".to_string()),
+            (4, "validator-4".to_string()),
+            (5, "validator-5".to_string()),
+        ];
+        let mut reversed = candidates.clone();
+        reversed.reverse();
+
+        let selected = super::select_lazy_relayer_addresses(candidates, 0.5, 12345);
+        let selected_reversed =
+            super::select_lazy_relayer_addresses(reversed, 0.5, 12345);
+
+        assert_eq!(selected, selected_reversed);
+        assert_eq!(selected.len(), 3);
     }
 
     #[test]
@@ -1225,8 +1345,40 @@ mod tests {
     }
 
     #[test]
+    fn random_adversary_selection_is_independent_of_hashmap_iteration_order() {
+        let entries: Vec<(String, f64)> = (0..20)
+            .map(|i| (format!("validator-{i:02}"), 1.0))
+            .collect();
+        let forward: std::collections::HashMap<_, _> = entries.iter().cloned().collect();
+        let reverse: std::collections::HashMap<_, _> =
+            entries.iter().rev().cloned().collect();
+        let degrees = std::collections::HashMap::new();
+        let betweenness = std::collections::HashMap::new();
+
+        let selected_forward = super::select_adversarial_nodes(
+            &forward,
+            &degrees,
+            &betweenness,
+            0.25,
+            super::AdversaryPlacement::Random,
+            12345,
+        );
+        let selected_reverse = super::select_adversarial_nodes(
+            &reverse,
+            &degrees,
+            &betweenness,
+            0.25,
+            super::AdversaryPlacement::Random,
+            12345,
+        );
+
+        assert_eq!(selected_forward, selected_reverse);
+        assert_eq!(selected_forward.len(), 5);
+    }
+
+    #[test]
     fn flooding_accounting_includes_fee_spending() {
-        assert!((super::flooding_fee_spent(25, 0.00001) - 0.00025).abs() < 1e-12);
+        assert!((super::flooding_fee_spent(25, 0.00001) - 0.0005).abs() < 1e-12);
     }
 
     #[test]
@@ -1309,6 +1461,9 @@ mod tests {
             }
             crate::network::graph::TopologyType::WS => {
                 graph::random_ws_graph(nodes_address.clone(), 4, 0.1, graph_seed)
+            }
+            crate::network::graph::TopologyType::EthEmpirical => {
+                graph::random_eth_empirical_graph(nodes_address.clone(), graph_seed)
             }
         };
 

@@ -1,0 +1,19 @@
+{
+  "suite": "frozen_v1_devnet_main",
+  "protocol_version": "frozen-v1",
+  "nodes": [8],
+  "loads_tx_per_slot": [8, 32, 64],
+  "topologies": ["ba"],
+  "variants": ["baseline", "pathobs", "fee_only", "bonus_only", "topostake"],
+  "seeds": [0, 1, 2, 3, 4],
+  "validators_per_node": 1,
+  "seconds_per_slot": 3,
+  "slots_per_epoch": 8,
+  "warmup_epochs": 5,
+  "measurement_epochs": 5,
+  "resource_sample_interval_seconds": 2.0,
+  "receipt_timeout_seconds": 1200,
+  "finality_timeout_seconds": 1800,
+  "randomize_order": true,
+  "order_seed": 20260712
+}

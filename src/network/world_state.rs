@@ -22,7 +22,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::io::Write;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc::{Receiver, Sender};
@@ -45,6 +45,8 @@ pub struct WorldState {
     pub node_wallets: HashMap<String, Wallet>,
     pub node_mempools: HashMap<String, Arc<RwLock<HashMap<String, Arc<TransactionPaths>>>>>,
     pub node_relay_profiles: HashMap<String, String>,
+    pub node_relay_forward_counters: HashMap<String, Arc<AtomicU64>>,
+    pub node_availability: HashMap<String, Arc<AtomicBool>>,
     pub blockchain: Arc<RwLock<Blockchain>>,
     pub consensus: Box<dyn Consensus>,
     consensus_name: String,
@@ -54,20 +56,31 @@ pub struct WorldState {
     epoch_metrics_file: Option<std::fs::File>,
     node_epoch_metrics_filename: PathBuf,
     node_epoch_metrics_file: Option<std::fs::File>,
+    inclusion_samples_filename: PathBuf,
+    inclusion_samples_file: Option<std::fs::File>,
     run_summary_filename: PathBuf,
+    proposer_duties_filename: PathBuf,
+    proposer_duties_file: Option<std::fs::File>,
     run_id: String,
     slot_duration: Duration,
     real_slot_duration: Duration,
     slot_per_epoch: u64,
     election_seed: u64,
+    outage_start_epoch: u64,
+    outage_duration_epochs: u64,
+    outage_validator_indices: HashSet<u32>,
+    outage_validator_addresses: HashSet<String>,
+    outage_common_slot_randomness: bool,
     pub logical_slot_counter: Arc<AtomicU64>,
     generated_tx_counter: Arc<AtomicU64>,
     last_generated_tx_counter: u64,
     fee_spent: Arc<std::sync::Mutex<HashMap<String, f64>>>,
     pub nodes_index: HashMap<String, u32>,
     pub adversarial_nodes: HashSet<String>,
+    pub focal_relayer_nodes: HashSet<String>,
     pub node_degrees: HashMap<String, usize>,
     pub node_betweenness: HashMap<String, f64>,
+    last_relay_forward_attempts: HashMap<String, u64>,
     epoch_proposer_counts: HashMap<String, u64>,
     total_included_tx: u64,
     total_reward_income: HashMap<String, f64>,
@@ -99,6 +112,34 @@ struct EpochRewardReport {
     total_proposer_reward: f64,
     total_relay_reward: f64,
     burned_relay_fee: f64,
+}
+
+#[derive(Default, Debug, Clone)]
+struct OrganicCaptureReport {
+    included_tx: u64,
+    valid_path_count: u64,
+    relay_reward: f64,
+    adversary_relay_reward: f64,
+    raw_contribution: f64,
+    adversary_raw_contribution: f64,
+}
+
+impl OrganicCaptureReport {
+    fn adversary_relay_reward_share(&self) -> f64 {
+        if self.relay_reward > 0.0 {
+            self.adversary_relay_reward / self.relay_reward
+        } else {
+            0.0
+        }
+    }
+
+    fn adversary_raw_contribution_share(&self) -> f64 {
+        if self.raw_contribution > 0.0 {
+            self.adversary_raw_contribution / self.raw_contribution
+        } else {
+            0.0
+        }
+    }
 }
 
 impl EpochRewardReport {
@@ -202,7 +243,7 @@ impl WorldState {
                 node_num,
                 trans_num,
                 topology,
-                topostake_config.initial_depth,
+                topostake_config.target_depth,
                 topostake_config.beta,
                 topostake_config.eta,
                 topostake_config.bonus_cap
@@ -215,11 +256,15 @@ impl WorldState {
         let metrics_path = output_dir.join(metrics_filename);
         let epoch_metrics_filename = output_dir.join("epoch_metrics.csv");
         let node_epoch_metrics_filename = output_dir.join("node_epoch_metrics.csv");
+        let inclusion_samples_filename = output_dir.join("inclusion_samples.csv");
         let run_summary_filename = output_dir.join("run_summary.json");
+        let proposer_duties_filename = output_dir.join("proposer_duties.csv");
         let _ = std::fs::remove_file(&metrics_path);
         let _ = std::fs::remove_file(&epoch_metrics_filename);
         let _ = std::fs::remove_file(&node_epoch_metrics_filename);
+        let _ = std::fs::remove_file(&inclusion_samples_filename);
         let _ = std::fs::remove_file(&run_summary_filename);
+        let _ = std::fs::remove_file(&proposer_duties_filename);
         let metrics_slots_file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -234,6 +279,16 @@ impl WorldState {
             .create(true)
             .append(true)
             .open(&node_epoch_metrics_filename)
+            .ok();
+        let inclusion_samples_file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&inclusion_samples_filename)
+            .ok();
+        let proposer_duties_file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&proposer_duties_filename)
             .ok();
 
         (
@@ -252,6 +307,8 @@ impl WorldState {
                 node_wallets: HashMap::new(),
                 node_mempools: HashMap::new(),
                 node_relay_profiles: HashMap::new(),
+                node_relay_forward_counters: HashMap::new(),
+                node_availability: HashMap::new(),
                 blockchain: Arc::new(RwLock::new(blockchain)),
                 consensus,
                 consensus_name,
@@ -261,20 +318,31 @@ impl WorldState {
                 epoch_metrics_file,
                 node_epoch_metrics_filename,
                 node_epoch_metrics_file,
+                inclusion_samples_filename,
+                inclusion_samples_file,
                 run_summary_filename,
+                proposer_duties_filename,
+                proposer_duties_file,
                 run_id,
                 slot_duration,
                 real_slot_duration,
                 slot_per_epoch,
                 election_seed,
+                outage_start_epoch: u64::MAX,
+                outage_duration_epochs: 0,
+                outage_validator_indices: HashSet::new(),
+                outage_validator_addresses: HashSet::new(),
+                outage_common_slot_randomness: false,
                 logical_slot_counter: Arc::new(AtomicU64::new(0)),
                 generated_tx_counter,
                 last_generated_tx_counter: 0,
                 fee_spent,
                 nodes_index: HashMap::new(),
                 adversarial_nodes: HashSet::new(),
+                focal_relayer_nodes: HashSet::new(),
                 node_degrees: HashMap::new(),
                 node_betweenness: HashMap::new(),
+                last_relay_forward_attempts: HashMap::new(),
                 epoch_proposer_counts: HashMap::new(),
                 total_included_tx: 0,
                 total_reward_income: HashMap::new(),
@@ -292,6 +360,128 @@ impl WorldState {
         )
     }
 
+    /// Configure an evaluation-only sustained outage after node indices and
+    /// shared availability flags have been registered by the network builder.
+    pub fn configure_scheduled_outage(
+        &mut self,
+        start_epoch: u64,
+        duration_epochs: u64,
+        validator_ids: &str,
+        common_slot_randomness: bool,
+    ) {
+        self.outage_start_epoch = start_epoch;
+        self.outage_duration_epochs = duration_epochs;
+        self.outage_common_slot_randomness = common_slot_randomness;
+        self.outage_validator_indices = validator_ids
+            .split(',')
+            .filter_map(|value| {
+                let trimmed = value.trim();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    match trimmed.parse::<u32>() {
+                        Ok(index) => Some(index),
+                        Err(_) => {
+                            warn!("Ignoring invalid outage validator id: {}", trimmed);
+                            None
+                        }
+                    }
+                }
+            })
+            .collect();
+        self.outage_validator_addresses = self
+            .nodes_index
+            .iter()
+            .filter_map(|(address, index)| {
+                self.outage_validator_indices
+                    .contains(index)
+                    .then(|| address.clone())
+            })
+            .collect();
+        if !self.outage_validator_indices.is_empty()
+            && self.outage_validator_addresses.len() != self.outage_validator_indices.len()
+        {
+            warn!(
+                "Scheduled outage resolved {} of {} validator ids",
+                self.outage_validator_addresses.len(),
+                self.outage_validator_indices.len()
+            );
+        }
+        info!(
+            "Scheduled outage: start_epoch={}, duration_epochs={}, validators={:?}, common_slot_randomness={}",
+            self.outage_start_epoch,
+            self.outage_duration_epochs,
+            self.outage_validator_indices,
+            self.outage_common_slot_randomness
+        );
+    }
+
+    fn scheduled_outage_active(&self, epoch: u64) -> bool {
+        if self.outage_validator_addresses.is_empty() || epoch < self.outage_start_epoch {
+            return false;
+        }
+        self.outage_duration_epochs == 0
+            || epoch < self.outage_start_epoch.saturating_add(self.outage_duration_epochs)
+    }
+
+    fn update_scheduled_availability(&self, epoch: u64) {
+        let outage_active = self.scheduled_outage_active(epoch);
+        for (address, available) in &self.node_availability {
+            let should_be_online =
+                !outage_active || !self.outage_validator_addresses.contains(address);
+            available.store(should_be_online, Ordering::Relaxed);
+        }
+    }
+
+    fn write_proposer_duty(
+        &mut self,
+        slot: &SlotManager,
+        proposer: &Validator,
+        proposer_weight: f64,
+        scheduled_online: bool,
+        block_produced: bool,
+        failure_reason: &str,
+    ) {
+        let validator_id = self
+            .nodes_index
+            .get(&proposer.address)
+            .map(|index| index.to_string())
+            .unwrap_or_default();
+        let outage_active = self.scheduled_outage_active(slot.current_epoch);
+        let outage_group = self.outage_validator_addresses.contains(&proposer.address);
+        if self.proposer_duties_file.is_none() {
+            self.proposer_duties_file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&self.proposer_duties_filename)
+                .ok();
+        }
+        if let Some(file) = self.proposer_duties_file.as_mut() {
+            if file.metadata().map(|metadata| metadata.len()).unwrap_or(0) == 0 {
+                let _ = writeln!(
+                    file,
+                    "epoch,slot,validator_id,proposer_address,proposer_stake,proposer_weight,outage_active,outage_group,scheduled_online,block_produced,failure_reason"
+                );
+            }
+            let _ = writeln!(
+                file,
+                "{},{},{},{},{:.9},{:.9},{},{},{},{},{}",
+                slot.current_epoch,
+                slot.current_slot,
+                validator_id,
+                proposer.address,
+                proposer.stake,
+                proposer_weight,
+                outage_active,
+                outage_group,
+                scheduled_online,
+                block_produced,
+                failure_reason,
+            );
+            let _ = file.flush();
+        }
+    }
+
     pub async fn next_slot(&mut self) {
         let current_slot = self.current_slot.read().await.clone();
         let block_index = self.blockchain.read().await.get_last_index();
@@ -302,11 +492,16 @@ impl WorldState {
             self.next_epoch().await;
         } else {
             let next_slot = current_slot.current_slot + 1;
+            let seed_block_index = if self.outage_common_slot_randomness {
+                0
+            } else {
+                block_index + 1
+            };
             let next_seed = derive_election_seed(
                 self.election_seed,
                 current_slot.current_epoch,
                 next_slot,
-                block_index + 1,
+                seed_block_index,
             );
             self.current_slot = Arc::new(RwLock::new(SlotManager {
                 randao_seeds: vec![],
@@ -320,6 +515,7 @@ impl WorldState {
         self.consensus.next_slot(&validators, block_index);
         self.logical_slot_counter.fetch_add(1, Ordering::Relaxed);
         let current_slot = self.get_current_slot().await;
+        self.update_scheduled_availability(current_slot.current_epoch);
         let selection_seed = current_slot.next_seed;
         info!(
             "World State change slot to: epoch[{}] slot[{}] consensus[{}] seed{:?}",
@@ -372,61 +568,117 @@ impl WorldState {
             "World State find miner: {}",
             miner_validator.address.clone()
         );
-        match self
-            .build_canonical_block(
-                &miner_validator,
-                current_slot.current_epoch,
-                current_slot.current_slot,
-            )
-            .await
-        {
-            Ok(block) => {
-                if let Err(e) = self.apply_canonical_block(&block).await {
-                    error!("World State Add Block Error: {}", e);
-                    self.block_production_failed += 1;
-                } else {
-                    let block_arc = Arc::new(block);
-                    let miner_address = miner_validator.address.clone();
-                    for sender in self.nodes_sender.values() {
-                        let _ = sender.try_send(Message::new_block_msg(
-                            block_arc.clone(),
-                            miner_address.clone(),
-                        ));
+        let scheduled_online = self
+            .node_availability
+            .get(&miner_validator.address)
+            .map(|available| available.load(Ordering::Relaxed))
+            .unwrap_or(true);
+        let mut produced = false;
+        let mut failure_reason = "";
+        if !scheduled_online {
+            warn!(
+                "Scheduled outage: proposer {} missed epoch {} slot {}",
+                miner_validator.address, current_slot.current_epoch, current_slot.current_slot
+            );
+            self.block_production_failed += 1;
+            failure_reason = "scheduled_outage";
+        } else {
+            match self
+                .build_canonical_block(
+                    &miner_validator,
+                    current_slot.current_epoch,
+                    current_slot.current_slot,
+                )
+                .await
+            {
+                Ok(block) => {
+                    if let Err(e) = self.apply_canonical_block(&block).await {
+                        error!("World State Add Block Error: {}", e);
+                        self.block_production_failed += 1;
+                        failure_reason = "apply_failed";
+                    } else {
+                        produced = true;
+                        let block_arc = Arc::new(block);
+                        let miner_address = miner_validator.address.clone();
+                        for sender in self.nodes_sender.values() {
+                            let _ = sender.try_send(Message::new_block_msg(
+                                block_arc.clone(),
+                                miner_address.clone(),
+                            ));
+                        }
                     }
                 }
-            }
-            Err(e) => {
-                error!(
-                    "World State error: failed to build canonical block for miner {}: {}",
-                    miner_validator.address, e
-                );
-                self.block_production_failed += 1;
+                Err(e) => {
+                    error!(
+                        "World State error: failed to build canonical block for miner {}: {}",
+                        miner_validator.address, e
+                    );
+                    self.block_production_failed += 1;
+                    failure_reason = "build_failed";
+                }
             }
         }
 
-        // Collect slot metrics
-        self.collect_slot_metrics(&miner_validator).await;
+        let duty_snapshot = self.consensus.metrics_snapshot();
+        let proposer_weight = if duty_snapshot.normalized_proposer_weights.is_empty() {
+            TopoStakeConsensus::normalized_stake(&validators)
+                .get(&miner_validator.address)
+                .copied()
+                .unwrap_or(0.0)
+        } else {
+            duty_snapshot
+                .normalized_proposer_weights
+                .get(&miner_validator.address)
+                .copied()
+                .unwrap_or(0.0)
+        };
+        self.write_proposer_duty(
+            &current_slot,
+            &miner_validator,
+            proposer_weight,
+            scheduled_online,
+            produced,
+            failure_reason,
+        );
+        if produced {
+            self.collect_slot_metrics(&miner_validator).await;
+        }
     }
 
     pub async fn next_epoch(&mut self) {
         let current_slot = self.current_slot.read().await.clone();
         let _current_epoch = current_slot.current_epoch;
+        let next_epoch = current_slot.current_epoch + 1;
+        // Close the asynchronous onset window before exposing an outage epoch.
+        // Recovery remains after the old-epoch sample so resumed forwarding is
+        // attributed to the new online epoch rather than the final outage one.
+        if self.scheduled_outage_active(next_epoch) {
+            self.update_scheduled_availability(next_epoch);
+        }
         //更新epoch中调用consensus的on_epoch_end
         let blocks = self.blockchain.read().await.get_last_epoch_block();
         let validators = self.validators.read().await.clone();
         self.consensus.on_epoch_end(&blocks, &validators);
         self.collect_epoch_metrics(current_slot.current_epoch, &blocks, &validators)
             .await;
+        if !self.scheduled_outage_active(next_epoch) {
+            self.update_scheduled_availability(next_epoch);
+        }
+        let seed_block_index = if self.outage_common_slot_randomness {
+            0
+        } else {
+            self.blockchain.read().await.get_last_index() + 1
+        };
         let next_seed = derive_election_seed(
             self.election_seed,
-            current_slot.current_epoch + 1,
+            next_epoch,
             0,
-            self.blockchain.read().await.get_last_index() + 1,
+            seed_block_index,
         );
         self.current_slot = Arc::new(RwLock::new(SlotManager {
             randao_seeds: vec![],
             slot_duration: self.slot_duration,
-            current_epoch: current_slot.current_epoch + 1,
+            current_epoch: next_epoch,
             current_slot: 0,
             next_seed,
             start_timestamp: get_timestamp(),
@@ -682,14 +934,25 @@ impl WorldState {
         let mut valid_path_count = 0u64;
         let mut invalid_path_count = 0u64;
         let mut conflict_count = 0u64;
+        let mut inclusion_samples = Vec::new();
         for block in &epoch_blocks {
             for (idx, tx) in block.body.transactions.iter().enumerate() {
                 let included_slot = block.header.epoch * self.slot_per_epoch + block.header.slot;
+                let evidence_eligible = block.verify_path_evidence(idx);
                 if let Some(created_slot) = tx_logical_slot(tx, self.slot_per_epoch) {
                     let slots = included_slot.saturating_sub(created_slot);
                     let latency = slots as f64 * self.slot_duration.as_secs_f64()
                         + self.confirmation_latency_adjustment_s;
-                    latencies.push(latency.max(0.0));
+                    let latency = latency.max(0.0);
+                    latencies.push(latency);
+                    inclusion_samples.push((
+                        block.header.epoch,
+                        tx.hash.clone(),
+                        created_slot,
+                        included_slot,
+                        latency,
+                        evidence_eligible,
+                    ));
                 }
                 if let Some(path) = block.body.paths.get(idx) {
                     let full_path = path.full_path(block.header.miner.clone());
@@ -699,15 +962,17 @@ impl WorldState {
                             conflicting_receipt_count(&tx.hash, path.epoch, receiver) as u64;
                     }
                 }
-                if block.verify_path_evidence(idx) {
+                if evidence_eligible {
                     valid_path_count += 1;
                 } else {
                     invalid_path_count += 1;
                 }
             }
         }
+        self.write_inclusion_samples(&inclusion_samples);
 
         let reward_report = self.estimate_epoch_rewards(&epoch_blocks, validators, &snapshot);
+        let organic_capture = self.organic_capture_report(&epoch_blocks, validators, &snapshot);
         for (address, reward) in reward_report.total_by_address() {
             *self.total_reward_income.entry(address).or_insert(0.0) += reward;
         }
@@ -735,12 +1000,40 @@ impl WorldState {
         let adversary_real_stake_share = metrics::share_for(&self.adversarial_nodes, &stake_map);
         let adversary_score_share =
             metrics::share_for(&self.adversarial_nodes, &snapshot.normalized_score);
+        let adversary_damped_score_mass: f64 = self
+            .adversarial_nodes
+            .iter()
+            .map(|address| {
+                snapshot
+                    .normalized_score
+                    .get(address)
+                    .copied()
+                    .unwrap_or(0.0)
+            })
+            .sum();
         let adversary_proposer_weight_share =
             metrics::share_for(&self.adversarial_nodes, &proposer_weights);
-        let bound_factor = 1.0
-            + snapshot.topostake_eta.unwrap_or(0.0) * snapshot.topostake_bonus_cap.unwrap_or(0.0);
-        let theoretical_proposer_weight_bound =
-            (bound_factor * adversary_real_stake_share).min(1.0);
+        let eta = snapshot.topostake_eta.unwrap_or(0.0);
+        let bonus_cap = snapshot.topostake_bonus_cap.unwrap_or(0.0);
+        let zeta = snapshot.topostake_bonus_zeta.unwrap_or(1.0);
+        let a = adversary_real_stake_share;
+        let coalition_bonus = if a > 0.0 {
+            TopoStakeConsensus::propagation_bonus(adversary_damped_score_mass / a, bonus_cap, zeta)
+        } else {
+            0.0
+        };
+        let coalition_weight = a * (1.0 + eta * coalition_bonus);
+        let score_dependent_proposer_weight_bound = if coalition_weight + 1.0 - a > 0.0 {
+            coalition_weight / (coalition_weight + 1.0 - a)
+        } else {
+            0.0
+        };
+        let c = eta * bonus_cap;
+        let theoretical_proposer_weight_bound = if 1.0 + a * c > 0.0 {
+            a * (1.0 + c) / (1.0 + a * c)
+        } else {
+            0.0
+        };
         let proposer_total: u64 = self.epoch_proposer_counts.values().sum();
         let adversary_proposers: u64 = self
             .adversarial_nodes
@@ -788,20 +1081,40 @@ impl WorldState {
             valid_path_count,
             invalid_path_count,
             conflicting_receipt_count: conflict_count,
+            active_score_epoch: snapshot
+                .topostake_active_score_epoch
+                .map(|value| value as i64)
+                .unwrap_or(-1),
+            latest_score_epoch: snapshot
+                .topostake_latest_score_epoch
+                .map(|value| value as i64)
+                .unwrap_or(-1),
             total_proposer_reward: reward_report.total_proposer_reward,
             total_relay_reward: reward_report.total_relay_reward,
             burned_relay_fee: reward_report.burned_relay_fee,
+            organic_included_tx: organic_capture.included_tx,
+            organic_valid_path_count: organic_capture.valid_path_count,
+            organic_relay_reward: organic_capture.relay_reward,
+            adversary_organic_relay_reward: organic_capture.adversary_relay_reward,
+            adversary_organic_relay_reward_share: organic_capture
+                .adversary_relay_reward_share(),
+            organic_raw_contribution: organic_capture.raw_contribution,
+            adversary_organic_raw_contribution: organic_capture.adversary_raw_contribution,
+            adversary_organic_raw_contribution_share: organic_capture
+                .adversary_raw_contribution_share(),
             stake_gini,
             stake_hhi,
             proposer_weight_gini,
             proposer_weight_hhi,
             adversary_real_stake_share,
             adversary_score_share,
+            adversary_damped_score_mass,
             adversary_proposer_weight_share,
+            score_dependent_proposer_weight_bound,
             theoretical_proposer_weight_bound,
             observed_adversary_proposer_share,
             bound_violation: adversary_proposer_weight_share
-                > theoretical_proposer_weight_bound + 1e-9,
+                > score_dependent_proposer_weight_bound + 1e-9,
         };
         self.write_epoch_metrics(&epoch_metrics);
 
@@ -837,6 +1150,17 @@ impl WorldState {
                 .copied()
                 .unwrap_or(0.0);
             let fee = fee_spent.get(&validator.address).copied().unwrap_or(0.0);
+            let cumulative_forward_attempts = self
+                .node_relay_forward_counters
+                .get(&validator.address)
+                .map(|counter| counter.load(Ordering::Relaxed))
+                .unwrap_or(0);
+            let previous_forward_attempts = self
+                .last_relay_forward_attempts
+                .insert(validator.address.clone(), cumulative_forward_attempts)
+                .unwrap_or(0);
+            let relay_forward_attempts =
+                cumulative_forward_attempts.saturating_sub(previous_forward_attempts);
             let node_metrics = NodeEpochMetrics {
                 epoch,
                 validator_id: self
@@ -849,6 +1173,7 @@ impl WorldState {
                     .get(&validator.address)
                     .cloned()
                     .unwrap_or_else(|| "normal".to_string()),
+                focal_relayer: self.focal_relayer_nodes.contains(&validator.address),
                 adversarial: self.adversarial_nodes.contains(&validator.address),
                 economic_stake: validator.stake,
                 balance: balances.get(&validator.address).copied().unwrap_or(0.0),
@@ -892,6 +1217,7 @@ impl WorldState {
                 proposer_reward,
                 fee_spent: fee,
                 net_income: proposer_reward + relay_reward - fee,
+                relay_forward_attempts,
                 degree: self
                     .node_degrees
                     .get(&validator.address)
@@ -945,6 +1271,38 @@ impl WorldState {
         }
     }
 
+    fn write_inclusion_samples(
+        &mut self,
+        samples: &[(u64, String, u64, u64, f64, bool)],
+    ) {
+        if samples.is_empty() {
+            return;
+        }
+        if self.inclusion_samples_file.is_none() {
+            self.inclusion_samples_file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&self.inclusion_samples_filename)
+                .ok();
+        }
+        if let Some(file) = self.inclusion_samples_file.as_mut() {
+            if file.metadata().map(|metadata| metadata.len()).unwrap_or(0) == 0 {
+                let _ = writeln!(
+                    file,
+                    "included_epoch,tx_hash,created_slot,included_slot,latency_s,evidence_eligible"
+                );
+            }
+            for (epoch, tx_hash, created_slot, included_slot, latency, eligible) in samples {
+                let _ = writeln!(
+                    file,
+                    "{},{},{},{},{:.6},{}",
+                    epoch, tx_hash, created_slot, included_slot, latency, eligible
+                );
+            }
+            let _ = file.flush();
+        }
+    }
+
     async fn write_run_summary(&self, completed_epochs: u64) {
         let fee_spent = self
             .fee_spent
@@ -992,7 +1350,7 @@ impl WorldState {
         let mut raw = HashMap::new();
         let depth = snapshot.topostake_depth.unwrap_or(1);
         for block in blocks {
-            for (idx, _tx) in block.body.transactions.iter().enumerate() {
+            for (idx, tx) in block.body.transactions.iter().enumerate() {
                 let Some(path) = block.body.paths.get(idx) else {
                     continue;
                 };
@@ -1009,7 +1367,11 @@ impl WorldState {
                     if validator_set.contains(relayer.as_str()) {
                         let gamma =
                             TopoStakeConsensus::gamma_for_depth(depth, position, path_length);
-                        *raw.entry(relayer.clone()).or_insert(0.0) += gamma;
+                        let q = TopoStakeConsensus::transaction_credit_weight(
+                            tx.irrecoverable_cost,
+                            snapshot.topostake_score_cost_reference.unwrap_or(1.0),
+                        );
+                        *raw.entry(relayer.clone()).or_insert(0.0) += q * gamma;
                     }
                 }
             }
@@ -1077,6 +1439,69 @@ impl WorldState {
                 }
                 report.total_relay_reward += paid;
                 report.burned_relay_fee += (relay_budget - paid).max(0.0);
+            }
+        }
+        report
+    }
+
+    /// Measure coalition capture from transactions funded by non-adversarial
+    /// originators. This is an evaluation-only decomposition of the existing
+    /// reward and score rules; it does not alter path acceptance or consensus.
+    fn organic_capture_report(
+        &self,
+        blocks: &[Block],
+        validators: &[Validator],
+        snapshot: &ConsensusMetricsSnapshot,
+    ) -> OrganicCaptureReport {
+        let validator_set: HashSet<&str> = validators.iter().map(|v| v.address.as_str()).collect();
+        let theta = snapshot.topostake_proposer_fee_ratio.unwrap_or(1.0);
+        let depth = snapshot.topostake_depth.unwrap_or(1);
+        let cost_reference = snapshot.topostake_score_cost_reference.unwrap_or(1.0);
+        let mut report = OrganicCaptureReport::default();
+
+        if snapshot.topostake_depth.is_none() {
+            return report;
+        }
+
+        for block in blocks {
+            for (idx, tx) in block.body.transactions.iter().enumerate() {
+                if self.adversarial_nodes.contains(&tx.from) {
+                    continue;
+                }
+                report.included_tx += 1;
+                let Some(path) = block.body.paths.get(idx) else {
+                    continue;
+                };
+                if !block.verify_path_evidence(idx) {
+                    continue;
+                }
+                let full_path = path.full_path(block.header.miner.clone());
+                let path_length = full_path.len().saturating_sub(1);
+                if path_length < 2 {
+                    continue;
+                }
+                report.valid_path_count += 1;
+                let relay_budget = (1.0 - theta) * tx.fee;
+                let q = TopoStakeConsensus::transaction_credit_weight(
+                    tx.irrecoverable_cost,
+                    cost_reference,
+                );
+                for position in 1..path_length {
+                    let relayer = &full_path[position];
+                    if !validator_set.contains(relayer.as_str()) {
+                        continue;
+                    }
+                    let gamma =
+                        TopoStakeConsensus::gamma_for_depth(depth, position, path_length);
+                    let reward = relay_budget * gamma;
+                    let contribution = q * gamma;
+                    report.relay_reward += reward;
+                    report.raw_contribution += contribution;
+                    if self.adversarial_nodes.contains(relayer) {
+                        report.adversary_relay_reward += reward;
+                        report.adversary_raw_contribution += contribution;
+                    }
+                }
             }
         }
         report
@@ -1478,6 +1903,91 @@ mod tests {
     use crate::blockchain::Blockchain;
     use crate::network::node::{Neighbor, Node};
     use log::info;
+
+    #[test]
+    fn organic_capture_excludes_coalition_origins_and_accounts_relayer_credit() {
+        let origin = Wallet::new();
+        let adversary = Wallet::new();
+        let miner = Wallet::new();
+        let tx = Transaction::with_costs(
+            miner.address.clone(),
+            0,
+            1.0,
+            1.0,
+            origin.clone(),
+        );
+        let mut path = TransactionPaths::new_with_epoch(tx.clone(), 0);
+        assert!(path.append_completed_hop(
+            adversary.address.clone(),
+            origin.clone(),
+            adversary.clone(),
+        ));
+        assert!(path.append_completed_hop(
+            miner.address.clone(),
+            adversary.clone(),
+            miner.clone(),
+        ));
+        let block = Block::new(
+            1,
+            0,
+            0,
+            Block::gen_genesis_block().header.hash,
+            Body::new(vec![tx], vec![path.to_aggregated_signed_paths()]),
+            miner.clone(),
+        )
+        .unwrap();
+        let config = TopoStakeConfig {
+            proposer_fee_ratio: 0.5,
+            score_cost_reference: 1.0,
+            ..TopoStakeConfig::default()
+        };
+        let (mut world, _sender, _receiver) = WorldState::new(
+            Block::gen_genesis_block(),
+            ConsensusType::TopoStake,
+            Blockchain::new(Block::gen_genesis_block()),
+            1,
+            5,
+            20,
+            8,
+            config,
+            0.1,
+            3,
+            1,
+            "ba".to_string(),
+            1,
+            10,
+            PathBuf::from("/tmp/topostake-organic-capture-test"),
+            "organic-capture-test".to_string(),
+            1,
+            false,
+            0.01,
+            0.0,
+            Arc::new(AtomicU64::new(0)),
+            Arc::new(std::sync::Mutex::new(HashMap::new())),
+        );
+        world.adversarial_nodes.insert(adversary.address.clone());
+        let validators = vec![
+            Validator::new(origin.address.clone(), 1.0, 1.0),
+            Validator::new(adversary.address.clone(), 1.0, 1.0),
+            Validator::new(miner.address.clone(), 1.0, 1.0),
+        ];
+        let snapshot = world.consensus.metrics_snapshot();
+        let report = world.organic_capture_report(&[block.clone()], &validators, &snapshot);
+        assert_eq!(report.included_tx, 1);
+        assert_eq!(report.valid_path_count, 1);
+        assert!(report.relay_reward > 0.0);
+        assert_eq!(report.adversary_relay_reward, report.relay_reward);
+        assert!(report.raw_contribution > 0.0);
+        assert_eq!(
+            report.adversary_raw_contribution,
+            report.raw_contribution
+        );
+
+        world.adversarial_nodes.insert(origin.address);
+        let excluded = world.organic_capture_report(&[block], &validators, &snapshot);
+        assert_eq!(excluded.included_tx, 0);
+        assert_eq!(excluded.relay_reward, 0.0);
+    }
 
     #[tokio::test]
     async fn timer_trigger() {

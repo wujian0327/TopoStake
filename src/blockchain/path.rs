@@ -401,16 +401,41 @@ impl AggregatedSignedPaths {
     }
 
     pub fn verify_at_epoch(&self, transaction: Transaction, miner: String, epoch: u64) -> bool {
+        self.verify_at_epoch_with_cache(transaction, miner, epoch, true)
+    }
+
+    /// Verify a path record without consulting or populating the process-local
+    /// cache. This is used by cold-path benchmarks and by callers that need to
+    /// account for the full cryptographic verification cost explicitly.
+    pub fn verify_at_epoch_uncached(
+        &self,
+        transaction: Transaction,
+        miner: String,
+        epoch: u64,
+    ) -> bool {
+        self.verify_at_epoch_with_cache(transaction, miner, epoch, false)
+    }
+
+    fn verify_at_epoch_with_cache(
+        &self,
+        transaction: Transaction,
+        miner: String,
+        epoch: u64,
+        use_cache: bool,
+    ) -> bool {
         if self.epoch != epoch {
             return false;
         }
-        if !transaction.verify() {
-            return false;
-        }
         if transaction.from == miner && self.paths.is_empty() {
-            return true;
+            return transaction.verify();
         }
         if self.paths.is_empty() {
+            return false;
+        }
+        if self.signature.is_empty() {
+            return false;
+        }
+        if !transaction.verify() {
             return false;
         }
 
@@ -425,13 +450,15 @@ impl AggregatedSignedPaths {
         if hop_count == 0 {
             return transaction.from == full_nodes[0];
         }
-        if self.signature.is_empty() {
-            return false;
-        }
         let cache_key = self.verification_cache_key(&transaction.hash, &miner);
-        if let Some(cached) = PATH_VERIFY_CACHE.get(&cache_key) {
-            return *cached.value();
+        if use_cache {
+            if let Some(cached) = PATH_VERIFY_CACHE.get(&cache_key) {
+                return *cached.value();
+            }
         }
+        let Ok(signature) = Wallet::bls_signature_from_string(self.signature.clone()) else {
+            return false;
+        };
 
         let mut messages: Vec<Vec<u8>> = Vec::with_capacity(hop_count * 2);
         let mut pks: Vec<PublicKey> = Vec::with_capacity(hop_count * 2);
@@ -456,8 +483,10 @@ impl AggregatedSignedPaths {
             pks.push(receiver_pk);
         }
 
-        let valid = Wallet::bls_aggregated_verify(messages, pks, self.signature.clone());
-        PATH_VERIFY_CACHE.insert(cache_key, valid);
+        let valid = Wallet::bls_aggregated_verify_parsed(messages, pks, signature);
+        if use_cache {
+            PATH_VERIFY_CACHE.insert(cache_key, valid);
+        }
         valid
     }
 
@@ -742,6 +771,64 @@ mod tests {
         assert!(transaction_paths.complete_pending_hop(relay.clone()));
         let aggregated = AggregatedSignedPaths::from_transaction_paths(transaction_paths);
         assert!(aggregated.verify_at_epoch(transaction, relay.address, 5));
+    }
+
+    #[test]
+    fn malformed_aggregate_signature_is_rejected_without_panicking() {
+        clear_receipt_cache_for_tests();
+        let origin = Wallet::new_deterministic(9001, 0);
+        let relay = Wallet::new_deterministic(9001, 1);
+        let transaction = Transaction::with_costs(
+            relay.address.clone(),
+            1,
+            1.0,
+            1.0,
+            origin.clone(),
+        );
+        let mut paths = TransactionPaths::new_with_epoch(transaction.clone(), 3);
+        assert!(paths.append_completed_hop(
+            relay.address.clone(),
+            origin,
+            relay.clone(),
+        ));
+        let mut aggregate = paths.to_aggregated_signed_paths();
+        aggregate.signature = "0x00".to_string();
+        assert!(!aggregate.verify_at_epoch_uncached(
+            transaction,
+            relay.address,
+            3,
+        ));
+    }
+
+    #[test]
+    fn cached_and_uncached_aggregate_verification_agree() {
+        clear_receipt_cache_for_tests();
+        let origin = Wallet::new_deterministic(9002, 0);
+        let relay = Wallet::new_deterministic(9002, 1);
+        let transaction = Transaction::with_costs(
+            relay.address.clone(),
+            1,
+            1.0,
+            1.0,
+            origin.clone(),
+        );
+        let mut paths = TransactionPaths::new_with_epoch(transaction.clone(), 4);
+        assert!(paths.append_completed_hop(
+            relay.address.clone(),
+            origin,
+            relay.clone(),
+        ));
+        let aggregate = paths.to_aggregated_signed_paths();
+        assert!(aggregate.verify_at_epoch(
+            transaction.clone(),
+            relay.address.clone(),
+            4,
+        ));
+        assert!(aggregate.verify_at_epoch_uncached(
+            transaction,
+            relay.address,
+            4,
+        ));
     }
 
     #[test]

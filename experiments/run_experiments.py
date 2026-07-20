@@ -27,14 +27,29 @@ DIMENSION_KEYS = [
     "tx_rate",
     "stake_gini",
     "relay_profile",
+    "relay_background_profile",
+    "focal_relayer_count",
+    "lazy_fraction",
     "adversary_stake_fraction",
     "adversary_placement",
     "eta_bonus_product",
     "padding_identities",
-    "topostake_initial_depth",
+    "topostake_target_depth",
+    "beta",
+    "topostake_saturation_k",
+    "topostake_score_cost_reference",
+    "topostake_score_floor_kappa",
+    "topostake_bonus_zeta",
+    "eta",
+    "bonus_cap",
+    "proposer_fee_ratio",
     "attack_tx_rate_multiplier",
     "unstable_fraction",
     "offline_probability",
+    "outage_start_epoch",
+    "outage_duration_epochs",
+    "outage_validator_ids",
+    "outage_common_slot_randomness",
     "attack_mode",
 ]
 
@@ -52,13 +67,20 @@ CLI_KEYS = {
     "slot_per_epoch": "--slot-per-epoch",
     "max_epochs": "--max-epochs",
     "max_tx_per_block": "--max-tx-per-block",
-    "topostake_initial_depth": "--topostake-initial-depth",
+    "topostake_target_depth": "--topostake-target-depth",
     "beta": "--beta",
     "topostake_saturation_k": "--topostake-saturation-k",
+    "topostake_score_cost_reference": "--topostake-score-cost-reference",
+    "topostake_score_floor_kappa": "--topostake-score-floor-kappa",
+    "topostake_bonus_zeta": "--topostake-bonus-zeta",
     "eta": "--eta",
     "bonus_cap": "--bonus-cap",
     "proposer_fee_ratio": "--proposer-fee-ratio",
     "reward_settlement_depth": "--reward-settlement-depth",
+    "topostake_score_activation_delay_epochs": "--topostake-score-activation-delay-epochs",
+    "topostake_max_path_hops": "--topostake-max-path-hops",
+    "topostake_evidence_work_limit": "--topostake-evidence-work-limit",
+    "topostake_challenge_work_limit": "--topostake-challenge-work-limit",
     "time_scale": "--time-scale",
     "network_delay_multiplier": "--network-delay-multiplier",
     "validator_scale_capacity_penalty": "--validator-scale-capacity-penalty",
@@ -67,8 +89,14 @@ CLI_KEYS = {
     "topostake_scale_latency_reduction": "--topostake-scale-latency-reduction",
     "topostake_latency_reduction_s": "--topostake-latency-reduction-s",
     "relay_profile": "--relay-profile",
+    "relay_background_profile": "--relay-background-profile",
+    "focal_relayer_count": "--focal-relayer-count",
+    "lazy_fraction": "--lazy-fraction",
     "unstable_fraction": "--unstable-fraction",
     "offline_probability": "--offline-probability",
+    "outage_start_epoch": "--outage-start-epoch",
+    "outage_duration_epochs": "--outage-duration-epochs",
+    "outage_validator_ids": "--outage-validator-ids",
     "adversary_stake_fraction": "--adversary-stake-fraction",
     "adversary_placement": "--adversary-placement",
     "attack_mode": "--attack-mode",
@@ -130,14 +158,23 @@ def protocol_cli(protocol_variant: str) -> Dict[str, Any]:
     return {"protocol": protocol_variant, "protocol_label": protocol_variant}
 
 
+def migrate_legacy_keys(values: Dict[str, Any]) -> Dict[str, Any]:
+    migrated = dict(values)
+    if "topostake_target_depth" not in migrated and "topostake_initial_depth" in migrated:
+        migrated["topostake_target_depth"] = migrated.pop("topostake_initial_depth")
+    return migrated
+
+
 def expand_runs(spec: Dict[str, Any], only: Iterable[str] | None = None) -> List[Dict[str, Any]]:
     suite = spec.get("suite", "main")
-    defaults = dict(spec.get("defaults", {}))
+    protocol_version = spec.get("protocol_version", "legacy")
+    defaults = migrate_legacy_keys(spec.get("defaults", {}))
     seeds = [int(seed) for seed in spec.get("seeds", [0])]
     only_set = set(only or [])
     runs: List[Dict[str, Any]] = []
 
-    for experiment in spec.get("experiments", []):
+    for raw_experiment in spec.get("experiments", []):
+        experiment = migrate_legacy_keys(raw_experiment)
         name = experiment["name"]
         if only_set and name not in only_set:
             continue
@@ -177,11 +214,19 @@ def expand_runs(spec: Dict[str, Any], only: Iterable[str] | None = None) -> List
                     run.setdefault("offline_probability", 0.5)
                     run.update(seed_bundle(seed_value))
                     run["suite"] = suite
+                    run["protocol_version"] = protocol_version
                     run["experiment"] = name
                     run["seed_index"] = seed_index
                     run["seed_value"] = seed_value
 
-                    varied = [name, run["protocol_label"], f"seed{seed_index}"]
+                    varied = [
+                        name,
+                        run["protocol_label"],
+                        protocol_version,
+                        f"seed{seed_index}",
+                    ]
+                    if run.get("run_revision"):
+                        varied.append(f"revision-{slug(run['run_revision'])}")
                     for key in keys:
                         varied.append(f"{key}-{slug(run[key])}")
                     for key in sorted(experiment_overrides):
@@ -246,6 +291,8 @@ def command_for_run(binary: str, run: Dict[str, Any]) -> List[str]:
         cmd.extend([f"--{key.replace('_', '-')}", str(run[key])])
     if run.get("real_time"):
         cmd.append("--real-time")
+    if run.get("outage_common_slot_randomness"):
+        cmd.append("--outage-common-slot-randomness")
     return cmd
 
 

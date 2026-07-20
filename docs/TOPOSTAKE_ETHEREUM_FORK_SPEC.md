@@ -31,17 +31,23 @@ devnet.
 | Parameter | Type | Suggested devnet default | Consensus? | Meaning |
 |---|---:|---:|---|---|
 | `topostake_fork_epoch` | `Epoch` | disabled unless explicitly set | Yes | First epoch where TopoStake state fields and rules are active. |
-| `eta` | fixed-point decimal, scaled `uint64` | `0.25` | Yes | Multiplier applied to normalized propagation bonus in proposer weight. |
+| `eta` | fixed-point decimal, scaled `uint64` | `0.5` | Yes | Multiplier applied to the concave propagation bonus in proposer weight. |
 | `bonus_cap` | fixed-point decimal, scaled `uint64` | `1.0` | Yes | Upper bound on a validator's normalized propagation bonus. |
-| `score_ema_beta` | fixed-point decimal, scaled `uint64` | `0.8` | Yes | EMA retention for propagation score history. |
+| `score_ema_beta` | fixed-point decimal, scaled `uint64` | `0.8` | Yes | EMA weight assigned to the current epoch's saturated contribution. |
 | `score_saturation_k` | fixed-point decimal, scaled `uint64` | `1.0` | Yes | Saturation parameter for converting raw path contributions into bounded score. |
-| `score_initial_depth` | `uint64` | `4` | Yes | Initial target path depth used before finalized observations exist. |
+| `score_target_depth` | `uint64` | `4` | Yes | Fixed path-budget target depth `D` in frozen-v1. |
+| `score_cost_reference_wei` | `uint64` | `21000000000000` | Yes | Reference irrecoverable transaction cost `G_ref` used by `q(tx)`. |
+| `score_floor_kappa_scaled` | scaled `uint64` | `1.0` | Yes | Protocol score floor `kappa` in damped score normalization. |
+| `bonus_zeta_scaled` | scaled `uint64` | `1.0` | Yes | Saturation parameter `zeta` in the concave bonus. |
 | `reward_settlement_depth` | `uint64` epochs | `2` | Yes, if reward ledger is enabled | Minimum finality delay before relay credits are settled. |
-| `max_path_evidence_len` | `uint64` | `32` validators | Yes | Maximum relay path length accepted for score/reward accounting. |
+| `max_path_evidence_len` | `uint64` | `16` validators | Yes | Maximum relay path length accepted for score/reward accounting. |
 | `max_path_evidence_bytes` | `uint64` | `65536` bytes per block | Yes | Maximum serialized TopoStake evidence bytes accepted for a block/sidecar. |
 | `max_paths_per_block` | `uint64` | `1024` | Yes | Maximum path records processed for one block. |
 | `proposer_fee_ratio` | fixed-point decimal, scaled `uint64` | `0.5` | Yes, if reward ledger is enabled | Fraction of TopoStake reward budget retained by proposer before relay sharing. |
 | `evidence_finality_depth` | `uint64` epochs | `1` | Yes | Number of finalized epochs to wait before evidence can update score. |
+| `score_activation_delay_epochs` | `uint64` epochs | `2` | Yes | Fixed delay before an eligible finalized score root can affect proposer weights. |
+| `evidence_work_limit` | work units | `4096` | Yes | Aggregate path decoding/hash/signature work budget per block. |
+| `challenge_work_limit` | work units | `1024` | Yes | Reserved aggregate challenge-processing budget per block. |
 
 Fixed-point values should use one shared integer scale, for example
 `TOPOS_FIXED_POINT_SCALE = 1_000_000_000`. Floating-point arithmetic must not be
@@ -59,7 +65,7 @@ The names are draft names, not final Lighthouse type names.
 | `topostake_config` | `TopoStakeConfig` or fork config constants | Yes if stored in state; otherwise genesis/fork config | Parameters used by all deterministic TopoStake rules. |
 | `topostake_score_epoch` | `Epoch` | Yes | Last epoch for which propagation scores were computed. |
 | `topostake_raw_score_snapshot` | `List[uint64, VALIDATOR_REGISTRY_LIMIT]` | Yes | Raw/saturated propagation score per validator before normalization. |
-| `topostake_normalized_score_snapshot` | `List[uint64, VALIDATOR_REGISTRY_LIMIT]` | Yes | Bounded score in `[0, bonus_cap]`, scaled integer. |
+| `topostake_normalized_score_snapshot` | `List[uint64, VALIDATOR_REGISTRY_LIMIT]` | Yes | Activated EMA score root used by the target proposer epoch. |
 | `topostake_frozen_stake_snapshot` | `List[Gwei, VALIDATOR_REGISTRY_LIMIT]` | Yes | Economic stake snapshot used to compute an epoch's proposer weights. |
 | `topostake_proposer_weight_snapshot` | `List[uint64, VALIDATOR_REGISTRY_LIMIT]` | Yes | Frozen proposer-sampling weights for the active/future epoch. |
 | `topostake_pending_relay_settlements` | `List[TopoStakeSettlement, MAX_PENDING_TOPOSTAKE_SETTLEMENTS]` | Yes, if relay ledger is enabled | Deterministic queue of finalized relay/proposer credit deltas. |
@@ -82,17 +88,25 @@ container TopoStakeConfig:
     bonus_cap_scaled: uint64
     score_ema_beta_scaled: uint64
     score_saturation_k_scaled: uint64
-    score_initial_depth: uint64
+    score_target_depth: uint64
+    score_cost_reference_wei: uint64
+    score_floor_kappa_scaled: uint64
+    bonus_zeta_scaled: uint64
     reward_settlement_depth: uint64
     max_path_evidence_len: uint64
     max_path_evidence_bytes: uint64
     max_paths_per_block: uint64
     proposer_fee_ratio_scaled: uint64
     evidence_finality_depth: uint64
+    score_activation_delay_epochs: uint64
+    evidence_work_limit: uint64
+    challenge_work_limit: uint64
 
 container TopoStakePathRecord:
     tx_root: Root
     epoch: Epoch
+    priority_fee_wei: uint64
+    irrecoverable_cost_wei: uint64
     validator_path: List[ValidatorIndex, MAX_TOPOSTAKE_PATH_LEN]
     aggregate_signature: BLSSignature
 
@@ -271,10 +285,15 @@ Economic stake remains the base security weight. For validator `i` at epoch
 
 ```text
 S_i(e) = frozen economic stake snapshot
-P_i(e) = normalized propagation score from finalized previous evidence
-B_i(e) = min(P_i(e), bonus_cap)
+C_i(e) = Score_i(e*) / (kappa + sum_{j in V_e} Score_j(e*))
+x_i(e) = C_i(e) / S_i(e)
+B_i(e) = bonus_cap * x_i(e) / (zeta + x_i(e))
 W_i(e) = S_i(e) * (1 + eta * B_i(e))
 ```
+
+Here `V_e` is the active validator set and `e*` is the finalized score root
+activated for proposer epoch `e`. The first proposer-duty lookup for an epoch
+freezes that activated root for the rest of the epoch.
 
 All values are scaled integers. The mandatory bound is:
 
@@ -394,19 +413,16 @@ finalized enough:
 
 ```text
 raw_i(e) = saturated path contribution for validator i from eligible evidence
-score_i(e) = beta * score_i(e-1) + (1 - beta) * raw_i(e)
-normalized_i(e) = min(score_i(e), bonus_cap)
+weighted_raw_i(e) = sum_tx q(tx) * gamma_i(tx)
+score_i(e) = beta * saturated_i(e) + (1 - beta) * score_i(e-1)
+q(tx) = min(1, irrecoverable_cost_wei(tx) / score_cost_reference_wei)
 ```
 
-The exact saturation function must be integer-only and monotonic. A suggested
-shape is:
+The saturation function is integer-only and monotonic:
 
 ```text
-saturated = raw / (raw + score_saturation_k * stake_snapshot)
+saturated_i = stake_i * ln(1 + weighted_raw_i / (K * stake_i))
 ```
-
-implemented with scaled integer arithmetic. The final spec must include exact
-rounding rules before implementation.
 
 ### Reward Settlement
 

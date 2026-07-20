@@ -73,7 +73,7 @@ def main() -> int:
         stake = to_float(row.get("adversary_real_stake_share_mean"), 0.0)
         if stake <= 0:
             continue
-        series = f"D={row.get('topostake_initial_depth', '')}"
+        series = f"D={row.get('topostake_target_depth', row.get('topostake_initial_depth', ''))}"
         x = row.get("padding_identities", "")
         padding[(f"weight {series}", x)].append(
             to_float(row.get("adversary_proposer_weight_share_mean"), 0.0) / stake
@@ -106,7 +106,7 @@ def main() -> int:
             for row in group
             if row.get("adversarial") == "true"
         )
-        series = f"D={meta.get('topostake_initial_depth', '')}"
+        series = f"D={meta.get('topostake_target_depth', meta.get('topostake_initial_depth', ''))}"
         x = meta.get("padding_identities", "")
         if total_credit > 0:
             padding[(f"credit {series}", x)].append((adv_credit / total_credit) / stake)
@@ -142,14 +142,14 @@ def main() -> int:
         FIGURES / "path_padding_weight_score.pdf",
         "Path-padding adversary weight and score",
         "Padding identities",
-        "Share / real stake share",
+        "Share / stake share",
         weight_score_series,
     )
     write_line_pdf(
         FIGURES / "path_padding_reward_credit.pdf",
         "Path-padding adversary relay reward and credit",
         "Padding identities",
-        "Share / real stake share",
+        "Share / stake share",
         reward_credit_series,
     )
     flooding = defaultdict(list)
@@ -230,7 +230,7 @@ def main() -> int:
         FIGURES / "transaction_flooding_latency.pdf",
         "Transaction flooding latency",
         "Attack transaction multiplier",
-        "p95 confirmation latency (s)",
+        "p95 latency (s)",
         {key: sorted(value) for key, value in latency_series.items()},
         include_zero=True,
         y_min=0.0,
