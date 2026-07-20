@@ -89,17 +89,19 @@ def render_metric(
     _title: str,
     output: Path,
     minimum_lazy_fraction: float = 0.0,
+    series_order: tuple[str, ...] = ("topostake_eta0", "topostake"),
+    show_legend: bool = True,
 ) -> None:
     selected = [
         row
         for row in rows
-        if row.get("metric") == metric and row.get("series") in LABELS
+        if row.get("metric") == metric and row.get("series") in series_order
         and number(row["lazy_fraction"]) >= minimum_lazy_fraction
     ]
     if not selected:
         raise ValueError(f"no grouped rows for {metric}")
     fig, axis = plt.subplots(figsize=(3.45, 2.55))
-    for series in ("topostake_eta0", "topostake"):
+    for series in series_order:
         points = sorted(
             (
                 number(row["lazy_fraction"]),
@@ -127,7 +129,8 @@ def render_metric(
     axis.set_ylabel(ylabel)
     axis.set_xticks([0, 25, 50, 75])
     axis.grid(axis="y", color="#E6E6E6", linewidth=0.7)
-    axis.legend(frameon=False, loc="best")
+    if show_legend:
+        axis.legend(frameon=False, loc="best")
     fig.subplots_adjust(bottom=0.18, left=0.20, right=0.97, top=0.97)
     output.parent.mkdir(parents=True, exist_ok=True)
     for suffix in ("pdf", "png"):
@@ -243,6 +246,7 @@ def main() -> int:
         for specification in specifications
     ]
     for metric, ylabel, stem, minimum_lazy_fraction in normalized_specs:
+        latency_panel = metric == "p95_inclusion_latency_s_pooled"
         render_metric(
             rows,
             metric,
@@ -250,6 +254,10 @@ def main() -> int:
             "",
             args.output_dir / stem,
             minimum_lazy_fraction,
+            series_order=("topostake",)
+            if latency_panel
+            else ("topostake_eta0", "topostake"),
+            show_legend=not latency_panel,
         )
     render_paired_difference(
         rows,
