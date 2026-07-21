@@ -12,6 +12,8 @@ support the current frozen-v1 evaluation.
   ablation.
 - `frozen_v1_organic_capture_{pilot,main}.yaml`: organic-traffic capture under
   favorable placement.
+- `frozen_v1_reinvestment_gini_{pilot,main}.yaml`: paired long-term stake-Gini
+  trajectories with 50% reward reinvestment.
 - `frozen_v1_sustained_outage_{pilot,main}.yaml`: random sustained outages and
   proposer-side adaptation.
 - `frozen_v1_devnet_{pilot,main}.yaml`: paired real-client Ethereum devnet

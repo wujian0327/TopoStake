@@ -117,6 +117,10 @@ struct Args {
     #[clap(long, default_value = "1.0")]
     base_reward: f64,
 
+    /// Fraction of proposer and relay rewards reinvested into next-epoch stake
+    #[clap(long, default_value = "0.0")]
+    reward_reinvestment_rate: f64,
+
     /// 每个区块最大交易数量 (Max transactions per block)
     #[clap(long, default_value = "250")]
     max_tx_per_block: usize,
@@ -351,6 +355,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         failure_seed: args.failure_seed,
         attack_seed: args.attack_seed,
         base_reward: args.base_reward,
+        reward_reinvestment_rate: args.reward_reinvestment_rate,
         max_tx_per_block: args.max_tx_per_block,
         topostake_config,
         max_epochs: args.max_epochs,

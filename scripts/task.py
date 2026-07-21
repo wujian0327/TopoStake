@@ -106,6 +106,21 @@ def task_paper_figures(_args: argparse.Namespace) -> None:
             script, required_inputs = job
             run_figure_if_ready(script, required_inputs)
 
+    reinvestment_config = "experiments/configs/frozen_v1_reinvestment_gini_main.yaml"
+    reinvestment_spec = json.loads(
+        (ROOT / reinvestment_config).read_text(encoding="utf-8")
+    )
+    reinvestment_groups = (
+        Path("results/processed")
+        / str(reinvestment_spec["suite"])
+        / "reinvestment_gini_groups.csv"
+    )
+    run_figure_if_ready(
+        "analysis/plot_reinvestment_gini.py",
+        (str(reinvestment_groups),),
+        ("--config", reinvestment_config),
+    )
+
     config = _args.config or "experiments/configs/frozen_v1_sustained_outage_main.yaml"
     spec = json.loads((ROOT / config).read_text(encoding="utf-8"))
     processed = Path("results/processed") / str(spec["suite"])
@@ -258,6 +273,42 @@ def task_organic_capture_figures(args: argparse.Namespace) -> None:
     run([PYTHON, "analysis/plot_organic_capture.py", "--config", config])
 
 
+def task_reinvestment_gini(args: argparse.Namespace, config: str) -> None:
+    task_run_experiments(config, force=args.force, dry_run=args.dry_run)
+    if args.dry_run:
+        return
+    cmd = [PYTHON, "experiments/reinvestment_gini_report.py", "--config", config]
+    if args.allow_incomplete:
+        cmd.append("--allow-incomplete")
+    run(cmd)
+    run([PYTHON, "analysis/plot_reinvestment_gini.py", "--config", config])
+
+
+def task_reinvestment_gini_pilot(args: argparse.Namespace) -> None:
+    task_reinvestment_gini(
+        args, "experiments/configs/frozen_v1_reinvestment_gini_pilot.yaml"
+    )
+
+
+def task_reinvestment_gini_main(args: argparse.Namespace) -> None:
+    task_reinvestment_gini(
+        args, "experiments/configs/frozen_v1_reinvestment_gini_main.yaml"
+    )
+
+
+def task_reinvestment_gini_report(args: argparse.Namespace) -> None:
+    config = args.config or "experiments/configs/frozen_v1_reinvestment_gini_main.yaml"
+    cmd = [PYTHON, "experiments/reinvestment_gini_report.py", "--config", config]
+    if args.allow_incomplete:
+        cmd.append("--allow-incomplete")
+    run(cmd)
+
+
+def task_reinvestment_gini_figures(args: argparse.Namespace) -> None:
+    config = args.config or "experiments/configs/frozen_v1_reinvestment_gini_main.yaml"
+    run([PYTHON, "analysis/plot_reinvestment_gini.py", "--config", config])
+
+
 def task_topology_scale(args: argparse.Namespace, config: str) -> None:
     task_run_experiments(config, force=args.force, dry_run=args.dry_run)
     if args.dry_run:
@@ -406,6 +457,10 @@ TASKS: Dict[str, Callable[[argparse.Namespace], None]] = {
     "frozen-organic-capture-main": task_organic_capture_main,
     "frozen-organic-capture-report": task_organic_capture_report,
     "frozen-organic-capture-figures": task_organic_capture_figures,
+    "frozen-reinvestment-gini-pilot": task_reinvestment_gini_pilot,
+    "frozen-reinvestment-gini-main": task_reinvestment_gini_main,
+    "frozen-reinvestment-gini-report": task_reinvestment_gini_report,
+    "frozen-reinvestment-gini-figures": task_reinvestment_gini_figures,
     "frozen-topology-scale-pilot": task_topology_scale_pilot,
     "frozen-topology-scale-timing-probe": task_topology_scale_timing_probe,
     "frozen-topology-scale-report": task_topology_scale_report,

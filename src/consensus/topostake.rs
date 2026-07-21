@@ -565,6 +565,12 @@ impl Consensus for TopoStakeConsensus {
         self.freeze_proposer_weights(validators);
     }
 
+    fn on_stake_update(&mut self, validators: &[Validator]) {
+        // Reuse the already activated score root; only the real-stake snapshot
+        // changes at this epoch boundary.
+        self.freeze_proposer_weights(validators);
+    }
+
     fn state_summary(&self) -> String {
         format!(
             "{}(D={}_beta={:.2}_eta={:.2}_cap={:.2}_score_epoch={:?}_pending_roots={}_pending_rewards={})",

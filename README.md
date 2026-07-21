@@ -104,7 +104,26 @@ python scripts/task.py frozen-organic-capture-figures \
   --config experiments/configs/frozen_v1_organic_capture_main.yaml
 ```
 
-### 5. Sustained-Outage Experiment
+### 5. Long-Term Reward Reinvestment
+
+The RQ3 compounding stress test keeps the organic-capture network parameters,
+reinvests 50% of proposer and relay rewards, and compares paired PoS, fee-only,
+and full TopoStake trajectories:
+
+```bash
+python scripts/task.py frozen-reinvestment-gini-pilot
+python scripts/task.py frozen-reinvestment-gini-main --dry-run
+python scripts/task.py frozen-reinvestment-gini-main
+```
+
+To regenerate its report and three-line stake-Gini figure without rerunning:
+
+```bash
+python scripts/task.py frozen-reinvestment-gini-report
+python scripts/task.py frozen-reinvestment-gini-figures
+```
+
+### 6. Sustained-Outage Experiment
 
 ```bash
 python scripts/task.py frozen-sustained-outage-pilot
@@ -120,7 +139,7 @@ python scripts/task.py frozen-sustained-outage-report
 python scripts/task.py frozen-sustained-outage-figures
 ```
 
-### 6. Real-Client Ethereum Devnet
+### 7. Real-Client Ethereum Devnet
 
 The devnet additionally requires Docker, the Kurtosis CLI, and a local checkout
 of `ethereum-package`. Build the modified clients and package their images:

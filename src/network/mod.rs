@@ -149,6 +149,9 @@ pub struct SimulationConfig {
     pub failure_seed: u64,
     pub attack_seed: u64,
     pub base_reward: f64,
+    /// Fraction of each epoch's proposer and relay rewards added to economic
+    /// stake at the following epoch boundary.
+    pub reward_reinvestment_rate: f64,
     pub max_tx_per_block: usize,
     pub topostake_config: TopoStakeConfig,
     pub max_epochs: u64,
@@ -217,6 +220,11 @@ impl SimulationConfig {
         self.offline_probability = self.offline_probability.clamp(0.0, 1.0);
         self.adversary_stake_fraction = self.adversary_stake_fraction.clamp(0.0, 1.0);
         self.lazy_fraction = self.lazy_fraction.clamp(0.0, 1.0);
+        self.reward_reinvestment_rate = if self.reward_reinvestment_rate.is_finite() {
+            self.reward_reinvestment_rate.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
         if self.attack_tx_rate_multiplier < 0.0 || !self.attack_tx_rate_multiplier.is_finite() {
             self.attack_tx_rate_multiplier = 0.0;
         }
@@ -320,6 +328,7 @@ pub async fn start_network(config: SimulationConfig) {
         pow_max_threads,
         topostake_config.clone(),
         base_reward,
+        config.reward_reinvestment_rate,
         node_num,
         trans_num_per_second,
         topology.to_string(),

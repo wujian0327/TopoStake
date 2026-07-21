@@ -54,6 +54,9 @@ pub trait Consensus: Send + Sync {
         blockchain: &Blockchain,
     ) -> Result<Validator, ValidatorError>;
     fn on_epoch_end(&mut self, blocks: &[Block], validators: &[Validator]);
+    /// Refresh any epoch-frozen proposer state after an atomic stake transition.
+    /// Consensus implementations that read the live validator slice need no work.
+    fn on_stake_update(&mut self, _validators: &[Validator]) {}
     fn apply_block_feedback(&mut self, _block: &Block) {}
     fn state_summary(&self) -> String {
         String::new()

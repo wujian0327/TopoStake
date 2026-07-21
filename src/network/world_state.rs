@@ -90,6 +90,7 @@ pub struct WorldState {
     last_block_production_success: usize,
     last_block_production_failed: usize,
     pub base_reward: f64, // 所有共识的固定奖励
+    reward_reinvestment_rate: f64,
     pub max_epochs: u64,  // 最大运行Epoch数
     max_tx_per_block: usize,
     confirmation_latency_adjustment_s: f64,
@@ -152,6 +153,32 @@ impl EpochRewardReport {
     }
 }
 
+fn reinvest_epoch_rewards(
+    validators: &[Validator],
+    rewards: &EpochRewardReport,
+    rate: f64,
+) -> Vec<Validator> {
+    let rate = if rate.is_finite() {
+        rate.clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let total_rewards = rewards.total_by_address();
+    validators
+        .iter()
+        .cloned()
+        .map(|mut validator| {
+            let reward = total_rewards
+                .get(&validator.address)
+                .copied()
+                .unwrap_or(0.0)
+                .max(0.0);
+            validator.stake += rate * reward;
+            validator
+        })
+        .collect()
+}
+
 #[derive(Serialize, Deserialize)]
 pub struct LogicalTxMetadata {
     pub created_epoch: u64,
@@ -195,6 +222,7 @@ impl WorldState {
         pow_max_threads: usize,
         topostake_config: TopoStakeConfig,
         base_reward: f64,
+        reward_reinvestment_rate: f64,
         node_num: u32,
         trans_num: u32,
         topology: String,
@@ -351,6 +379,11 @@ impl WorldState {
                 last_block_production_success: 0,
                 last_block_production_failed: 0,
                 base_reward,
+                reward_reinvestment_rate: if reward_reinvestment_rate.is_finite() {
+                    reward_reinvestment_rate.clamp(0.0, 1.0)
+                } else {
+                    0.0
+                },
                 max_epochs,
                 max_tx_per_block,
                 confirmation_latency_adjustment_s,
@@ -659,8 +692,13 @@ impl WorldState {
         let blocks = self.blockchain.read().await.get_last_epoch_block();
         let validators = self.validators.read().await.clone();
         self.consensus.on_epoch_end(&blocks, &validators);
-        self.collect_epoch_metrics(current_slot.current_epoch, &blocks, &validators)
+        let next_validators = self
+            .collect_epoch_metrics(current_slot.current_epoch, &blocks, &validators)
             .await;
+        if self.reward_reinvestment_rate > 0.0 {
+            *self.validators.write().await = next_validators.clone();
+            self.consensus.on_stake_update(&next_validators);
+        }
         if !self.scheduled_outage_active(next_epoch) {
             self.update_scheduled_availability(next_epoch);
         }
@@ -685,7 +723,12 @@ impl WorldState {
         }));
 
         // 打印每个 epoch 的节点余额信息
-        let mut node_stakes: Vec<(u32, f64)> = validators
+        let effective_validators = if self.reward_reinvestment_rate > 0.0 {
+            &next_validators
+        } else {
+            &validators
+        };
+        let mut node_stakes: Vec<(u32, f64)> = effective_validators
             .iter()
             .filter_map(|validator| {
                 self.nodes_index
@@ -908,7 +951,7 @@ impl WorldState {
         epoch: u64,
         blocks: &[Block],
         validators: &[Validator],
-    ) {
+    ) -> Vec<Validator> {
         let snapshot = self.consensus.metrics_snapshot();
         let generated_total = self.generated_tx_counter.load(Ordering::Relaxed);
         let generated_tx = generated_total.saturating_sub(self.last_generated_tx_counter);
@@ -972,6 +1015,11 @@ impl WorldState {
         self.write_inclusion_samples(&inclusion_samples);
 
         let reward_report = self.estimate_epoch_rewards(&epoch_blocks, validators, &snapshot);
+        let next_validators = reinvest_epoch_rewards(
+            validators,
+            &reward_report,
+            self.reward_reinvestment_rate,
+        );
         let organic_capture = self.organic_capture_report(&epoch_blocks, validators, &snapshot);
         for (address, reward) in reward_report.total_by_address() {
             *self.total_reward_income.entry(address).or_insert(0.0) += reward;
@@ -1235,6 +1283,7 @@ impl WorldState {
         self.last_block_production_success = self.block_production_success;
         self.last_block_production_failed = self.block_production_failed;
         self.write_run_summary(epoch + 1).await;
+        next_validators
     }
 
     fn write_epoch_metrics(&mut self, metrics: &EpochMetrics) {
@@ -1905,6 +1954,43 @@ mod tests {
     use log::info;
 
     #[test]
+    fn reinvestment_applies_proposer_and_relay_rewards_atomically() {
+        let validators = vec![
+            Validator::new("alice".to_string(), 2.0, 1.0),
+            Validator::new("bob".to_string(), 3.0, 1.0),
+        ];
+        let mut rewards = EpochRewardReport::default();
+        rewards
+            .proposer_by_address
+            .insert("alice".to_string(), 0.4);
+        rewards
+            .relay_by_address
+            .insert("alice".to_string(), 0.2);
+        rewards
+            .relay_by_address
+            .insert("bob".to_string(), 0.6);
+
+        let updated = reinvest_epoch_rewards(&validators, &rewards, 0.5);
+        assert!((updated[0].stake - 2.3).abs() < 1e-12);
+        assert!((updated[1].stake - 3.3).abs() < 1e-12);
+        assert_eq!(validators[0].stake, 2.0);
+        assert_eq!(validators[1].stake, 3.0);
+    }
+
+    #[test]
+    fn zero_reinvestment_preserves_stake_exactly() {
+        let validators = vec![Validator::new("alice".to_string(), 2.0, 1.0)];
+        let mut rewards = EpochRewardReport::default();
+        rewards
+            .proposer_by_address
+            .insert("alice".to_string(), 99.0);
+        assert_eq!(
+            reinvest_epoch_rewards(&validators, &rewards, 0.0)[0].stake,
+            2.0
+        );
+    }
+
+    #[test]
     fn organic_capture_excludes_coalition_origins_and_accounts_relayer_credit() {
         let origin = Wallet::new();
         let adversary = Wallet::new();
@@ -1951,6 +2037,7 @@ mod tests {
             8,
             config,
             0.1,
+            0.0,
             3,
             1,
             "ba".to_string(),
@@ -2007,6 +2094,7 @@ mod tests {
             8,
             TopoStakeConfig::default(),
             0.0, // base_reward
+            0.0, // reward_reinvestment_rate
             20,
             10,
             "ba".to_string(),
@@ -2045,6 +2133,7 @@ mod tests {
             8,
             TopoStakeConfig::default(),
             0.0, // base_reward
+            0.0, // reward_reinvestment_rate
             20,
             10,
             "ba".to_string(),
