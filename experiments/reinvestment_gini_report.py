@@ -232,7 +232,14 @@ def main() -> int:
     run_root = RAW_ROOT / str(spec["suite"]) / "reinvestment_gini"
     all_rows: list[dict[str, Any]] = []
     audits: list[dict[str, Any]] = []
+    expected_revision = str(spec["defaults"].get("run_revision", ""))
+    expected_rate = float(spec["defaults"]["reward_reinvestment_rate"])
     for meta_path in sorted(run_root.glob("*/experiment_meta.json")):
+        meta = read_json(meta_path)
+        if str(meta.get("run_revision", "")) != expected_revision:
+            continue
+        if float(meta.get("reward_reinvestment_rate", -1.0)) != expected_rate:
+            continue
         rows, audit = summarize_run(meta_path.parent)
         all_rows.extend(rows)
         audits.append(audit)
@@ -267,6 +274,7 @@ def main() -> int:
                 "observed_runs": len(audits),
                 "protocols": list(PROTOCOLS),
                 "reward_reinvestment_rate": spec["defaults"]["reward_reinvestment_rate"],
+                "run_revision": expected_revision,
                 "max_epochs": spec["defaults"]["max_epochs"],
             },
             indent=2,

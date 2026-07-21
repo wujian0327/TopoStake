@@ -106,9 +106,9 @@ python scripts/task.py frozen-organic-capture-figures \
 
 ### 5. Long-Term Reward Reinvestment
 
-The RQ3 compounding stress test keeps the organic-capture network parameters,
-reinvests 50% of proposer and relay rewards, and compares paired PoS, fee-only,
-and full TopoStake trajectories:
+The RQ3 upper-bound compounding stress test keeps the organic-capture network
+parameters, reinvests 100% of proposer and relay rewards, and compares paired
+PoS, fee-only, and full TopoStake trajectories:
 
 ```bash
 python scripts/task.py frozen-reinvestment-gini-pilot

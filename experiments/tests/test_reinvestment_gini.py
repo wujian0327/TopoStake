@@ -97,7 +97,10 @@ class ReinvestmentGiniTests(unittest.TestCase):
             {run["protocol_label"] for run in runs},
             {"pos", "topostake_eta0", "topostake"},
         )
-        self.assertTrue(all(run["reward_reinvestment_rate"] == 0.5 for run in runs))
+        self.assertTrue(all(run["reward_reinvestment_rate"] == 1.0 for run in runs))
+        self.assertTrue(
+            all(run["run_revision"] == "rq3-reinvestment-gini-xi1-v2" for run in runs)
+        )
         self.assertTrue(all(run["max_epochs"] == 1000 for run in runs))
         self.assertTrue(all(run["stake_gini"] == 0.6 for run in runs))
         self.assertTrue(all(run["topology"] == "ba" for run in runs))

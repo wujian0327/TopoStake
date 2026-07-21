@@ -7,7 +7,7 @@
   "timeout_seconds": 600,
   "seeds": [0, 1],
   "defaults": {
-    "run_revision": "rq3-reinvestment-gini-pilot-v1",
+    "run_revision": "rq3-reinvestment-gini-pilot-xi1-v2",
     "node_num": 100,
     "sybil_node_num": 0,
     "fake_node_num": 0,
@@ -17,7 +17,7 @@
     "stake_gini": 0.6,
     "transaction_fee": 0.001,
     "base_reward": 0.1,
-    "reward_reinvestment_rate": 0.5,
+    "reward_reinvestment_rate": 1.0,
     "slot_duration": 1,
     "slot_per_epoch": 5,
     "max_epochs": 12,
