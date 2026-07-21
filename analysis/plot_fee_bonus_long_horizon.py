@@ -26,6 +26,22 @@ DEFAULT_OUTPUT = ROOT / "figures" / "frozen_v1_fee_bonus"
 COLORS = {"topostake_eta0": "#E69F00", "topostake": "#0072B2"}
 MARKERS = {"topostake_eta0": "s", "topostake": "o"}
 LABELS = {"topostake_eta0": r"Fee-only ($\eta=0$)", "topostake": "Full TopoStake"}
+PAIRED_PREMIUM_SERIES = (
+    (
+        "participation_reward_premium_per_stake",
+        "Realized reward/stake",
+        "#E69F00",
+        "s",
+        -1.25,
+    ),
+    (
+        "participation_weight_multiplier_premium",
+        "Expected weight multiplier",
+        "#0072B2",
+        "o",
+        1.25,
+    ),
+)
 
 
 def load_yaml(path: Path) -> dict[str, Any]:
@@ -184,6 +200,58 @@ def render_paired_difference(
     plt.close(fig)
 
 
+def render_paired_premium_comparison(
+    rows: list[dict[str, str]],
+    output: Path,
+) -> None:
+    """Compare full-minus-fee-only premium estimates from paired seeds."""
+    fig, axis = plt.subplots(figsize=(3.45, 2.55))
+    plotted = False
+    for metric, label, color, marker, x_offset in PAIRED_PREMIUM_SERIES:
+        points = sorted(
+            (
+                number(row["lazy_fraction"]),
+                number(row["mean"]),
+                *interval_errors(row),
+            )
+            for row in rows
+            if row.get("metric") == metric
+            and row.get("series") == "full-minus-fee-only"
+            and number(row["lazy_fraction"]) > 0.0
+        )
+        if not points:
+            raise ValueError(f"no paired rows for {metric}")
+        axis.errorbar(
+            [100.0 * point[0] + x_offset for point in points],
+            [point[1] for point in points],
+            yerr=(
+                [point[2] for point in points],
+                [point[3] for point in points],
+            ),
+            color=color,
+            marker=marker,
+            linestyle="none",
+            markersize=4.5,
+            capsize=2.5,
+            label=label,
+        )
+        plotted = True
+    if not plotted:
+        raise ValueError("no paired premium rows")
+    axis.axhline(0.0, color="#666666", linewidth=0.9, linestyle="--")
+    axis.set_xlabel("Lazy relayers (%)")
+    axis.set_ylabel("Paired premium difference")
+    axis.set_xticks([25, 50, 75])
+    axis.set_xlim(18, 82)
+    axis.grid(axis="y", color="#E6E6E6", linewidth=0.7)
+    axis.legend(frameon=False, loc="upper left")
+    fig.subplots_adjust(bottom=0.18, left=0.22, right=0.97, top=0.97)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    for suffix in ("pdf", "png"):
+        fig.savefig(output.with_suffix(f".{suffix}"), dpi=300, facecolor="white")
+    plt.close(fig)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
@@ -229,12 +297,6 @@ def main() -> int:
             0.0,
         ),
         (
-            "participation_reward_premium_per_stake",
-            "Reward/stake premium",
-            "fee_bonus_long_horizon_g",
-            0.01,
-        ),
-        (
             "participation_weight_multiplier_premium",
             "Weight/stake premium",
             "fee_bonus_long_horizon_i",
@@ -258,6 +320,10 @@ def main() -> int:
             if latency_panel
             else ("topostake_eta0", "topostake"),
         )
+    render_paired_premium_comparison(
+        rows,
+        args.output_dir / "fee_bonus_long_horizon_g",
+    )
     render_paired_difference(
         rows,
         "participation_reward_premium_per_stake",
@@ -265,7 +331,7 @@ def main() -> int:
         "",
         args.output_dir / "fee_bonus_long_horizon_h",
     )
-    print(f"generated {(len(specifications) + 1) * 2} files from {groups_path}")
+    print(f"generated {(len(specifications) + 2) * 2} files from {groups_path}")
     return 0
 
 
