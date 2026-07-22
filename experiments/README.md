@@ -16,6 +16,8 @@ support the current frozen-v1 evaluation.
   trajectories under a full-reinvestment upper-bound stress test.
 - `frozen_v1_sustained_outage_{pilot,main}.yaml`: random sustained outages and
   proposer-side adaptation.
+- `frozen_v1_sustained_outage_eta_pilot.yaml`: five-seed, 20%-stake outage
+  sweep over `eta={0,0.25,0.5,0.75,1}`.
 - `frozen_v1_devnet_{pilot,main}.yaml`: paired real-client Ethereum devnet
   feasibility and overhead.
 - `frozen_v1_topology_scale_timing_probe.yaml`: six-run BA scalability probe

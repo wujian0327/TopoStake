@@ -410,6 +410,76 @@ def render_adaptation(
     return save_figure(fig, output)
 
 
+def render_eta_sweep(
+    pairs: list[dict[str, str]], selection: str, output: Path
+) -> list[Path]:
+    """Compare expected and realized missed-slot reductions across eta arms."""
+    selected = [row for row in pairs if row["selection"] == selection]
+    targets = sorted({number(row["target_stake_fraction"]) for row in selected})
+    if not selected or not targets:
+        raise ValueError("no sustained-outage eta-sweep pairs")
+
+    fig, axis = plt.subplots(figsize=PANEL_FIGSIZE)
+    colors = (BLUE, ORANGE, "#009E73")
+    for target, color in zip(targets, colors):
+        target_rows = [
+            row
+            for row in selected
+            if number(row["target_stake_fraction"]) == target
+        ]
+        for metric, linestyle, marker, label_prefix in (
+            (
+                "steady_expected_miss_rate_improvement",
+                "-",
+                "o",
+                "Expected",
+            ),
+            ("miss_rate_improvement", "--", "s", "Realized"),
+        ):
+            grouped: dict[float, list[float]] = defaultdict(list)
+            grouped[0.0].append(0.0)
+            for row in target_rows:
+                grouped[number(row["eta"])].append(100.0 * number(row[metric]))
+            points = []
+            for eta, values in sorted(grouped.items()):
+                value, ci, count = mean_ci(values)
+                if count:
+                    points.append((eta, value, ci))
+            axis.errorbar(
+                [point[0] for point in points],
+                [point[1] for point in points],
+                yerr=[point[2] for point in points],
+                color=color,
+                linestyle=linestyle,
+                marker=marker,
+                markerfacecolor="white",
+                markeredgecolor=color,
+                linewidth=1.1,
+                markersize=3.8,
+                capsize=1.8,
+                label=f"{label_prefix}, {100.0 * target:.0f}% outage",
+            )
+    eta_values = sorted({0.0} | {number(row["eta"]) for row in selected})
+    axis.axhline(0.0, color=GRAY, linestyle=":", linewidth=0.8)
+    axis.set_xlabel(r"Persistent-weight strength $\eta$")
+    axis.set_ylabel("Missed-slot reduction (pp)")
+    axis.set_xticks(eta_values)
+    axis.set_xlim(min(eta_values) - 0.04, max(eta_values) + 0.04)
+    axis.grid(axis="y", color="#E6E6E6", linewidth=0.7)
+    axis.legend(
+        loc="best",
+        frameon=True,
+        facecolor="white",
+        edgecolor="none",
+        framealpha=0.9,
+        handlelength=1.7,
+        labelspacing=0.3,
+        borderaxespad=0.35,
+    )
+    fig.subplots_adjust(bottom=0.18, left=0.20, right=0.97, top=0.97)
+    return save_figure(fig, output)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
@@ -434,6 +504,15 @@ def main() -> int:
     suffixes = {"random": "random", "high-score": "high_score"}
     for selection in map(str, spec["outage"]["selections"]):
         suffix = suffixes.get(selection, selection.replace("-", "_"))
+        if spec["outage"].get("eta_sweep", False):
+            outputs.extend(
+                render_eta_sweep(
+                    pairs,
+                    selection,
+                    args.output_dir / f"sustained_outage_eta_sweep_{suffix}",
+                )
+            )
+            continue
         outputs.extend(
             render_weight_share(
                 runs,

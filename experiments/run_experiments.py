@@ -155,8 +155,19 @@ def seed_bundle(seed_value: int) -> Dict[str, int]:
 
 
 def protocol_cli(protocol_variant: str) -> Dict[str, Any]:
-    if protocol_variant == "topostake_eta0":
-        return {"protocol": "topostake", "protocol_label": "topostake_eta0", "eta": 0.0}
+    if protocol_variant.startswith("topostake_eta"):
+        encoded_eta = protocol_variant.removeprefix("topostake_eta").replace("p", ".")
+        try:
+            eta = float(encoded_eta)
+        except ValueError as error:
+            raise ValueError(f"invalid TopoStake eta variant: {protocol_variant}") from error
+        if not 0.0 <= eta <= 1.0:
+            raise ValueError(f"TopoStake eta variant outside [0,1]: {protocol_variant}")
+        return {
+            "protocol": "topostake",
+            "protocol_label": protocol_variant,
+            "eta": eta,
+        }
     return {"protocol": protocol_variant, "protocol_label": protocol_variant}
 
 

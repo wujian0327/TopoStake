@@ -364,6 +364,12 @@ def task_sustained_outage_pilot(args: argparse.Namespace) -> None:
     )
 
 
+def task_sustained_outage_eta_pilot(args: argparse.Namespace) -> None:
+    task_sustained_outage(
+        args, "experiments/configs/frozen_v1_sustained_outage_eta_pilot.yaml"
+    )
+
+
 def task_sustained_outage_main(args: argparse.Namespace) -> None:
     task_sustained_outage(
         args, "experiments/configs/frozen_v1_sustained_outage_main.yaml"
@@ -472,6 +478,7 @@ TASKS: Dict[str, Callable[[argparse.Namespace], None]] = {
     "frozen-topology-scale-timing-probe": task_topology_scale_timing_probe,
     "frozen-topology-scale-report": task_topology_scale_report,
     "frozen-sustained-outage-pilot": task_sustained_outage_pilot,
+    "frozen-sustained-outage-eta-pilot": task_sustained_outage_eta_pilot,
     "frozen-sustained-outage-main": task_sustained_outage_main,
     "frozen-sustained-outage-report": task_sustained_outage_report,
     "frozen-sustained-outage-figures": task_sustained_outage_figures,

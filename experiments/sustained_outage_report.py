@@ -125,6 +125,7 @@ def summarize_run(run_dir: Path) -> Dict[str, Any]:
         "run_id": meta["run_id"],
         "output_dir": str(run_dir),
         "protocol_label": meta["protocol_label"],
+        "eta": float(meta.get("eta", 0.0)),
         "seed_index": int(meta["seed_index"]),
         "selection": meta["outage_selection"],
         "outage_start_epoch": start,
@@ -184,82 +185,99 @@ def write_csv(path: Path, rows: List[Dict[str, Any]], excluded: set[str] | None 
 
 
 def paired_rows(runs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    groups: Dict[tuple[Any, ...], Dict[str, Dict[str, Any]]] = defaultdict(dict)
+    groups: Dict[tuple[Any, ...], Dict[float, Dict[str, Any]]] = defaultdict(dict)
     for run in runs:
         key = (run["seed_index"], run["selection"], run["target_stake_fraction"])
-        groups[key][run["protocol_label"]] = run
+        groups[key][float(run["eta"])] = run
     pairs = []
     for key, variants in sorted(groups.items()):
-        if "topostake_eta0" not in variants or "topostake" not in variants:
+        eta0 = variants.get(0.0)
+        if eta0 is None:
             continue
-        eta0 = variants["topostake_eta0"]
-        full = variants["topostake"]
-        pairs.append(
-            {
-                "seed_index": key[0],
-                "selection": key[1],
-                "target_stake_fraction": key[2],
-                "realized_stake_fraction": full["realized_stake_fraction"],
-                "assignment_match": eta0["assignment_sha256"] == full["assignment_sha256"],
-                "duty_slots_match": eta0["duty_slot_keys"] == full["duty_slot_keys"],
-                "eta0_miss_rate": eta0["miss_rate"],
-                "full_miss_rate": full["miss_rate"],
-                "miss_rate_improvement": eta0["miss_rate"] - full["miss_rate"],
-                "eta0_expected_miss_rate": eta0["expected_miss_rate"],
-                "full_expected_miss_rate": full["expected_miss_rate"],
-                "expected_miss_rate_improvement": eta0["expected_miss_rate"]
-                - full["expected_miss_rate"],
-                "eta0_steady_group_weight": eta0["steady_group_weight"],
-                "full_steady_group_weight": full["steady_group_weight"],
-                "steady_expected_miss_rate_improvement": eta0["steady_group_weight"]
-                - full["steady_group_weight"],
-                "weight_share_reduction": eta0["steady_group_weight"] - full["steady_group_weight"],
-                "eta0_chain_growth_ratio": eta0["chain_growth_ratio"],
-                "full_chain_growth_ratio": full["chain_growth_ratio"],
-                "chain_growth_improvement": full["chain_growth_ratio"] - eta0["chain_growth_ratio"],
-                "p95_latency_delta_s": full["steady_p95_inclusion_latency_s"] - eta0["steady_p95_inclusion_latency_s"],
-            }
-        )
+        for eta, full in sorted(variants.items()):
+            if eta <= 0.0:
+                continue
+            pairs.append(
+                {
+                    "seed_index": key[0],
+                    "selection": key[1],
+                    "target_stake_fraction": key[2],
+                    "eta": eta,
+                    "protocol_label": full["protocol_label"],
+                    "realized_stake_fraction": full["realized_stake_fraction"],
+                    "assignment_match": eta0["assignment_sha256"]
+                    == full["assignment_sha256"],
+                    "duty_slots_match": eta0["duty_slot_keys"]
+                    == full["duty_slot_keys"],
+                    "eta0_miss_rate": eta0["miss_rate"],
+                    "full_miss_rate": full["miss_rate"],
+                    "miss_rate_improvement": eta0["miss_rate"] - full["miss_rate"],
+                    "eta0_expected_miss_rate": eta0["expected_miss_rate"],
+                    "full_expected_miss_rate": full["expected_miss_rate"],
+                    "expected_miss_rate_improvement": eta0["expected_miss_rate"]
+                    - full["expected_miss_rate"],
+                    "eta0_steady_group_weight": eta0["steady_group_weight"],
+                    "full_steady_group_weight": full["steady_group_weight"],
+                    "steady_expected_miss_rate_improvement": eta0[
+                        "steady_group_weight"
+                    ]
+                    - full["steady_group_weight"],
+                    "weight_share_reduction": eta0["steady_group_weight"]
+                    - full["steady_group_weight"],
+                    "eta0_chain_growth_ratio": eta0["chain_growth_ratio"],
+                    "full_chain_growth_ratio": full["chain_growth_ratio"],
+                    "chain_growth_improvement": full["chain_growth_ratio"]
+                    - eta0["chain_growth_ratio"],
+                    "p95_latency_delta_s": full["steady_p95_inclusion_latency_s"]
+                    - eta0["steady_p95_inclusion_latency_s"],
+                }
+            )
     return pairs
 
 
 def paired_epoch_rows(runs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Pair the outage-group proposer-weight trace for each simulated epoch."""
-    groups: Dict[tuple[Any, ...], Dict[str, Dict[str, Any]]] = defaultdict(dict)
+    groups: Dict[tuple[Any, ...], Dict[float, Dict[str, Any]]] = defaultdict(dict)
     for run in runs:
         key = (run["seed_index"], run["selection"], run["target_stake_fraction"])
-        groups[key][run["protocol_label"]] = run
+        groups[key][float(run["eta"])] = run
 
     rows = []
     for key, variants in sorted(groups.items()):
-        if "topostake_eta0" not in variants or "topostake" not in variants:
+        eta0 = variants.get(0.0)
+        if eta0 is None:
             continue
-        eta0 = variants["topostake_eta0"]
-        full = variants["topostake"]
         eta0_weights = eta0["group_weight_by_epoch"]
-        full_weights = full["group_weight_by_epoch"]
-        shared_epochs = sorted(set(eta0_weights) & set(full_weights))
-        start = int(full["outage_start_epoch"])
-        for epoch in shared_epochs:
-            rows.append(
-                {
-                    "seed_index": key[0],
-                    "selection": key[1],
-                    "target_stake_fraction": key[2],
-                    "epoch_since_outage": epoch - start,
-                    "eta0_group_weight": eta0_weights[epoch],
-                    "full_group_weight": full_weights[epoch],
-                    "weight_share_reduction": eta0_weights[epoch]
-                    - full_weights[epoch],
-                }
-            )
+        for eta, full in sorted(variants.items()):
+            if eta <= 0.0:
+                continue
+            full_weights = full["group_weight_by_epoch"]
+            shared_epochs = sorted(set(eta0_weights) & set(full_weights))
+            start = int(full["outage_start_epoch"])
+            for epoch in shared_epochs:
+                rows.append(
+                    {
+                        "seed_index": key[0],
+                        "selection": key[1],
+                        "target_stake_fraction": key[2],
+                        "eta": eta,
+                        "protocol_label": full["protocol_label"],
+                        "epoch_since_outage": epoch - start,
+                        "eta0_group_weight": eta0_weights[epoch],
+                        "full_group_weight": full_weights[epoch],
+                        "weight_share_reduction": eta0_weights[epoch]
+                        - full_weights[epoch],
+                    }
+                )
     return rows
 
 
 def markdown_summary(pairs: List[Dict[str, Any]], acceptance: Dict[str, Any]) -> str:
-    grouped: Dict[tuple[str, float], List[Dict[str, Any]]] = defaultdict(list)
+    grouped: Dict[tuple[str, float, float], List[Dict[str, Any]]] = defaultdict(list)
     for pair in pairs:
-        grouped[(pair["selection"], pair["target_stake_fraction"])].append(pair)
+        grouped[
+            (pair["selection"], pair["target_stake_fraction"], pair["eta"])
+        ].append(pair)
     lines = [
         "# Sustained-outage simulator summary",
         "",
@@ -267,13 +285,13 @@ def markdown_summary(pairs: List[Dict[str, Any]], acceptance: Dict[str, Any]) ->
         "",
         "The expected missed-slot rate is the outage group's mean proposer-weight share over the outage; it removes finite slot-lottery noise while preserving the same frozen per-epoch election weights.",
         "",
-        "| Selection | Target stake | Seeds | Expected miss reduction | Realized miss reduction | Steady expected reduction | Positive realized pairs |",
-        "|---|---:|---:|---:|---:|---:|---:|",
+        "| Selection | Target stake | Eta | Seeds | Expected miss reduction | Realized miss reduction | Steady expected reduction | Positive realized pairs |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|",
     ]
-    for (selection, target), rows in sorted(grouped.items()):
+    for (selection, target, eta), rows in sorted(grouped.items()):
         improvements = [row["miss_rate_improvement"] for row in rows]
         lines.append(
-            f"| {selection} | {target:.0%} | {len(rows)} | "
+            f"| {selection} | {target:.0%} | {eta:.2f} | {len(rows)} | "
             f"{mean(row['expected_miss_rate_improvement'] for row in rows):.4f} | "
             f"{mean(improvements):.4f} | "
             f"{mean(row['steady_expected_miss_rate_improvement'] for row in rows):.4f} | "
@@ -314,9 +332,15 @@ def main() -> int:
     ]
     pairs = paired_rows(runs)
     epoch_pairs = paired_epoch_rows(runs)
+    condition_count = (
+        len(allowed_seed_indices) * len(allowed_selections) * len(allowed_targets)
+    )
+    expected_run_count = condition_count * len(allowed_protocols)
+    expected_pair_count = condition_count * max(0, len(allowed_protocols) - 1)
     checks = {
         "all_runs_complete": bool(runs) and all(run["completed"] for run in runs),
-        "all_pairs_present": len(pairs) * 2 == len(runs),
+        "all_runs_present": len(runs) == expected_run_count,
+        "all_pairs_present": len(pairs) == expected_pair_count,
         "paired_assignments_match": all(pair["assignment_match"] for pair in pairs),
         "paired_duty_slots_match": all(pair["duty_slots_match"] for pair in pairs),
         "scheduled_outage_enforced": all(run["group_miss_enforcement"] for run in runs),
@@ -331,7 +355,7 @@ def main() -> int:
         "eta0_weight_equals_stake": all(
             run["eta0_weight_error"] <= run["eta0_weight_tolerance"]
             for run in runs
-            if run["protocol_label"] == "topostake_eta0"
+            if float(run["eta"]) == 0.0
         ),
         "no_weight_envelope_violation": all(run["bound_violations"] == 0 for run in runs),
     }
@@ -357,7 +381,7 @@ def main() -> int:
                 (
                     run["eta0_weight_error"]
                     for run in runs
-                    if run["protocol_label"] == "topostake_eta0"
+                    if float(run["eta"]) == 0.0
                 ),
                 default=0.0,
             ),
@@ -365,7 +389,7 @@ def main() -> int:
                 (
                     run["eta0_weight_tolerance"]
                     for run in runs
-                    if run["protocol_label"] == "topostake_eta0"
+                    if float(run["eta"]) == 0.0
                 ),
                 default=0.0,
             ),

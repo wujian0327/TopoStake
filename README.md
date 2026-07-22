@@ -132,6 +132,8 @@ python scripts/task.py frozen-reinvestment-gini-figures
 
 ```bash
 python scripts/task.py frozen-sustained-outage-pilot
+python scripts/task.py frozen-sustained-outage-eta-pilot --dry-run
+python scripts/task.py frozen-sustained-outage-eta-pilot
 python scripts/task.py frozen-sustained-outage-main --dry-run
 python scripts/task.py frozen-sustained-outage-main
 ```
@@ -143,6 +145,11 @@ from existing results with:
 python scripts/task.py frozen-sustained-outage-report
 python scripts/task.py frozen-sustained-outage-figures
 ```
+
+The eta pilot holds the outage target at 20% stake and compares
+`eta={0,0.25,0.5,0.75,1}` over five paired seeds. It writes a separate
+expected-versus-realized missed-slot reduction figure without replacing the
+main RQ5 artifacts.
 
 ### 7. Real-Client Ethereum Devnet
 

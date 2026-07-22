@@ -14,6 +14,7 @@ from plot_sustained_outage import (  # noqa: E402
     grouped_run_metric,
     mean_ci,
     render_adaptation,
+    render_eta_sweep,
     render_missed_slot_rate,
     render_weight_share,
     trailing_means,
@@ -90,6 +91,22 @@ class SustainedOutagePlotTests(unittest.TestCase):
                     )
         return rows
 
+    def eta_pairs(self) -> list[dict[str, str]]:
+        rows = []
+        for seed in range(3):
+            for eta in (0.25, 0.5, 0.75, 1.0):
+                rows.append(
+                    {
+                        "seed_index": str(seed),
+                        "selection": "random",
+                        "target_stake_fraction": "0.2",
+                        "eta": str(eta),
+                        "steady_expected_miss_rate_improvement": str(0.02 * eta),
+                        "miss_rate_improvement": str(0.018 * eta),
+                    }
+                )
+        return rows
+
     def test_grouped_run_metric_selects_protocol(self) -> None:
         grouped = grouped_run_metric(
             self.runs(), "steady_group_weight", "random", "topostake"
@@ -117,11 +134,16 @@ class SustainedOutagePlotTests(unittest.TestCase):
             render_adaptation(
                 self.epoch_pairs(), "random", output / "adaptation_random"
             )
+            render_eta_sweep(
+                self.eta_pairs(), "random", output / "eta_sweep_random"
+            )
             for stem in ("weight_random", "weight_high", "miss_random", "miss_high"):
                 self.assertTrue((output / f"{stem}.pdf").exists())
                 self.assertTrue((output / f"{stem}.png").exists())
             self.assertTrue((output / "adaptation_random.pdf").exists())
             self.assertTrue((output / "adaptation_random.png").exists())
+            self.assertTrue((output / "eta_sweep_random.pdf").exists())
+            self.assertTrue((output / "eta_sweep_random.png").exists())
 
 
 if __name__ == "__main__":

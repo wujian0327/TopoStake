@@ -8,7 +8,8 @@ EXPERIMENTS = Path(__file__).resolve().parents[1]
 if str(EXPERIMENTS) not in sys.path:
     sys.path.insert(0, str(EXPERIMENTS))
 
-from run_sustained_outage import assignment_for, closest_prefix
+from run_experiments import protocol_cli
+from run_sustained_outage import assignment_for, closest_prefix, experiment_runs
 from sustained_outage_report import (
     effective_weight_epoch,
     group_weight_series,
@@ -67,16 +68,19 @@ class SustainedOutageAssignmentTests(unittest.TestCase):
         eta0 = dict(
             common,
             protocol_label="topostake_eta0",
+            eta=0.0,
             miss_rate=0.25,
             expected_miss_rate=0.24,
         )
         full = dict(
             common,
             protocol_label="topostake",
+            eta=0.5,
             miss_rate=0.20,
             expected_miss_rate=0.20,
         )
         pair = paired_rows([eta0, full])[0]
+        self.assertAlmostEqual(pair["eta"], 0.5)
         self.assertAlmostEqual(pair["miss_rate_improvement"], 0.05)
         self.assertAlmostEqual(pair["expected_miss_rate_improvement"], 0.04)
 
@@ -110,11 +114,13 @@ class SustainedOutageAssignmentTests(unittest.TestCase):
         eta0 = dict(
             common,
             protocol_label="topostake_eta0",
+            eta=0.0,
             group_weight_by_epoch={30: 0.20, 31: 0.20},
         )
         full = dict(
             common,
             protocol_label="topostake",
+            eta=0.5,
             group_weight_by_epoch={30: 0.20, 31: 0.18},
         )
         rows = paired_epoch_rows([eta0, full])
@@ -145,6 +151,45 @@ class SustainedOutageAssignmentTests(unittest.TestCase):
             self.assertTrue(
                 all(value < (1.0 / 3.0) for value in spec["outage"]["stake_fractions"])
             )
+
+    def test_eta_variants_map_to_topostake_strengths(self):
+        for label, eta in (
+            ("topostake_eta0", 0.0),
+            ("topostake_eta0p25", 0.25),
+            ("topostake_eta0p5", 0.5),
+            ("topostake_eta0p75", 0.75),
+            ("topostake_eta1", 1.0),
+        ):
+            resolved = protocol_cli(label)
+            self.assertEqual(resolved["protocol"], "topostake")
+            self.assertEqual(resolved["protocol_label"], label)
+            self.assertAlmostEqual(resolved["eta"], eta)
+
+    def test_eta_pilot_is_a_five_arm_twenty_percent_stake_sweep(self):
+        spec = json.loads(
+            (EXPERIMENTS / "configs" / "frozen_v1_sustained_outage_eta_pilot.yaml").read_text()
+        )
+        self.assertEqual(spec["seeds"], [0, 1, 2, 3, 4])
+        self.assertEqual(spec["outage"]["stake_fractions"], [0.20])
+        self.assertEqual(len(spec["outage"]["protocols"]), 5)
+        self.assertTrue(spec["outage"]["eta_sweep"])
+        assignments = [
+            {
+                "seed_index": seed,
+                "seed_value": seed,
+                "selection": "random",
+                "target_stake_fraction": 0.20,
+                "realized_stake_fraction": 0.20,
+                "validator_ids_csv": "1,2",
+                "assignment_sha256": f"assignment-{seed}",
+            }
+            for seed in spec["seeds"]
+        ]
+        runs = experiment_runs(spec, assignments)
+        self.assertEqual(len(runs), 25)
+        self.assertEqual(
+            sorted({run["eta"] for run in runs}), [0.0, 0.25, 0.5, 0.75, 1.0]
+        )
 
 
 if __name__ == "__main__":
