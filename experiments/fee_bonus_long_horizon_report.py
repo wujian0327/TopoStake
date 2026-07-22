@@ -39,6 +39,14 @@ PAIR_METRICS = (
     "active_total_reward_per_stake",
     "lazy_total_reward_per_stake",
     "participation_reward_premium_per_stake",
+    "active_stake_weighted_total_reward_per_stake",
+    "lazy_stake_weighted_total_reward_per_stake",
+    "stake_weighted_participation_reward_premium_per_stake",
+    "active_stake_weighted_expected_total_reward_per_stake",
+    "lazy_stake_weighted_expected_total_reward_per_stake",
+    "stake_weighted_expected_proposer_premium_per_stake",
+    "stake_weighted_relay_premium_per_stake",
+    "stake_weighted_expected_participation_reward_premium_per_stake",
     "active_forward_attempts_per_stake",
     "lazy_forward_attempts_per_stake",
     "participation_forward_premium_per_stake",
@@ -264,6 +272,15 @@ def aggregate_run(run: dict[str, Any]) -> dict[str, Any]:
         row for row in samples if int(number(row.get("created_slot"), -1.0)) >= warmup_slot
     ]
 
+    proposer_reward_by_epoch: dict[int, float] = defaultdict(float)
+    proposer_weight_total_by_epoch: dict[int, float] = defaultdict(float)
+    for row in usable_nodes:
+        epoch = int(number(row.get("epoch")))
+        proposer_reward_by_epoch[epoch] += number(row.get("proposer_reward"))
+        proposer_weight_total_by_epoch[epoch] += number(
+            row.get("normalized_proposer_weight")
+        )
+
     node_totals: dict[str, dict[str, Any]] = {}
     for row in usable_nodes:
         validator = row.get("validator_id", "")
@@ -276,6 +293,7 @@ def aggregate_run(run: dict[str, Any]) -> dict[str, Any]:
                 "betweenness": number(row.get("betweenness")),
                 "relay_reward": 0.0,
                 "proposer_reward": 0.0,
+                "expected_proposer_reward": 0.0,
                 "forward_attempts": 0.0,
                 "normalized_proposer_weight_sum": 0.0,
                 "epoch_observations": 0,
@@ -283,6 +301,17 @@ def aggregate_run(run: dict[str, Any]) -> dict[str, Any]:
         )
         item["relay_reward"] += number(row.get("relay_reward"))
         item["proposer_reward"] += number(row.get("proposer_reward"))
+        epoch = int(number(row.get("epoch")))
+        epoch_weight_total = proposer_weight_total_by_epoch[epoch]
+        if epoch_weight_total > 0.0:
+            # The CSV stores weights to six decimal places. Renormalizing each
+            # epoch removes serialization drift while preserving the frozen
+            # proposer lottery represented by those weights.
+            item["expected_proposer_reward"] += (
+                proposer_reward_by_epoch[epoch]
+                * number(row.get("normalized_proposer_weight"))
+                / epoch_weight_total
+            )
         item["forward_attempts"] += number(row.get("relay_forward_attempts"))
         item["normalized_proposer_weight_sum"] += number(
             row.get("normalized_proposer_weight")
@@ -309,6 +338,9 @@ def aggregate_run(run: dict[str, Any]) -> dict[str, Any]:
         relay_rewards.append(number(item["relay_reward"]))
         item["relay_reward_per_stake"] = relay_per_stake
         item["proposer_reward_per_stake"] = number(item["proposer_reward"]) / stake
+        item["expected_proposer_reward_per_stake"] = number(
+            item["expected_proposer_reward"]
+        ) / stake
         item["total_reward_per_stake"] = combined_per_stake
         item["forward_attempts_per_stake"] = number(item["forward_attempts"]) / stake
         normalized_stake = stake / total_stake if total_stake > 0.0 else 0.0
@@ -335,6 +367,14 @@ def aggregate_run(run: dict[str, Any]) -> dict[str, Any]:
     def profile_mean(profile: str, metric: str) -> float:
         values = [number(item.get(metric)) for item in by_profile.get(profile, [])]
         return statistics.mean(values) if values else 0.0
+
+    def profile_total(profile: str, metric: str) -> float:
+        return sum(number(item.get(metric)) for item in by_profile.get(profile, []))
+
+    def profile_reward_per_stake(profile: str, *reward_metrics: str) -> float:
+        stake = profile_total(profile, "stake")
+        reward = sum(profile_total(profile, metric) for metric in reward_metrics)
+        return reward / stake if stake > 0.0 else 0.0
 
     profile_comparison_available = bool(by_profile.get("active")) and bool(
         by_profile.get("lazy")
@@ -367,6 +407,45 @@ def aggregate_run(run: dict[str, Any]) -> dict[str, Any]:
         if profile_comparison_available
         else 0.0
     )
+    active_stake_weighted_total_reward_per_stake = profile_reward_per_stake(
+        "active", "relay_reward", "proposer_reward"
+    )
+    lazy_stake_weighted_total_reward_per_stake = profile_reward_per_stake(
+        "lazy", "relay_reward", "proposer_reward"
+    )
+    stake_weighted_participation_reward_premium = (
+        active_stake_weighted_total_reward_per_stake
+        - lazy_stake_weighted_total_reward_per_stake
+        if profile_comparison_available
+        else 0.0
+    )
+    active_stake_weighted_expected_total_reward_per_stake = profile_reward_per_stake(
+        "active", "relay_reward", "expected_proposer_reward"
+    )
+    lazy_stake_weighted_expected_total_reward_per_stake = profile_reward_per_stake(
+        "lazy", "relay_reward", "expected_proposer_reward"
+    )
+    stake_weighted_expected_proposer_premium = (
+        profile_reward_per_stake("active", "expected_proposer_reward")
+        - profile_reward_per_stake("lazy", "expected_proposer_reward")
+        if profile_comparison_available
+        else 0.0
+    )
+    stake_weighted_relay_premium = (
+        profile_reward_per_stake("active", "relay_reward")
+        - profile_reward_per_stake("lazy", "relay_reward")
+        if profile_comparison_available
+        else 0.0
+    )
+    stake_weighted_expected_participation_reward_premium = (
+        active_stake_weighted_expected_total_reward_per_stake
+        - lazy_stake_weighted_expected_total_reward_per_stake
+        if profile_comparison_available
+        else 0.0
+    )
+    expected_proposer_reward_total = sum(
+        number(item["expected_proposer_reward"]) for item in node_totals.values()
+    )
 
     complete = (
         status.get("status") == "ok"
@@ -396,6 +475,7 @@ def aggregate_run(run: dict[str, Any]) -> dict[str, Any]:
         "complete": complete,
         "usable_epoch_count": len(usable_epochs),
         "validator_count": len(node_totals),
+        "total_stake": total_stake,
         "generated_tx": generated,
         "included_tx": len(usable_samples),
         "inclusion_sample_duplicate_count": duplicate_samples,
@@ -440,6 +520,33 @@ def aggregate_run(run: dict[str, Any]) -> dict[str, Any]:
         "active_total_reward_per_stake": active_total_reward_per_stake,
         "lazy_total_reward_per_stake": lazy_total_reward_per_stake,
         "participation_reward_premium_per_stake": participation_reward_premium,
+        "active_stake_total": profile_total("active", "stake"),
+        "lazy_stake_total": profile_total("lazy", "stake"),
+        "active_stake_weighted_total_reward_per_stake": (
+            active_stake_weighted_total_reward_per_stake
+        ),
+        "lazy_stake_weighted_total_reward_per_stake": (
+            lazy_stake_weighted_total_reward_per_stake
+        ),
+        "stake_weighted_participation_reward_premium_per_stake": (
+            stake_weighted_participation_reward_premium
+        ),
+        "active_stake_weighted_expected_total_reward_per_stake": (
+            active_stake_weighted_expected_total_reward_per_stake
+        ),
+        "lazy_stake_weighted_expected_total_reward_per_stake": (
+            lazy_stake_weighted_expected_total_reward_per_stake
+        ),
+        "stake_weighted_expected_proposer_premium_per_stake": (
+            stake_weighted_expected_proposer_premium
+        ),
+        "stake_weighted_relay_premium_per_stake": stake_weighted_relay_premium,
+        "stake_weighted_expected_participation_reward_premium_per_stake": (
+            stake_weighted_expected_participation_reward_premium
+        ),
+        "expected_proposer_reward_accounting_error": abs(
+            expected_proposer_reward_total - proposer_reward_total
+        ),
         "active_forward_attempts_per_stake": active_forward_attempts_per_stake,
         "lazy_forward_attempts_per_stake": lazy_forward_attempts_per_stake,
         "participation_forward_premium_per_stake": participation_forward_premium,
@@ -675,6 +782,20 @@ def main() -> int:
         if (number(row["lazy_fraction"]) > 0.0)
         != bool(row["profile_comparison_available"])
     )
+    expected_reward_accounting_errors = sum(
+        number(row["expected_proposer_reward_accounting_error"])
+        > 1e-9 * max(1.0, number(row["proposer_reward_total"]))
+        for row in complete
+    )
+    profile_stake_accounting_errors = sum(
+        abs(
+            number(row["active_stake_total"])
+            + number(row["lazy_stake_total"])
+            - number(row["total_stake"])
+        )
+        > 1e-9 * max(1.0, number(row["total_stake"]))
+        for row in complete
+    )
     checks = [
         {
             "name": "run-completeness",
@@ -708,6 +829,16 @@ def main() -> int:
             "name": "participation-profile-coverage",
             "passed": profile_coverage_errors == 0,
             "detail": f"coverage errors={profile_coverage_errors}",
+        },
+        {
+            "name": "expected-proposer-reward-accounting",
+            "passed": expected_reward_accounting_errors == 0,
+            "detail": f"accounting errors={expected_reward_accounting_errors}",
+        },
+        {
+            "name": "participation-stake-accounting",
+            "passed": profile_stake_accounting_errors == 0,
+            "detail": f"accounting errors={profile_stake_accounting_errors}",
         },
         {
             "name": "finite-metrics",

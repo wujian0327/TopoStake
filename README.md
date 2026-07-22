@@ -87,6 +87,11 @@ python scripts/task.py frozen-fee-bonus-figures \
   --config experiments/configs/frozen_v1_fee_bonus_main.yaml
 ```
 
+The report recomputes both identity-weighted and stake-weighted realized
+reward premiums from the existing per-validator metrics.  It also converts
+the frozen proposer weights into an expected reward-per-stake premium.  These
+steps only reprocess existing raw outputs; they do not rerun the simulator.
+
 ### 4. Organic-Traffic Capture Experiment
 
 ```bash

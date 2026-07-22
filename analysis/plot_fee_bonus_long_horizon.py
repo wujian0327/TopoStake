@@ -28,15 +28,15 @@ MARKERS = {"topostake_eta0": "s", "topostake": "o"}
 LABELS = {"topostake_eta0": r"Fee-only ($\eta=0$)", "topostake": "Full TopoStake"}
 PAIRED_PREMIUM_SERIES = (
     (
-        "participation_reward_premium_per_stake",
+        "stake_weighted_participation_reward_premium_per_stake",
         "Realized reward/stake",
         "#E69F00",
         "s",
         -1.25,
     ),
     (
-        "participation_weight_multiplier_premium",
-        "Expected weight multiplier",
+        "stake_weighted_expected_participation_reward_premium_per_stake",
+        "Expected reward/stake",
         "#0072B2",
         "o",
         1.25,
@@ -240,7 +240,7 @@ def render_paired_premium_comparison(
         raise ValueError("no paired premium rows")
     axis.axhline(0.0, color="#666666", linewidth=0.9, linestyle="--")
     axis.set_xlabel("Lazy relayers (%)")
-    axis.set_ylabel("Paired premium difference")
+    axis.set_ylabel("Paired reward/stake premium")
     axis.set_xticks([25, 50, 75])
     axis.set_xlim(18, 82)
     axis.grid(axis="y", color="#E6E6E6", linewidth=0.7)
@@ -326,7 +326,7 @@ def main() -> int:
     )
     render_paired_difference(
         rows,
-        "participation_reward_premium_per_stake",
+        "stake_weighted_participation_reward_premium_per_stake",
         "Full-minus-fee-only premium",
         "",
         args.output_dir / "fee_bonus_long_horizon_h",

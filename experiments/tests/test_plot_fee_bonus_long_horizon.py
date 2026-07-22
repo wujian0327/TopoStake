@@ -45,9 +45,19 @@ class FeeBonusLongHorizonPlotTests(unittest.TestCase):
                 {
                     "series": "full-minus-fee-only",
                     "lazy_fraction": str(fraction),
-                    "metric": "participation_weight_multiplier_premium",
+                    "metric": "stake_weighted_participation_reward_premium_per_stake",
                     "n": "20",
-                    "mean": "0.07",
+                    "mean": "0.03",
+                    "ci95": "0.02",
+                }
+            )
+            rows.append(
+                {
+                    "series": "full-minus-fee-only",
+                    "lazy_fraction": str(fraction),
+                    "metric": "stake_weighted_expected_participation_reward_premium_per_stake",
+                    "n": "20",
+                    "mean": "0.04",
                     "ci95": "0.01",
                 }
             )

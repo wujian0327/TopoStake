@@ -103,11 +103,78 @@ class FeeBonusLongHorizonReportTests(unittest.TestCase):
             self.assertEqual(result["active_total_reward_per_stake"], 6.0)
             self.assertEqual(result["lazy_total_reward_per_stake"], 2.0)
             self.assertEqual(result["participation_reward_premium_per_stake"], 4.0)
+            self.assertEqual(
+                result["stake_weighted_participation_reward_premium_per_stake"],
+                4.0,
+            )
+            self.assertAlmostEqual(
+                result["stake_weighted_expected_proposer_premium_per_stake"],
+                2.4,
+            )
+            self.assertEqual(result["stake_weighted_relay_premium_per_stake"], 2.0)
+            self.assertAlmostEqual(
+                result[
+                    "stake_weighted_expected_participation_reward_premium_per_stake"
+                ],
+                4.4,
+            )
+            self.assertAlmostEqual(
+                result["expected_proposer_reward_accounting_error"], 0.0
+            )
+            self.assertEqual(result["total_stake"], 2.0)
+            self.assertEqual(
+                result["active_stake_total"] + result["lazy_stake_total"],
+                result["total_stake"],
+            )
             self.assertEqual(result["participation_forward_premium_per_stake"], 16.0)
             self.assertEqual(result["participation_break_even_cost_per_forward"], 0.25)
             self.assertAlmostEqual(result["active_proposer_weight_multiplier"], 1.4)
             self.assertAlmostEqual(result["lazy_proposer_weight_multiplier"], 0.6)
             self.assertAlmostEqual(result["participation_weight_multiplier_premium"], 0.8)
+
+    def test_stake_weighted_premium_uses_ratio_of_sums(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            (output / "runner_status.json").write_text('{"status":"ok"}')
+            (output / "run_summary.json").write_text('{"completed_epochs":1}')
+            (output / "run_config.json").write_text('{"git_commit_sha":"test"}')
+            (output / "epoch_metrics.csv").write_text(
+                "epoch,generated_tx,throughput,bound_violation\n"
+                "0,1,1.0,false\n"
+            )
+            (output / "node_epoch_metrics.csv").write_text(
+                "epoch,validator_id,relay_profile,economic_stake,relay_reward,"
+                "proposer_reward,normalized_proposer_weight,relay_forward_attempts,degree,betweenness\n"
+                "0,0,active,1,0,2,0.2,1,1,0\n"
+                "0,1,active,3,0,2,0.3,1,1,0\n"
+                "0,2,lazy,2,0,2,0.5,0,1,0\n"
+            )
+            (output / "inclusion_samples.csv").write_text(
+                "tx_hash,created_slot,latency_s,evidence_eligible\n"
+                "a,0,1.0,true\n"
+            )
+            result = aggregate_run(
+                {
+                    "output_dir": str(output),
+                    "suite": "test",
+                    "protocol_version": "frozen-v1",
+                    "experiment": "fee_bonus_long_horizon",
+                    "run_id": "test-run",
+                    "protocol_label": "topostake",
+                    "seed_index": 0,
+                    "lazy_fraction": 1.0 / 3.0,
+                    "warmup_epochs": 0,
+                    "slot_per_epoch": 1,
+                    "max_epochs": 1,
+                }
+            )
+            self.assertAlmostEqual(
+                result["participation_reward_premium_per_stake"], 1.0 / 3.0
+            )
+            self.assertAlmostEqual(
+                result["stake_weighted_participation_reward_premium_per_stake"],
+                0.0,
+            )
 
     def test_group_threshold_uses_ratio_of_means_not_mean_of_ratios(self) -> None:
         runs = []
