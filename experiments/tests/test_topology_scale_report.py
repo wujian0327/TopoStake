@@ -17,6 +17,20 @@ from topology_scale_report import (  # noqa: E402
 
 
 class TopologyScaleReportTests(unittest.TestCase):
+    def test_main_config_is_120_run_rq3_scale_matrix(self) -> None:
+        config = ROOT / "experiments/configs/frozen_v1_topology_scale_main.yaml"
+        runs = expand_runs(load_yaml(config))
+
+        self.assertEqual(len(runs), 120)
+        self.assertEqual({run["node_num"] for run in runs}, {100, 500, 1000})
+        self.assertEqual({run["topology"] for run in runs}, {"ba"})
+        self.assertEqual({run["attack_mode"] for run in runs}, {"none", "max-score"})
+        self.assertEqual({run["seed_index"] for run in runs}, set(range(20)))
+        self.assertEqual({run["max_epochs"] for run in runs}, {40})
+        self.assertEqual({run["warmup_epochs"] for run in runs}, {10})
+        self.assertEqual({run["adversary_stake_fraction"] for run in runs}, {0.3})
+        self.assertEqual({run["adversary_placement"] for run in runs}, {"high-degree"})
+
     def test_timing_probe_is_six_run_ba_scale_matrix(self) -> None:
         config = ROOT / "experiments/configs/frozen_v1_topology_scale_timing_probe.yaml"
         runs = expand_runs(load_yaml(config))

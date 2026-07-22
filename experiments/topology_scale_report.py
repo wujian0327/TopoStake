@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import json
 import math
+import statistics
 from collections import defaultdict, deque
 from pathlib import Path
 from typing import Any
@@ -231,10 +232,15 @@ def summary_markdown(
     profiles: list[dict[str, Any]],
     checks: list[dict[str, Any]],
 ) -> str:
+    seed_count = len({int(number(row.get("seed_index"))) for row in runs})
     lines = [
         f"# {suite}",
         "",
-        "This pilot validates matrix separation and artifact quality; one seed is not a paper estimate.",
+        (
+            "This pilot validates matrix separation and artifact quality; one seed is not a paper estimate."
+            if seed_count == 1
+            else f"This paired scale study aggregates {seed_count} independent seeds per condition."
+        ),
         "",
         "## Acceptance",
         "",
@@ -263,25 +269,32 @@ def summary_markdown(
             "",
             "## Runtime",
             "",
-            "| nodes | topology | mode | duration (s) | status |",
-            "|---:|---|---|---:|:---:|",
+            "| nodes | topology | mode | runs | mean (s) | min--max (s) | complete |",
+            "|---:|---|---|---:|---:|---:|:---:|",
         ]
     )
-    for row in sorted(
-        runs,
-        key=lambda item: (
-            int(number(item.get("node_num"))),
-            str(item.get("topology", "")),
-            str(item.get("attack_mode", "")),
-        ),
-    ):
+    runtime_groups: dict[tuple[int, str, str], list[dict[str, Any]]] = defaultdict(list)
+    for row in runs:
+        runtime_groups[
+            (
+                int(number(row.get("node_num"))),
+                str(row.get("topology", "")),
+                str(row.get("attack_mode", "")),
+            )
+        ].append(row)
+    for (nodes, topology, mode), rows in sorted(runtime_groups.items()):
+        durations = [number(row.get("duration_seconds")) for row in rows]
         lines.append(
-            "| {nodes} | {topology} | {mode} | {duration:.3f} | {status} |".format(
-                nodes=int(number(row.get("node_num"))),
-                topology=str(row.get("topology", "")),
-                mode=str(row.get("attack_mode", "")),
-                duration=number(row.get("duration_seconds")),
-                status=str(row.get("status", "missing")),
+            "| {nodes} | {topology} | {mode} | {count} | {mean:.3f} | "
+            "{minimum:.3f}--{maximum:.3f} | {complete}/{count} |".format(
+                nodes=nodes,
+                topology=topology,
+                mode=mode,
+                count=len(rows),
+                mean=statistics.mean(durations) if durations else 0.0,
+                minimum=min(durations, default=0.0),
+                maximum=max(durations, default=0.0),
+                complete=sum(bool(row.get("complete")) for row in rows),
             )
         )
     lines.extend(

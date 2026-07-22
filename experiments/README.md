@@ -20,6 +20,8 @@ support the current frozen-v1 evaluation.
   feasibility and overhead.
 - `frozen_v1_topology_scale_timing_probe.yaml`: six-run BA scalability probe
   at 100, 500, and 1,000 validators under organic and max-score conditions.
+- `frozen_v1_topology_scale_main.yaml`: 20-seed RQ3 scale-robustness matrix at
+  100, 500, and 1,000 validators.
 
 The shared protocol parameters are defined in
 `configs/protocol_frozen_v1.yaml`. `frozen_v1_smoke.yaml` is the fast simulator
@@ -36,6 +38,8 @@ pattern is:
 python scripts/task.py frozen-smoke
 python scripts/task.py frozen-topology-scale-timing-probe --dry-run
 python scripts/task.py frozen-topology-scale-timing-probe
+python scripts/task.py frozen-topology-scale-main --dry-run
+python scripts/task.py frozen-topology-scale-main
 python scripts/task.py <suite>-pilot
 python scripts/task.py <suite>-main --dry-run
 python scripts/task.py <suite>-main

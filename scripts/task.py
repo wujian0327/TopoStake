@@ -325,6 +325,12 @@ def task_topology_scale_pilot(args: argparse.Namespace) -> None:
     )
 
 
+def task_topology_scale_main(args: argparse.Namespace) -> None:
+    task_topology_scale(
+        args, "experiments/configs/frozen_v1_topology_scale_main.yaml"
+    )
+
+
 def task_topology_scale_timing_probe(args: argparse.Namespace) -> None:
     task_topology_scale(
         args, "experiments/configs/frozen_v1_topology_scale_timing_probe.yaml"
@@ -332,7 +338,7 @@ def task_topology_scale_timing_probe(args: argparse.Namespace) -> None:
 
 
 def task_topology_scale_report(args: argparse.Namespace) -> None:
-    config = args.config or "experiments/configs/frozen_v1_topology_scale_pilot.yaml"
+    config = args.config or "experiments/configs/frozen_v1_topology_scale_main.yaml"
     cmd = [PYTHON, "experiments/topology_scale_report.py", "--config", config]
     if args.allow_incomplete:
         cmd.append("--allow-incomplete")
@@ -462,6 +468,7 @@ TASKS: Dict[str, Callable[[argparse.Namespace], None]] = {
     "frozen-reinvestment-gini-report": task_reinvestment_gini_report,
     "frozen-reinvestment-gini-figures": task_reinvestment_gini_figures,
     "frozen-topology-scale-pilot": task_topology_scale_pilot,
+    "frozen-topology-scale-main": task_topology_scale_main,
     "frozen-topology-scale-timing-probe": task_topology_scale_timing_probe,
     "frozen-topology-scale-report": task_topology_scale_report,
     "frozen-sustained-outage-pilot": task_sustained_outage_pilot,
