@@ -18,6 +18,8 @@ support the current frozen-v1 evaluation.
   proposer-side adaptation.
 - `frozen_v1_devnet_{pilot,main}.yaml`: paired real-client Ethereum devnet
   feasibility and overhead.
+- `frozen_v1_topology_scale_timing_probe.yaml`: six-run BA scalability probe
+  at 100, 500, and 1,000 validators under organic and max-score conditions.
 
 The shared protocol parameters are defined in
 `configs/protocol_frozen_v1.yaml`. `frozen_v1_smoke.yaml` is the fast simulator
@@ -32,6 +34,8 @@ pattern is:
 
 ```bash
 python scripts/task.py frozen-smoke
+python scripts/task.py frozen-topology-scale-timing-probe --dry-run
+python scripts/task.py frozen-topology-scale-timing-probe
 python scripts/task.py <suite>-pilot
 python scripts/task.py <suite>-main --dry-run
 python scripts/task.py <suite>-main

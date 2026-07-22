@@ -352,6 +352,7 @@ def run_one(binary: str, run: Dict[str, Any], timeout: int, force: bool) -> Dict
             "runner_action": "skipped_existing",
             "cmd": cmd,
             "output_dir": str(out_dir),
+            "duration_seconds": previous_status.get("duration_seconds", 0),
         }
         write_json(status_path, status)
         return status

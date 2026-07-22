@@ -261,6 +261,32 @@ def summary_markdown(
     lines.extend(
         [
             "",
+            "## Runtime",
+            "",
+            "| nodes | topology | mode | duration (s) | status |",
+            "|---:|---|---|---:|:---:|",
+        ]
+    )
+    for row in sorted(
+        runs,
+        key=lambda item: (
+            int(number(item.get("node_num"))),
+            str(item.get("topology", "")),
+            str(item.get("attack_mode", "")),
+        ),
+    ):
+        lines.append(
+            "| {nodes} | {topology} | {mode} | {duration:.3f} | {status} |".format(
+                nodes=int(number(row.get("node_num"))),
+                topology=str(row.get("topology", "")),
+                mode=str(row.get("attack_mode", "")),
+                duration=number(row.get("duration_seconds")),
+                status=str(row.get("status", "missing")),
+            )
+        )
+    lines.extend(
+        [
+            "",
             "## Envelope diagnostic",
             "",
             f"- Complete runs: {sum(bool(row.get('complete')) for row in runs)}/{len(runs)}",
@@ -340,6 +366,10 @@ def main() -> int:
         or (row["graph_files"] > 0 and row["graph_variants"] != 1)
         for row in profiles
     )
+    requires_eth_calibration = any(
+        row["topology"] == "eth_empirical" and int(row["node_count"]) >= 1000
+        for row in profiles
+    )
     calibration_failures = sum(
         not 17.5 <= number(row["average_degree"]) <= 18.5
         or number(row["fraction_degree_le_16"]) < 0.5
@@ -405,13 +435,12 @@ def main() -> int:
         },
         {
             "name": "eth-empirical-calibration",
-            "passed": calibration_failures == 0
-            and any(
-                row["topology"] == "eth_empirical"
-                and int(row["node_count"]) >= 1000
-                for row in profiles
+            "passed": not requires_eth_calibration or calibration_failures == 0,
+            "detail": (
+                f"calibration failures={calibration_failures}"
+                if requires_eth_calibration
+                else "not requested by this matrix"
             ),
-            "detail": f"calibration failures={calibration_failures}",
         },
         {
             "name": "proposer-envelope",

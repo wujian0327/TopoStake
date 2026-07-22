@@ -8,6 +8,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "experiments"))
 
 from organic_capture_report import PAIR_METRICS  # noqa: E402
+from run_experiments import expand_runs, load_yaml  # noqa: E402
 from topology_scale_report import (  # noqa: E402
     graph_profile,
     group_rows,
@@ -16,6 +17,17 @@ from topology_scale_report import (  # noqa: E402
 
 
 class TopologyScaleReportTests(unittest.TestCase):
+    def test_timing_probe_is_six_run_ba_scale_matrix(self) -> None:
+        config = ROOT / "experiments/configs/frozen_v1_topology_scale_timing_probe.yaml"
+        runs = expand_runs(load_yaml(config))
+
+        self.assertEqual(len(runs), 6)
+        self.assertEqual({run["node_num"] for run in runs}, {100, 500, 1000})
+        self.assertEqual({run["topology"] for run in runs}, {"ba"})
+        self.assertEqual({run["attack_mode"] for run in runs}, {"none", "max-score"})
+        self.assertEqual({run["adversary_stake_fraction"] for run in runs}, {0.3})
+        self.assertEqual({run["adversary_placement"] for run in runs}, {"high-degree"})
+
     def test_pairs_do_not_mix_node_count_or_topology(self) -> None:
         runs = []
         for node_num in (100, 1000):

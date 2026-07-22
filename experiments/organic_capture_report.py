@@ -161,6 +161,7 @@ def aggregate_run(run: dict[str, Any]) -> dict[str, Any]:
         "adversary_assignment_hash": assignment_hash,
         "git_commit_sha": run_config.get("git_commit_sha", ""),
         "status": status.get("status", "missing"),
+        "duration_seconds": number(status.get("duration_seconds")),
         "complete": complete,
         "usable_epoch_count": len(usable_epochs),
         "included_tx": included,

@@ -7,8 +7,8 @@
   "timeout_seconds": 3600,
   "seeds": [0],
   "defaults": {
-    "run_revision": "topology-scale-timing-probe-v1",
-    "node_num": 1000,
+    "run_revision": "topology-scale-timing-probe-v2-ba-scale",
+    "node_num": 100,
     "sybil_node_num": 0,
     "fake_node_num": 0,
     "unstable_node_num": 0,
@@ -22,7 +22,7 @@
     "max_epochs": 12,
     "warmup_epochs": 3,
     "max_tx_per_block": 80,
-    "time_scale": 0.5,
+    "time_scale": 0.05,
     "topostake_target_depth": 4,
     "beta": 0.8,
     "topostake_saturation_k": 1.0,
@@ -44,9 +44,10 @@
     {
       "name": "topology_scale_timing_probe",
       "protocols": ["topostake"],
-      "topology": ["ba", "eth_empirical"],
-      "adversary_stake_fraction": [0.1],
-      "adversary_placement": ["random"],
+      "node_num": [100, 500, 1000],
+      "topology": ["ba"],
+      "adversary_stake_fraction": [0.3],
+      "adversary_placement": ["high-degree"],
       "attack_mode": ["none", "max-score"]
     }
   ]
