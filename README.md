@@ -116,12 +116,14 @@ Each validator receives a paired, fixed heterogeneous relay cost. Every five
 completed epochs, a seeded subset may switch between Lazy (`p=0.25`) and
 Active (`p=1`) using an EMA of the preceding windows' public active-minus-lazy
 expected reward per extra forward. The decision never reads future proposer
-draws. The diagnostic rerun uses the `2x` cost-median regime to avoid
-fee-only saturation. It compares PoS, fee-only, and Full TopoStake from 25%,
-50%, and 75% initial active fractions. Generated transactions are tracked as
-a fixed-follow-up cohort, so unfinished transactions affect both the
-inclusion rate and restricted mean time to inclusion. The report writes three
-independent figure files.
+draws. The second-stage pilot sweeps `1x`, `2x`, and `3x` cost-median regimes
+over 100 epochs, comparing PoS, fee-only, and Full TopoStake from 25%, 50%,
+and 75% initial active fractions. Generated transactions are tracked as a
+fixed-follow-up cohort, so unfinished transactions affect both the inclusion
+rate and restricted mean time to inclusion. Missing Active/Lazy
+counterfactuals are reported as unavailable rather than accounting errors,
+and acceptance also checks counterfactual coverage and tail stability. The
+report writes three independent figure files.
 
 ### 4. Organic-Traffic Capture Experiment
 

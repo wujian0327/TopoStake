@@ -4,10 +4,10 @@
   "build_command": ["cargo", "build", "--release"],
   "binary": "target/release/topostake",
   "max_parallel": 3,
-  "timeout_seconds": 2400,
+  "timeout_seconds": 3600,
   "seeds": [0, 1, 2],
   "defaults": {
-    "run_revision": "adaptive-participation-history-only-v2",
+    "run_revision": "adaptive-participation-history-only-v3",
     "node_num": 100,
     "sybil_node_num": 0,
     "fake_node_num": 0,
@@ -20,8 +20,8 @@
     "reward_reinvestment_rate": 0.0,
     "slot_duration": 1,
     "slot_per_epoch": 5,
-    "max_epochs": 60,
-    "warmup_epochs": 30,
+    "max_epochs": 100,
+    "warmup_epochs": 50,
     "max_tx_per_block": 80,
     "time_scale": 0.05,
     "topostake_target_depth": 4,
@@ -54,7 +54,7 @@
       "name": "adaptive_participation",
       "protocols": ["pos", "topostake_eta0", "topostake"],
       "adaptive_initial_active_fraction": [0.25, 0.5, 0.75],
-      "adaptive_cost_median_multiplier": [2.0]
+      "adaptive_cost_median_multiplier": [1.0, 2.0, 3.0]
     }
   ]
 }

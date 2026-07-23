@@ -18,6 +18,8 @@ from run_experiments import PROCESSED_ROOT, ROOT, expand_runs, load_yaml
 
 PROTOCOLS = ("pos", "topostake_eta0", "topostake")
 T95 = {2: 12.706, 3: 4.303, 4: 3.182, 5: 2.776}
+MIN_COUNTERFACTUAL_COVERAGE = 0.80
+MAX_TAIL_ACTIVE_STAKE_RANGE = 0.10
 
 
 def read_csv(path: Path) -> list[dict[str, str]]:
@@ -44,6 +46,61 @@ def number(value: Any, default: float = 0.0) -> float:
 
 def truthy(value: Any) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes"}
+
+
+def benefit_accounting_counts(
+    rows: Iterable[dict[str, Any]],
+) -> dict[str, int]:
+    """Validate only updates with an observed Active/Lazy counterfactual.
+
+    When either cohort is empty, the simulator deliberately leaves
+    ``observed_benefit_per_forward`` blank and retains the prior EMA.  Such an
+    update is unavailable for reconstruction rather than an accounting error.
+    """
+
+    attempts = 0
+    observed = 0
+    unavailable = 0
+    errors = 0
+    component_fields = (
+        "active_expected_reward_per_stake",
+        "lazy_expected_reward_per_stake",
+        "active_forward_attempts_per_stake",
+        "lazy_forward_attempts_per_stake",
+    )
+    for row in rows:
+        if not truthy(row.get("update_applied")):
+            continue
+        attempts += 1
+        observed_text = str(row.get("observed_benefit_per_forward", "")).strip()
+        if not observed_text:
+            unavailable += 1
+            continue
+        observed += 1
+        if any(not str(row.get(field, "")).strip() for field in component_fields):
+            errors += 1
+            continue
+        work_premium = number(row.get("active_forward_attempts_per_stake")) - number(
+            row.get("lazy_forward_attempts_per_stake")
+        )
+        if work_premium <= 0.0:
+            errors += 1
+            continue
+        reconstructed = (
+            number(row.get("active_expected_reward_per_stake"))
+            - number(row.get("lazy_expected_reward_per_stake"))
+        ) / work_premium
+        recorded = number(row.get("observed_benefit_per_forward"), math.nan)
+        if not math.isfinite(recorded) or abs(reconstructed - recorded) > max(
+            1e-12, 1e-6 * abs(reconstructed)
+        ):
+            errors += 1
+    return {
+        "attempts": attempts,
+        "observed": observed,
+        "unavailable": unavailable,
+        "errors": errors,
+    }
 
 
 def percentile(values: Iterable[float], probability: float) -> float:
@@ -220,23 +277,7 @@ def aggregate_run(run: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, A
         and len(epochs) >= expected_epochs
         and int(inclusion_metrics["cohort_generated_tx"]) > 0
     )
-    benefit_accounting_errors = 0
-    for row in adaptive:
-        if not truthy(row.get("update_applied")):
-            continue
-        work_premium = number(row.get("active_forward_attempts_per_stake")) - number(
-            row.get("lazy_forward_attempts_per_stake")
-        )
-        if work_premium <= 0.0:
-            continue
-        reconstructed = (
-            number(row.get("active_expected_reward_per_stake"))
-            - number(row.get("lazy_expected_reward_per_stake"))
-        ) / work_premium
-        if abs(reconstructed - number(row.get("observed_benefit_per_forward"))) > max(
-            1e-12, 1e-6 * abs(reconstructed)
-        ):
-            benefit_accounting_errors += 1
+    benefit_accounting = benefit_accounting_counts(adaptive)
     output = {
         "suite": run.get("suite", ""),
         "experiment": run.get("experiment", ""),
@@ -271,12 +312,10 @@ def aggregate_run(run: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, A
         "switches_to_lazy": sum(
             int(number(row.get("switched_to_lazy"))) for row in adaptive
         ),
-        "benefit_update_count": sum(
-            truthy(row.get("update_applied"))
-            and str(row.get("observed_benefit_per_forward", "")).strip() != ""
-            for row in adaptive
-        ),
-        "benefit_accounting_error_count": benefit_accounting_errors,
+        "benefit_update_attempt_count": benefit_accounting["attempts"],
+        "benefit_update_count": benefit_accounting["observed"],
+        "benefit_counterfactual_unavailable_count": benefit_accounting["unavailable"],
+        "benefit_accounting_error_count": benefit_accounting["errors"],
         "bound_violation_count": sum(
             truthy(row.get("bound_violation")) for row in steady_epochs
         ),
@@ -443,27 +482,39 @@ def main() -> int:
     write_csv(prefix.with_name(prefix.name + "_trajectory.csv"), trajectories)
     write_csv(prefix.with_name(prefix.name + "_paired.csv"), pairs)
 
-    gains_by_initial: dict[float, list[float]] = defaultdict(list)
+    gains_by_condition: dict[tuple[float, float], list[float]] = defaultdict(list)
     for row in pairs:
-        gains_by_initial[number(row["initial_active_fraction"])].append(
-            number(row["active_stake_gain"])
+        key = (
+            number(row["cost_median_multiplier"]),
+            number(row["initial_active_fraction"]),
         )
-    passing_initials = sum(
-        statistics.mean(values) >= 0.10 for values in gains_by_initial.values()
+        gains_by_condition[key].append(number(row["active_stake_gain"]))
+    passing_initials_by_cost: dict[float, int] = defaultdict(int)
+    for (cost, _initial), values in gains_by_condition.items():
+        passing_initials_by_cost[cost] += statistics.mean(values) >= 0.10
+    passing_cost_regimes = sum(
+        passing >= 2 for passing in passing_initials_by_cost.values()
     )
-    inclusion_by_initial: dict[float, list[float]] = defaultdict(list)
-    latency_by_initial: dict[float, list[float]] = defaultdict(list)
+    inclusion_by_condition: dict[tuple[float, float], list[float]] = defaultdict(list)
+    latency_by_condition: dict[tuple[float, float], list[float]] = defaultdict(list)
     for row in pairs:
-        inclusion_by_initial[number(row["initial_active_fraction"])].append(
-            number(row["inclusion_rate_gain"])
+        key = (
+            number(row["cost_median_multiplier"]),
+            number(row["initial_active_fraction"]),
         )
-        latency_by_initial[number(row["initial_active_fraction"])].append(
+        inclusion_by_condition[key].append(number(row["inclusion_rate_gain"]))
+        latency_by_condition[key].append(
             number(row["restricted_mean_latency_reduction_s"])
         )
-    improving_end_to_end_initials = sum(
-        statistics.mean(latency_by_initial[initial]) > 0.0
-        and statistics.mean(inclusion_by_initial[initial]) >= 0.0
-        for initial in latency_by_initial
+    improving_initials_by_cost: dict[float, int] = defaultdict(int)
+    for cost, initial in latency_by_condition:
+        key = (cost, initial)
+        improving_initials_by_cost[cost] += (
+            statistics.mean(latency_by_condition[key]) > 0.0
+            and statistics.mean(inclusion_by_condition[key]) >= 0.0
+        )
+    improving_end_to_end_cost_regimes = sum(
+        improving >= 2 for improving in improving_initials_by_cost.values()
     )
     complete = [row for row in runs if row["complete"]]
     utility_rows = [
@@ -473,12 +524,24 @@ def main() -> int:
     ]
     initialization_spreads = {}
     for protocol in ("topostake_eta0", "topostake"):
-        values = [
-            number(row["steady_active_stake_share"])
-            for row in groups
-            if row["protocol_label"] == protocol
-        ]
-        initialization_spreads[protocol] = max(values) - min(values) if values else 1.0
+        costs = sorted(
+            {
+                number(row["cost_median_multiplier"])
+                for row in groups
+                if row["protocol_label"] == protocol
+            }
+        )
+        for cost in costs:
+            values = [
+                number(row["steady_active_stake_share"])
+                for row in groups
+                if row["protocol_label"] == protocol
+                and number(row["cost_median_multiplier"]) == cost
+            ]
+            key = f"{protocol}@{cost:g}"
+            initialization_spreads[key] = (
+                max(values) - min(values) if values else 1.0
+            )
     paired_cost_hashes: dict[tuple[int, float, float], set[str]] = defaultdict(set)
     paired_profile_hashes: dict[tuple[int, float, float], set[str]] = defaultdict(set)
     for row in complete:
@@ -492,6 +555,22 @@ def main() -> int:
     pairing_mismatches = sum(
         len(hashes) != 1 for hashes in paired_cost_hashes.values()
     ) + sum(len(hashes) != 1 for hashes in paired_profile_hashes.values())
+    benefit_attempts = sum(
+        int(number(row["benefit_update_attempt_count"])) for row in utility_rows
+    )
+    observed_benefit_updates = sum(
+        int(number(row["benefit_update_count"])) for row in utility_rows
+    )
+    counterfactual_coverage = (
+        observed_benefit_updates / benefit_attempts if benefit_attempts else 0.0
+    )
+    maximum_tail_range = max(
+        (
+            number(row["tail_active_stake_range"])
+            for row in utility_rows
+        ),
+        default=1.0,
+    )
     checks = {
         "run_completeness": len(complete) == len(expected),
         "paired_cost_and_initial_strategy": bool(complete)
@@ -502,11 +581,16 @@ def main() -> int:
             int(number(row["benefit_accounting_error_count"])) for row in complete
         )
         == 0,
-        "broad_participation_gain": passing_initials >= 2,
+        "counterfactual_coverage": (
+            counterfactual_coverage >= MIN_COUNTERFACTUAL_COVERAGE
+        ),
+        "broad_participation_gain": passing_cost_regimes >= 2,
         "initialization_robustness": all(
             spread <= 0.10 for spread in initialization_spreads.values()
         ),
-        "end_to_end_inclusion_direction": improving_end_to_end_initials >= 2,
+        "steady_state_stability": maximum_tail_range
+        <= MAX_TAIL_ACTIVE_STAKE_RANGE,
+        "end_to_end_inclusion_direction": improving_end_to_end_cost_regimes >= 2,
         "utility_consistency": bool(utility_rows)
         and statistics.mean(
             number(row["utility_consistency_share"]) for row in utility_rows
@@ -524,12 +608,24 @@ def main() -> int:
         "diagnostics": {
             "expected_runs": len(expected),
             "complete_runs": len(complete),
-            "initial_conditions_with_at_least_10pp_gain": passing_initials,
-            "required_initial_conditions": 2,
-            "initial_conditions_with_better_bounded_inclusion": (
-                improving_end_to_end_initials
+            "initial_conditions_with_at_least_10pp_gain_by_cost": dict(
+                sorted(passing_initials_by_cost.items())
+            ),
+            "cost_regimes_with_broad_participation_gain": passing_cost_regimes,
+            "required_cost_regimes": 2,
+            "initial_conditions_with_better_bounded_inclusion_by_cost": dict(
+                sorted(improving_initials_by_cost.items())
+            ),
+            "cost_regimes_with_better_bounded_inclusion": (
+                improving_end_to_end_cost_regimes
             ),
             "initialization_spreads": initialization_spreads,
+            "counterfactual_coverage": counterfactual_coverage,
+            "counterfactual_unavailable_updates": sum(
+                int(number(row["benefit_counterfactual_unavailable_count"]))
+                for row in utility_rows
+            ),
+            "maximum_tail_active_stake_range": maximum_tail_range,
             "pairing_mismatches": pairing_mismatches,
         },
     }
@@ -540,12 +636,13 @@ def main() -> int:
         "",
         "Validators update Active/Lazy strategies from completed-window public reward and forwarding observations. The model uses fixed calibrated costs and no future proposer draws; it is behavioral evidence, not an equilibrium proof.",
         "",
-        "| Protocol | Initial active | Steady active stake | Included within horizon | Restricted mean | Utility-consistent |",
-        "|---|---:|---:|---:|---:|---:|",
+        "| Protocol | Cost multiplier | Initial active | Steady active stake | Included within horizon | Restricted mean | Utility-consistent |",
+        "|---|---:|---:|---:|---:|---:|---:|",
     ]
     for row in groups:
         summary_lines.append(
-            f"| {row['protocol_label']} | {number(row['initial_active_fraction']):.0%} | "
+            f"| {row['protocol_label']} | {number(row['cost_median_multiplier']):g} | "
+            f"{number(row['initial_active_fraction']):.0%} | "
             f"{number(row['steady_active_stake_share']):.1%} | "
             f"{number(row['inclusion_within_horizon_rate']):.1%} | "
             f"{number(row['restricted_mean_inclusion_latency_s']):.2f}s | "

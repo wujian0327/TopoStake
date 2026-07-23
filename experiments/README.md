@@ -16,8 +16,8 @@ support the current frozen-v1 evaluation.
 - `frozen_v1_adaptive_participation_pilot.yaml`: Rust adaptive-agent pilot in
   which validators update Active/Lazy relay strategies from completed-window
   reward and forwarding observations without future proposer information;
-  the diagnostic configuration uses the `2x` cost regime and fixed-follow-up
-  transaction cohorts.
+  the second-stage configuration sweeps `1x`, `2x`, and `3x` cost regimes over
+  100 epochs and uses fixed-follow-up transaction cohorts.
 - `frozen_v1_organic_capture_{pilot,main}.yaml`: organic-traffic capture under
   favorable placement.
 - `frozen_v1_reinvestment_gini_{pilot,main}.yaml`: paired long-term stake-Gini

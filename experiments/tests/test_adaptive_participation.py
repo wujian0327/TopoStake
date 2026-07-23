@@ -1,24 +1,128 @@
 from __future__ import annotations
 
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
 
 EXPERIMENTS = Path(__file__).resolve().parents[1]
+ANALYSIS = EXPERIMENTS.parent / "analysis"
 if str(EXPERIMENTS) not in sys.path:
     sys.path.insert(0, str(EXPERIMENTS))
+if str(ANALYSIS) not in sys.path:
+    sys.path.insert(0, str(ANALYSIS))
 
 from adaptive_participation_report import (  # noqa: E402
+    benefit_accounting_counts,
     cohort_inclusion_metrics,
     grouped_rows,
     paired_rows,
     percentile,
 )
 from run_experiments import command_for_run  # noqa: E402
+from plot_adaptive_participation import (  # noqa: E402
+    plot_latency,
+    plot_steady_state,
+    plot_trajectory,
+)
 
 
 class AdaptiveParticipationTests(unittest.TestCase):
+    def test_multi_cost_plots_are_generated_independently(self) -> None:
+        groups = []
+        trajectory = []
+        for protocol_index, protocol in enumerate(
+            ("pos", "topostake_eta0", "topostake")
+        ):
+            for cost in (1.0, 2.0, 3.0):
+                groups.append(
+                    {
+                        "protocol_label": protocol,
+                        "initial_active_fraction": "0.5",
+                        "cost_median_multiplier": str(cost),
+                        "steady_active_stake_share": str(
+                            0.2 + 0.2 * protocol_index - 0.02 * cost
+                        ),
+                        "steady_active_stake_share_ci95": "0.01",
+                        "restricted_mean_inclusion_latency_s": str(
+                            4.0 - protocol_index + 0.1 * cost
+                        ),
+                        "restricted_mean_inclusion_latency_s_ci95": "0.05",
+                    }
+                )
+            for epoch in range(3):
+                trajectory.append(
+                    {
+                        "protocol_label": protocol,
+                        "initial_active_fraction": "0.5",
+                        "cost_median_multiplier": "2.0",
+                        "epoch": str(epoch),
+                        "active_stake_share": str(
+                            0.2 + 0.2 * protocol_index + 0.01 * epoch
+                        ),
+                        "ci95": "0.01",
+                    }
+                )
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            generated = []
+            generated.extend(plot_trajectory(trajectory, output))
+            generated.extend(plot_steady_state(groups, output))
+            generated.extend(plot_latency(groups, output))
+            self.assertEqual(len(generated), 6)
+            self.assertTrue(all(path.exists() for path in generated))
+
+    def test_missing_counterfactual_is_not_an_accounting_error(self) -> None:
+        counts = benefit_accounting_counts(
+            [
+                {
+                    "update_applied": "true",
+                    "observed_benefit_per_forward": "",
+                    "active_expected_reward_per_stake": "1.0",
+                    "lazy_expected_reward_per_stake": "",
+                    "active_forward_attempts_per_stake": "4.0",
+                    "lazy_forward_attempts_per_stake": "",
+                }
+            ]
+        )
+        self.assertEqual(counts["attempts"], 1)
+        self.assertEqual(counts["observed"], 0)
+        self.assertEqual(counts["unavailable"], 1)
+        self.assertEqual(counts["errors"], 0)
+
+    def test_observed_benefit_is_reconstructed_from_components(self) -> None:
+        counts = benefit_accounting_counts(
+            [
+                {
+                    "update_applied": "true",
+                    "observed_benefit_per_forward": "0.1",
+                    "active_expected_reward_per_stake": "0.8",
+                    "lazy_expected_reward_per_stake": "0.4",
+                    "active_forward_attempts_per_stake": "5.0",
+                    "lazy_forward_attempts_per_stake": "1.0",
+                }
+            ]
+        )
+        self.assertEqual(counts["observed"], 1)
+        self.assertEqual(counts["unavailable"], 0)
+        self.assertEqual(counts["errors"], 0)
+
+    def test_accounting_mismatch_is_rejected(self) -> None:
+        counts = benefit_accounting_counts(
+            [
+                {
+                    "update_applied": "true",
+                    "observed_benefit_per_forward": "0.2",
+                    "active_expected_reward_per_stake": "0.8",
+                    "lazy_expected_reward_per_stake": "0.4",
+                    "active_forward_attempts_per_stake": "5.0",
+                    "lazy_forward_attempts_per_stake": "1.0",
+                }
+            ]
+        )
+        self.assertEqual(counts["errors"], 1)
+
     def test_runner_emits_history_only_agent_flags(self) -> None:
         run = {
             "protocol": "topostake",

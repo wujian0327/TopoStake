@@ -28,6 +28,8 @@ SERIES = {
     "topostake_eta0": ("Fee-only", "#0072B2", "--", "s"),
     "topostake": ("Full TopoStake", "#E69F00", "-", "o"),
 }
+REFERENCE_INITIAL_ACTIVE = 0.5
+REFERENCE_COST_MULTIPLIER = 2.0
 
 
 def load_yaml(path: Path) -> dict[str, Any]:
@@ -89,7 +91,16 @@ def plot_trajectory(rows: list[dict[str, str]], output: Path) -> list[Path]:
                 row
                 for row in rows
                 if row["protocol_label"] == protocol
-                and abs(number(row["initial_active_fraction"]) - 0.5) < 1e-12
+                and abs(
+                    number(row["initial_active_fraction"])
+                    - REFERENCE_INITIAL_ACTIVE
+                )
+                < 1e-12
+                and abs(
+                    number(row["cost_median_multiplier"])
+                    - REFERENCE_COST_MULTIPLIER
+                )
+                < 1e-12
             ),
             key=lambda row: number(row["epoch"]),
         )
@@ -129,10 +140,19 @@ def plot_steady_state(rows: list[dict[str, str]], output: Path) -> list[Path]:
     fig, axis = plt.subplots(figsize=(3.45, 2.6))
     for protocol, (label, color, linestyle, marker) in SERIES.items():
         selected = sorted(
-            (row for row in rows if row["protocol_label"] == protocol),
-            key=lambda row: number(row["initial_active_fraction"]),
+            (
+                row
+                for row in rows
+                if row["protocol_label"] == protocol
+                and abs(
+                    number(row["initial_active_fraction"])
+                    - REFERENCE_INITIAL_ACTIVE
+                )
+                < 1e-12
+            ),
+            key=lambda row: number(row["cost_median_multiplier"]),
         )
-        x = [100.0 * number(row["initial_active_fraction"]) for row in selected]
+        x = [number(row["cost_median_multiplier"]) for row in selected]
         y = [100.0 * number(row["steady_active_stake_share"]) for row in selected]
         ci = [100.0 * number(row["steady_active_stake_share_ci95"]) for row in selected]
         axis.errorbar(
@@ -148,9 +168,9 @@ def plot_steady_state(rows: list[dict[str, str]], output: Path) -> list[Path]:
             capsize=2.2,
             label=label,
         )
-    axis.set_xlabel("Initial active validators (%)")
+    axis.set_xlabel("Median relay-cost multiplier")
     axis.set_ylabel("Steady active-stake share (%)")
-    axis.set_xticks([25, 50, 75])
+    axis.set_xticks([1, 2, 3])
     axis.set_yticks([0, 20, 40, 60, 80, 100])
     axis.set_ylim(0, 100)
     style_axis(axis)
@@ -160,34 +180,46 @@ def plot_steady_state(rows: list[dict[str, str]], output: Path) -> list[Path]:
 
 def plot_latency(rows: list[dict[str, str]], output: Path) -> list[Path]:
     fig, axis = plt.subplots(figsize=(3.45, 2.6))
-    selected = {
-        row["protocol_label"]: row
-        for row in rows
-        if abs(number(row["initial_active_fraction"]) - 0.5) < 1e-12
-    }
-    labels, values, errors, colors = [], [], [], []
-    for protocol, (label, color, _linestyle, _marker) in SERIES.items():
-        row = selected[protocol]
-        labels.append(label)
-        values.append(number(row["restricted_mean_inclusion_latency_s"]))
-        errors.append(number(row["restricted_mean_inclusion_latency_s_ci95"]))
-        colors.append(color)
-    positions = list(range(len(labels)))
-    axis.bar(
-        positions,
-        values,
-        yerr=errors,
-        color=colors,
-        alpha=0.82,
-        edgecolor="#333333",
-        linewidth=0.6,
-        capsize=2.2,
-    )
-    axis.set_xticks(positions, labels, rotation=12, ha="right")
+    for protocol, (label, color, linestyle, marker) in SERIES.items():
+        selected = sorted(
+            (
+                row
+                for row in rows
+                if row["protocol_label"] == protocol
+                and abs(
+                    number(row["initial_active_fraction"])
+                    - REFERENCE_INITIAL_ACTIVE
+                )
+                < 1e-12
+            ),
+            key=lambda row: number(row["cost_median_multiplier"]),
+        )
+        x = [number(row["cost_median_multiplier"]) for row in selected]
+        y = [number(row["restricted_mean_inclusion_latency_s"]) for row in selected]
+        ci = [
+            number(row["restricted_mean_inclusion_latency_s_ci95"])
+            for row in selected
+        ]
+        axis.errorbar(
+            x,
+            y,
+            yerr=ci,
+            color=color,
+            linestyle=linestyle,
+            linewidth=1.4,
+            marker=marker,
+            markersize=4.0,
+            markerfacecolor="white",
+            capsize=2.2,
+            label=label,
+        )
+    axis.set_xlabel("Median relay-cost multiplier")
     axis.set_ylabel("Restricted mean time to inclusion (s)")
+    axis.set_xticks([1, 2, 3])
     axis.set_ylim(bottom=0)
+    axis.legend(frameon=False, loc="best")
     style_axis(axis)
-    fig.subplots_adjust(bottom=0.24, left=0.19, right=0.98, top=0.97)
+    fig.subplots_adjust(bottom=0.19, left=0.19, right=0.98, top=0.97)
     return save_figure(fig, output / "adaptive_participation_c")
 
 
