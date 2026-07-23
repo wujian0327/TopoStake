@@ -87,8 +87,7 @@ def main() -> int:
     x = [float(row["cost_multiplier"]) for row in rows]
 
     configure_style()
-    fig, axes = plt.subplots(1, 2, figsize=(7.0, 2.6))
-    active_axis, gain_axis = axes
+    active_fig, active_axis = plt.subplots(figsize=(3.45, 2.6))
     for prefix, color, marker, label in (
         ("fee_only", BLUE, "s", "Fee-only"),
         ("full", ORANGE, "o", "Full TopoStake"),
@@ -115,6 +114,8 @@ def main() -> int:
     active_axis.set_ylim(-2, 102)
     active_axis.legend(loc="best", frameon=False)
 
+    gain_fig, gain_axis = plt.subplots(figsize=(3.45, 2.6))
+
     gain = [100.0 * float(row["participation_gain"]) for row in rows]
     gain_low = [100.0 * float(row["gain_ci_low"]) for row in rows]
     gain_high = [100.0 * float(row["gain_ci_high"]) for row in rows]
@@ -138,16 +139,27 @@ def main() -> int:
         str(name): float(value)
         for name, value in spec["cost_model"]["regime_multipliers"].items()
     }
-    for axis in axes:
+    for axis in (active_axis, gain_axis):
         axis.set_xscale("log", base=2)
         axis.set_xlim(min(x), max(x))
         axis.set_xlabel("Median relay cost / fee-only reference")
         axis.grid(axis="y", color="#E6E6E6", linewidth=0.7)
         for multiplier in regimes.values():
             axis.axvline(multiplier, color="#BBBBBB", linewidth=0.7, alpha=0.8)
-    fig.subplots_adjust(bottom=0.20, left=0.09, right=0.99, top=0.97, wspace=0.30)
-    outputs = save_figure(
-        fig, args.output_dir / "endogenous_participation_mean_field"
+    active_fig.subplots_adjust(bottom=0.20, left=0.19, right=0.98, top=0.97)
+    gain_fig.subplots_adjust(bottom=0.20, left=0.19, right=0.98, top=0.97)
+    outputs = []
+    outputs.extend(
+        save_figure(
+            active_fig,
+            args.output_dir / "endogenous_participation_mean_field_a",
+        )
+    )
+    outputs.extend(
+        save_figure(
+            gain_fig,
+            args.output_dir / "endogenous_participation_mean_field_b",
+        )
     )
     print("Generated: " + ", ".join(str(path) for path in outputs))
     return 0
