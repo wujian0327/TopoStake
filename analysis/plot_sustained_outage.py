@@ -224,8 +224,8 @@ def render_weight_share(
     fig, axis = plt.subplots(figsize=PANEL_FIGSIZE)
     for grouped, color, linestyle, marker, label in (
         (fee_only, GRAY, "--", "s", r"Fee-only ($\eta{=}0$)"),
-        (full_steady_eta05, BLUE, "-", "o", r"Full steady ($\eta{=}0.5$)"),
-        (full_steady_eta1, ORANGE, "-.", "^", r"Full steady ($\eta{=}1$)"),
+        (full_steady_eta05, BLUE, "-", "o", r"Full ($\eta{=}0.5$)"),
+        (full_steady_eta1, ORANGE, "-.", "^", r"Full ($\eta{=}1$)"),
     ):
         points = series_points(grouped)
         axis.errorbar(
@@ -245,7 +245,7 @@ def render_weight_share(
     axis.set_xlabel("Outage stake (%)")
     axis.set_ylabel("Proposer share (%)")
     configure_target_axis(axis, fee_only)
-    axis.set_ylim(5, 35)
+    axis.set_ylim(0, 35)
     axis.grid(axis="y", color="#E6E6E6", linewidth=0.7)
     axis.legend(
         loc="upper left",
@@ -307,9 +307,9 @@ def render_missed_slot_rate(
         fee_point = fee_by_target[x]
         full_point = full_by_target[x]
         label = (
-            f"{reduction_mean:.1f} pp lower"
+            rf"$\eta{{=}}1$: {reduction_mean:.1f} pp lower"
             if reduction_mean >= 0
-            else f"{-reduction_mean:.1f} pp higher"
+            else rf"$\eta{{=}}1$: {-reduction_mean:.1f} pp higher"
         )
         y = max(fee_point[1] + fee_point[2], full_point[1] + full_point[2]) + 1.0
         text_x = x
