@@ -184,6 +184,8 @@ class AdaptiveParticipationTests(unittest.TestCase):
             {run["protocol_label"] for run in runs},
             {"topostake_eta0", "topostake"},
         )
+        self.assertEqual({run["max_epochs"] for run in runs}, {300})
+        self.assertEqual({run["warmup_epochs"] for run in runs}, {200})
 
     def test_pair_direction_is_full_minus_fee_only(self) -> None:
         common = {

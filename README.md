@@ -130,7 +130,7 @@ than a tail maximum. The report writes three independent figure files.
 
 Before a full rerun, the 24-run stability probe tests the representative and
 previously least stable conditions with slower updates, stronger smoothing,
-and a 200-epoch horizon:
+and a 300-epoch horizon whose post-adaptation analysis begins at epoch 200:
 
 ```bash
 python scripts/task.py frozen-adaptive-participation-stability-probe
