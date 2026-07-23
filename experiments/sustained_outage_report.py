@@ -285,15 +285,18 @@ def markdown_summary(pairs: List[Dict[str, Any]], acceptance: Dict[str, Any]) ->
         "",
         "The expected missed-slot rate is the outage group's mean proposer-weight share over the outage; it removes finite slot-lottery noise while preserving the same frozen per-epoch election weights.",
         "",
-        "| Selection | Target stake | Eta | Seeds | Expected miss reduction | Realized miss reduction | Steady expected reduction | Positive realized pairs |",
-        "|---|---:|---:|---:|---:|---:|---:|---:|",
+        "| Selection | Target stake | Eta | Seeds | Expected miss reduction | Realized miss reduction | Relative realized reduction | Steady expected reduction | Positive realized pairs |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for (selection, target, eta), rows in sorted(grouped.items()):
         improvements = [row["miss_rate_improvement"] for row in rows]
+        fee_only_rate = mean(row["eta0_miss_rate"] for row in rows)
+        relative_improvement = mean(improvements) / fee_only_rate if fee_only_rate else 0.0
         lines.append(
             f"| {selection} | {target:.0%} | {eta:.2f} | {len(rows)} | "
             f"{mean(row['expected_miss_rate_improvement'] for row in rows):.4f} | "
             f"{mean(improvements):.4f} | "
+            f"{relative_improvement:.1%} | "
             f"{mean(row['steady_expected_miss_rate_improvement'] for row in rows):.4f} | "
             f"{sum(value > 0 for value in improvements)}/{len(rows)} |"
         )

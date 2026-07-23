@@ -152,11 +152,14 @@ def grouped_pair_metric(
     rows: list[dict[str, str]],
     metric: str,
     selection: str,
+    eta: float | None = None,
     scale: float = 100.0,
 ) -> dict[float, list[float]]:
     grouped: dict[float, list[float]] = defaultdict(list)
     for row in rows:
-        if row["selection"] == selection:
+        if row["selection"] == selection and (
+            eta is None or math.isclose(number(row["eta"]), eta)
+        ):
             grouped[number(row["target_stake_fraction"])].append(
                 scale * number(row[metric])
             )
@@ -209,20 +212,20 @@ def render_weight_share(
     fee_only = grouped_run_metric(
         runs, "steady_group_weight", selection, "topostake_eta0"
     )
-    full_onset = grouped_run_metric(
-        runs, "initial_group_weight", selection, "topostake"
-    )
-    full_steady = grouped_run_metric(
+    full_steady_eta05 = grouped_run_metric(
         runs, "steady_group_weight", selection, "topostake"
     )
-    if not fee_only or not full_onset or not full_steady:
-        raise ValueError("sustained-outage run pairs are incomplete")
+    full_steady_eta1 = grouped_run_metric(
+        runs, "steady_group_weight", selection, "topostake_eta1"
+    )
+    if not fee_only or not full_steady_eta05 or not full_steady_eta1:
+        raise ValueError("eta={0,0.5,1} sustained-outage runs are incomplete")
 
     fig, axis = plt.subplots(figsize=PANEL_FIGSIZE)
     for grouped, color, linestyle, marker, label in (
         (fee_only, GRAY, "--", "s", r"Fee-only ($\eta{=}0$)"),
-        (full_onset, ORANGE, "--", "^", r"Full onset ($\eta{=}0.5$)"),
-        (full_steady, BLUE, "-", "o", r"Full steady ($\eta{=}0.5$)"),
+        (full_steady_eta05, BLUE, "-", "o", r"Full steady ($\eta{=}0.5$)"),
+        (full_steady_eta1, ORANGE, "-.", "^", r"Full steady ($\eta{=}1$)"),
     ):
         points = series_points(grouped)
         axis.errorbar(
@@ -261,17 +264,21 @@ def render_weight_share(
 def render_missed_slot_rate(
     pairs: list[dict[str, str]], selection: str, output: Path
 ) -> list[Path]:
-    fee_only = grouped_pair_metric(pairs, "eta0_miss_rate", selection)
-    full = grouped_pair_metric(pairs, "full_miss_rate", selection)
-    reduction = grouped_pair_metric(pairs, "miss_rate_improvement", selection)
-    if not fee_only or not full or not reduction:
-        raise ValueError("no sustained-outage paired rows")
+    fee_only = grouped_pair_metric(pairs, "eta0_miss_rate", selection, eta=0.5)
+    full_eta05 = grouped_pair_metric(pairs, "full_miss_rate", selection, eta=0.5)
+    full_eta1 = grouped_pair_metric(pairs, "full_miss_rate", selection, eta=1.0)
+    reduction_eta1 = grouped_pair_metric(
+        pairs, "miss_rate_improvement", selection, eta=1.0
+    )
+    if not fee_only or not full_eta05 or not full_eta1 or not reduction_eta1:
+        raise ValueError("no complete eta={0,0.5,1} sustained-outage pairs")
 
     fig, axis = plt.subplots(figsize=PANEL_FIGSIZE)
     plotted: dict[str, list[tuple[float, float, float]]] = {}
     for name, grouped, offset, color, linestyle, marker, label in (
-        ("fee_only", fee_only, -0.45, GRAY, "--", "s", r"Fee-only ($\eta{=}0$)"),
-        ("full", full, 0.45, BLUE, "-", "o", r"Full TopoStake ($\eta{=}0.5$)"),
+        ("fee_only", fee_only, -0.60, GRAY, "--", "s", r"Fee-only ($\eta{=}0$)"),
+        ("full_eta05", full_eta05, 0.0, BLUE, "-", "o", r"Full ($\eta{=}0.5$)"),
+        ("full_eta1", full_eta1, 0.60, ORANGE, "-.", "^", r"Full ($\eta{=}1$)"),
     ):
         points = series_points(grouped)
         plotted[name] = points
@@ -290,9 +297,9 @@ def render_missed_slot_rate(
             label=label,
         )
     fee_by_target = {point[0]: point for point in plotted["fee_only"]}
-    full_by_target = {point[0]: point for point in plotted["full"]}
+    full_by_target = {point[0]: point for point in plotted["full_eta1"]}
     rightmost_target = max(fee_by_target, default=math.inf)
-    for target, values in sorted(reduction.items()):
+    for target, values in sorted(reduction_eta1.items()):
         x = 100.0 * target
         reduction_mean, _ci, count = mean_ci(values)
         if not count or x not in fee_by_target or x not in full_by_target:
@@ -336,30 +343,38 @@ def render_missed_slot_rate(
 
 
 def render_adaptation(
-    epoch_pairs: list[dict[str, str]], selection: str, output: Path
+    epoch_pairs: list[dict[str, str]],
+    selection: str,
+    target: float,
+    output: Path,
 ) -> list[Path]:
     traces: dict[float, dict[int, dict[int, float]]] = defaultdict(
         lambda: defaultdict(dict)
     )
     for row in epoch_pairs:
-        if row["selection"] != selection:
+        if row["selection"] != selection or not math.isclose(
+            number(row["target_stake_fraction"]), target
+        ):
             continue
-        target = number(row["target_stake_fraction"])
+        eta = number(row["eta"])
         seed = int(row["seed_index"])
         epoch = int(row["epoch_since_outage"])
-        traces[target][seed][epoch] = 100.0 * number(
+        traces[eta][seed][epoch] = 100.0 * number(
             row["weight_share_reduction"]
         )
     if not traces:
         raise ValueError("no epoch-level sustained-outage pairs")
 
     fig, axis = plt.subplots(figsize=PANEL_FIGSIZE)
-    colors = (BLUE, ORANGE, "#009E73")
-    linestyles = ("-", "--", "-.")
+    styles = {
+        0.5: (BLUE, "-", r"$\eta{=}0.5$"),
+        1.0: (ORANGE, "-.", r"$\eta{=}1$"),
+    }
     max_epoch = 0
-    for (target, seed_traces), color, linestyle in zip(
-        sorted(traces.items()), colors, linestyles
-    ):
+    for eta, seed_traces in sorted(traces.items()):
+        if eta not in styles:
+            continue
+        color, linestyle, label = styles[eta]
         epochs: dict[int, list[float]] = defaultdict(list)
         for values_by_epoch in seed_traces.values():
             for epoch, value in trailing_means(values_by_epoch).items():
@@ -381,7 +396,7 @@ def render_adaptation(
             color=color,
             linestyle=linestyle,
             linewidth=1.1,
-            label=f"{100.0 * target:.0f}% outage",
+            label=label,
         )
         axis.fill_between(
             x,
@@ -531,6 +546,7 @@ def main() -> int:
             render_adaptation(
                 epoch_pairs,
                 selection,
+                float(spec["outage"].get("adaptation_target_stake_fraction", 0.20)),
                 args.output_dir / f"sustained_outage_adaptation_{suffix}",
             )
         )

@@ -33,19 +33,24 @@ class SustainedOutagePlotTests(unittest.TestCase):
         for seed in range(3):
             for selection, initial_bonus in (("random", 0.0), ("high-score", 0.02)):
                 for target in (0.10, 0.20, 0.30):
-                    for protocol in ("topostake_eta0", "topostake"):
-                        full = protocol == "topostake"
+                    for protocol, eta, steady_delta in (
+                        ("topostake_eta0", 0.0, 0.0),
+                        ("topostake", 0.5, 0.01),
+                        ("topostake_eta1", 1.0, 0.02),
+                    ):
+                        full = eta > 0.0
                         rows.append(
                             {
                                 "seed_index": str(seed),
                                 "selection": selection,
                                 "target_stake_fraction": str(target),
                                 "protocol_label": protocol,
+                                "eta": str(eta),
                                 "initial_group_weight": str(
                                     target + (initial_bonus if full else 0.0)
                                 ),
                                 "steady_group_weight": str(
-                                    target - (0.01 if full else 0.0)
+                                    target - steady_delta
                                 ),
                             }
                         )
@@ -56,39 +61,43 @@ class SustainedOutagePlotTests(unittest.TestCase):
         for seed in range(3):
             for selection in ("random", "high-score"):
                 for target in (0.10, 0.20, 0.30):
-                    improvement = (
-                        0.01 + 0.001 * seed
-                        if selection == "random"
-                        else -0.002 * seed
-                    )
-                    rows.append(
-                        {
-                            "seed_index": str(seed),
-                            "selection": selection,
-                            "target_stake_fraction": str(target),
-                            "eta0_miss_rate": str(target),
-                            "full_miss_rate": str(target - improvement),
-                            "miss_rate_improvement": str(improvement),
-                        }
-                    )
+                    for eta in (0.5, 1.0):
+                        improvement = eta * (
+                            0.02 + 0.002 * seed
+                            if selection == "random"
+                            else -0.004 * seed
+                        )
+                        rows.append(
+                            {
+                                "seed_index": str(seed),
+                                "selection": selection,
+                                "target_stake_fraction": str(target),
+                                "eta": str(eta),
+                                "eta0_miss_rate": str(target),
+                                "full_miss_rate": str(target - improvement),
+                                "miss_rate_improvement": str(improvement),
+                            }
+                        )
         return rows
 
     def epoch_pairs(self) -> list[dict[str, str]]:
         rows = []
         for seed in range(3):
             for target in (0.10, 0.20, 0.30):
-                for epoch in range(5):
-                    rows.append(
-                        {
-                            "seed_index": str(seed),
-                            "selection": "random",
-                            "target_stake_fraction": str(target),
-                            "epoch_since_outage": str(epoch),
-                            "weight_share_reduction": str(
-                                target * epoch / 100.0
-                            ),
-                        }
-                    )
+                for eta in (0.5, 1.0):
+                    for epoch in range(5):
+                        rows.append(
+                            {
+                                "seed_index": str(seed),
+                                "selection": "random",
+                                "target_stake_fraction": str(target),
+                                "eta": str(eta),
+                                "epoch_since_outage": str(epoch),
+                                "weight_share_reduction": str(
+                                    eta * target * epoch / 100.0
+                                ),
+                            }
+                        )
         return rows
 
     def eta_pairs(self) -> list[dict[str, str]]:
@@ -132,7 +141,7 @@ class SustainedOutagePlotTests(unittest.TestCase):
                     self.pairs(), selection, output / f"miss_{suffix}"
                 )
             render_adaptation(
-                self.epoch_pairs(), "random", output / "adaptation_random"
+                self.epoch_pairs(), "random", 0.20, output / "adaptation_random"
             )
             render_eta_sweep(
                 self.eta_pairs(), "random", output / "eta_sweep_random"

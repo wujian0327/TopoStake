@@ -146,7 +146,14 @@ python scripts/task.py frozen-sustained-outage-report
 python scripts/task.py frozen-sustained-outage-figures
 ```
 
-The eta pilot holds the outage target at 20% stake and compares
+The main RQ5 matrix compares fee-only, the conservative full setting
+`eta=0.5`, and the largest admissible setting `eta=1` at 10%, 20%, and 30%
+outage stake. Existing fee-only and `eta=0.5` runs are reused, so extending a
+completed main suite materializes only the 60 new `eta=1` runs. The adaptation
+panel uses the representative 20% outage target, while the steady-weight and
+missed-slot panels retain all three targets.
+
+The optional eta pilot holds the outage target at 20% stake and compares
 `eta={0,0.25,0.5,0.75,1}` over five paired seeds. It writes a separate
 expected-versus-realized missed-slot reduction figure without replacing the
 main RQ5 artifacts.

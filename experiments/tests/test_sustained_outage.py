@@ -79,10 +79,21 @@ class SustainedOutageAssignmentTests(unittest.TestCase):
             miss_rate=0.20,
             expected_miss_rate=0.20,
         )
-        pair = paired_rows([eta0, full])[0]
+        full_eta1 = dict(
+            common,
+            protocol_label="topostake_eta1",
+            eta=1.0,
+            miss_rate=0.18,
+            expected_miss_rate=0.19,
+        )
+        pairs = paired_rows([eta0, full, full_eta1])
+        self.assertEqual(len(pairs), 2)
+        pair = pairs[0]
         self.assertAlmostEqual(pair["eta"], 0.5)
         self.assertAlmostEqual(pair["miss_rate_improvement"], 0.05)
         self.assertAlmostEqual(pair["expected_miss_rate_improvement"], 0.04)
+        self.assertAlmostEqual(pairs[1]["eta"], 1.0)
+        self.assertAlmostEqual(pairs[1]["miss_rate_improvement"], 0.07)
 
     def test_node_metric_weight_is_applied_in_following_epoch(self):
         rows = [
@@ -151,6 +162,32 @@ class SustainedOutageAssignmentTests(unittest.TestCase):
             self.assertTrue(
                 all(value < (1.0 / 3.0) for value in spec["outage"]["stake_fractions"])
             )
+
+    def test_main_compares_conservative_and_maximal_admissible_eta(self):
+        spec = json.loads(
+            (EXPERIMENTS / "configs" / "frozen_v1_sustained_outage_main.yaml").read_text()
+        )
+        self.assertEqual(
+            spec["outage"]["protocols"],
+            ["topostake_eta0", "topostake", "topostake_eta1"],
+        )
+        self.assertEqual(spec["outage"]["adaptation_target_stake_fraction"], 0.20)
+        assignments = [
+            {
+                "seed_index": seed,
+                "seed_value": seed,
+                "selection": "random",
+                "target_stake_fraction": target,
+                "realized_stake_fraction": target,
+                "validator_ids_csv": "1,2",
+                "assignment_sha256": f"assignment-{seed}-{target}",
+            }
+            for seed in spec["seeds"]
+            for target in spec["outage"]["stake_fractions"]
+        ]
+        runs = experiment_runs(spec, assignments)
+        self.assertEqual(len(runs), 180)
+        self.assertEqual(sorted({run["eta"] for run in runs}), [0.0, 0.5, 1.0])
 
     def test_eta_variants_map_to_topostake_strengths(self):
         for label, eta in (

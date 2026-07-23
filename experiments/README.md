@@ -15,7 +15,8 @@ support the current frozen-v1 evaluation.
 - `frozen_v1_reinvestment_gini_{pilot,main}.yaml`: paired long-term stake-Gini
   trajectories under a full-reinvestment upper-bound stress test.
 - `frozen_v1_sustained_outage_{pilot,main}.yaml`: random sustained outages and
-  proposer-side adaptation.
+  proposer-side adaptation; the main suite compares `eta={0,0.5,1}` at 10%,
+  20%, and 30% outage stake.
 - `frozen_v1_sustained_outage_eta_pilot.yaml`: five-seed, 20%-stake outage
   sweep over `eta={0,0.25,0.5,0.75,1}`.
 - `frozen_v1_devnet_{pilot,main}.yaml`: paired real-client Ethereum devnet
