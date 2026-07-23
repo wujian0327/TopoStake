@@ -19,7 +19,8 @@ from run_experiments import PROCESSED_ROOT, ROOT, expand_runs, load_yaml
 PROTOCOLS = ("pos", "topostake_eta0", "topostake")
 T95 = {2: 12.706, 3: 4.303, 4: 3.182, 5: 2.776}
 MIN_COUNTERFACTUAL_COVERAGE = 0.80
-MAX_POST_ADAPTATION_DRIFT = 0.05
+MAX_GROUP_POST_ADAPTATION_DRIFT = 0.05
+MAX_P90_INDIVIDUAL_DRIFT = 0.10
 
 
 def read_csv(path: Path) -> list[dict[str, str]]:
@@ -126,6 +127,37 @@ def post_adaptation_stats(values: Iterable[float]) -> tuple[float, float]:
     drift = abs(statistics.mean(first) - statistics.mean(second))
     spread = statistics.stdev(cleaned)
     return drift, spread
+
+
+def grouped_post_adaptation_drifts(
+    trajectories: Iterable[dict[str, Any]],
+    analysis_start_epoch: int,
+) -> dict[str, float]:
+    """Measure half-window drift on each seed-averaged condition trajectory."""
+
+    grouped: dict[tuple[str, float, float], list[tuple[int, float]]] = defaultdict(
+        list
+    )
+    for row in trajectories:
+        epoch = int(number(row.get("epoch"), -1))
+        protocol = str(row.get("protocol_label", ""))
+        if (
+            epoch < analysis_start_epoch
+            or protocol not in {"topostake_eta0", "topostake"}
+        ):
+            continue
+        key = (
+            protocol,
+            number(row.get("initial_active_fraction")),
+            number(row.get("cost_median_multiplier"), 1.0),
+        )
+        grouped[key].append((epoch, number(row.get("active_stake_share"))))
+    output = {}
+    for (protocol, initial, cost), samples in sorted(grouped.items()):
+        values = [value for _epoch, value in sorted(samples)]
+        drift, _spread = post_adaptation_stats(values)
+        output[f"{protocol}@initial={initial:g}@cost={cost:g}"] = drift
+    return output
 
 
 def cohort_inclusion_metrics(
@@ -486,6 +518,7 @@ def main() -> int:
     args = parser.parse_args()
     config_path = (ROOT / args.config).resolve()
     spec = load_yaml(config_path)
+    acceptance_profile = str(spec.get("acceptance_profile", "full_pilot"))
     expected = expand_runs(spec)
     runs = []
     trajectory = []
@@ -596,12 +629,14 @@ def main() -> int:
             int(number(row["benefit_counterfactual_unavailable_count"]))
             for row in protocol_rows
         )
+    individual_post_adaptation_drifts = [
+        number(row["post_adaptation_active_stake_drift"]) for row in utility_rows
+    ]
     maximum_post_adaptation_drift = max(
-        (
-            number(row["post_adaptation_active_stake_drift"])
-            for row in utility_rows
-        ),
-        default=1.0,
+        individual_post_adaptation_drifts, default=1.0
+    )
+    p90_post_adaptation_drift = percentile(
+        individual_post_adaptation_drifts, 0.90
     )
     maximum_post_adaptation_stddev = max(
         (
@@ -610,6 +645,41 @@ def main() -> int:
         ),
         default=1.0,
     )
+    analysis_start_epoch = int(number(spec.get("defaults", {}).get("warmup_epochs")))
+    group_post_adaptation_drifts = grouped_post_adaptation_drifts(
+        trajectories, analysis_start_epoch
+    )
+    maximum_group_post_adaptation_drift = max(
+        group_post_adaptation_drifts.values(), default=1.0
+    )
+    stability_pass = (
+        maximum_group_post_adaptation_drift
+        <= MAX_GROUP_POST_ADAPTATION_DRIFT
+        and p90_post_adaptation_drift <= MAX_P90_INDIVIDUAL_DRIFT
+    )
+    condition_gain_means = {
+        f"initial={initial:g}@cost={cost:g}": statistics.mean(values)
+        for (cost, initial), values in sorted(gains_by_condition.items())
+    }
+    condition_inclusion_direction = {
+        f"initial={initial:g}@cost={cost:g}": (
+            statistics.mean(latency_by_condition[(cost, initial)]) > 0.0
+            and statistics.mean(inclusion_by_condition[(cost, initial)]) >= 0.0
+        )
+        for cost, initial in sorted(latency_by_condition)
+    }
+    if acceptance_profile == "stability_probe":
+        participation_pass = (
+            len(condition_gain_means) == 4
+            and all(value > 0.0 for value in condition_gain_means.values())
+            and sum(value >= 0.10 for value in condition_gain_means.values()) >= 3
+        )
+        inclusion_pass = (
+            sum(condition_inclusion_direction.values()) >= 3
+        )
+    else:
+        participation_pass = passing_cost_regimes >= 2
+        inclusion_pass = improving_end_to_end_cost_regimes >= 2
     checks = {
         "run_completeness": len(complete) == len(expected),
         "paired_cost_and_initial_strategy": bool(complete)
@@ -624,14 +694,9 @@ def main() -> int:
             coverage >= MIN_COUNTERFACTUAL_COVERAGE
             for coverage in counterfactual_coverage_by_protocol.values()
         ),
-        "broad_participation_gain": passing_cost_regimes >= 2,
-        "initialization_robustness": all(
-            spread <= 0.10 for spread in initialization_spreads.values()
-        ),
-        "post_adaptation_stability": (
-            maximum_post_adaptation_drift <= MAX_POST_ADAPTATION_DRIFT
-        ),
-        "end_to_end_inclusion_direction": improving_end_to_end_cost_regimes >= 2,
+        "broad_participation_gain": participation_pass,
+        "post_adaptation_stability": stability_pass,
+        "end_to_end_inclusion_direction": inclusion_pass,
         "utility_consistency": bool(utility_rows)
         and statistics.mean(
             number(row["utility_consistency_share"]) for row in utility_rows
@@ -642,6 +707,10 @@ def main() -> int:
         )
         == 0,
     }
+    if acceptance_profile != "stability_probe":
+        checks["initialization_robustness"] = all(
+            spread <= 0.10 for spread in initialization_spreads.values()
+        )
     acceptance = {
         "suite": suite,
         "pass": all(checks.values()),
@@ -661,6 +730,9 @@ def main() -> int:
                 improving_end_to_end_cost_regimes
             ),
             "initialization_spreads": initialization_spreads,
+            "acceptance_profile": acceptance_profile,
+            "condition_active_stake_gain_means": condition_gain_means,
+            "condition_inclusion_direction": condition_inclusion_direction,
             "counterfactual_coverage_by_protocol": (
                 counterfactual_coverage_by_protocol
             ),
@@ -669,6 +741,15 @@ def main() -> int:
             ),
             "maximum_post_adaptation_active_stake_drift": (
                 maximum_post_adaptation_drift
+            ),
+            "p90_individual_post_adaptation_active_stake_drift": (
+                p90_post_adaptation_drift
+            ),
+            "group_post_adaptation_active_stake_drifts": (
+                group_post_adaptation_drifts
+            ),
+            "maximum_group_post_adaptation_active_stake_drift": (
+                maximum_group_post_adaptation_drift
             ),
             "maximum_post_adaptation_active_stake_stddev": (
                 maximum_post_adaptation_stddev

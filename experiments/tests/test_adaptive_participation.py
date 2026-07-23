@@ -17,11 +17,12 @@ from adaptive_participation_report import (  # noqa: E402
     benefit_accounting_counts,
     cohort_inclusion_metrics,
     grouped_rows,
+    grouped_post_adaptation_drifts,
     paired_rows,
     percentile,
     post_adaptation_stats,
 )
-from run_experiments import command_for_run  # noqa: E402
+from run_experiments import command_for_run, expand_runs, load_yaml  # noqa: E402
 from plot_adaptive_participation import (  # noqa: E402
     plot_latency,
     plot_steady_state,
@@ -153,6 +154,36 @@ class AdaptiveParticipationTests(unittest.TestCase):
         drift, spread = post_adaptation_stats([0.4, 0.6, 0.5, 0.5])
         self.assertAlmostEqual(drift, 0.0)
         self.assertGreater(spread, 0.0)
+
+    def test_grouped_drift_uses_seed_averaged_trajectory(self) -> None:
+        rows = [
+            {
+                "protocol_label": "topostake",
+                "initial_active_fraction": "0.5",
+                "cost_median_multiplier": "2.0",
+                "epoch": str(epoch),
+                "active_stake_share": str(value),
+            }
+            for epoch, value in enumerate((0.2, 0.4, 0.5, 0.5, 0.6, 0.6))
+        ]
+        drifts = grouped_post_adaptation_drifts(rows, analysis_start_epoch=2)
+        self.assertAlmostEqual(
+            drifts["topostake@initial=0.5@cost=2"], 0.1
+        )
+
+    def test_stability_probe_expands_to_24_unique_runs(self) -> None:
+        config = (
+            EXPERIMENTS
+            / "configs"
+            / "frozen_v1_adaptive_participation_stability_probe.yaml"
+        )
+        runs = expand_runs(load_yaml(config))
+        self.assertEqual(len(runs), 24)
+        self.assertEqual(len({run["run_id"] for run in runs}), 24)
+        self.assertEqual(
+            {run["protocol_label"] for run in runs},
+            {"topostake_eta0", "topostake"},
+        )
 
     def test_pair_direction_is_full_minus_fee_only(self) -> None:
         common = {

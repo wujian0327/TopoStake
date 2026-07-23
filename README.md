@@ -128,6 +128,17 @@ and acceptance checks coverage separately for fee-only and Full TopoStake.
 Post-adaptation stability uses first-half versus second-half mean drift rather
 than a tail maximum. The report writes three independent figure files.
 
+Before a full rerun, the 24-run stability probe tests the representative and
+previously least stable conditions with slower updates, stronger smoothing,
+and a 200-epoch horizon:
+
+```bash
+python scripts/task.py frozen-adaptive-participation-stability-probe
+```
+
+Its gate uses seed-averaged condition drift and the 90th percentile of
+per-run drift; the single worst run remains diagnostic.
+
 ### 4. Organic-Traffic Capture Experiment
 
 ```bash

@@ -264,11 +264,11 @@ def task_endogenous_participation_pilot(args: argparse.Namespace) -> None:
     )
 
 
-def task_adaptive_participation_pilot(args: argparse.Namespace) -> None:
-    config = (
-        args.config
-        or "experiments/configs/frozen_v1_adaptive_participation_pilot.yaml"
-    )
+def task_adaptive_participation(
+    args: argparse.Namespace,
+    config: str,
+    plot: bool = True,
+) -> None:
     task_run_experiments(config, force=args.force, dry_run=args.dry_run)
     if args.dry_run:
         return
@@ -281,7 +281,26 @@ def task_adaptive_participation_pilot(args: argparse.Namespace) -> None:
     if args.allow_incomplete:
         cmd.append("--allow-incomplete")
     run(cmd)
-    run([PYTHON, "analysis/plot_adaptive_participation.py", "--config", config])
+    if plot:
+        run([PYTHON, "analysis/plot_adaptive_participation.py", "--config", config])
+
+
+def task_adaptive_participation_pilot(args: argparse.Namespace) -> None:
+    config = (
+        args.config
+        or "experiments/configs/frozen_v1_adaptive_participation_pilot.yaml"
+    )
+    task_adaptive_participation(args, config)
+
+
+def task_adaptive_participation_stability_probe(
+    args: argparse.Namespace,
+) -> None:
+    config = (
+        args.config
+        or "experiments/configs/frozen_v1_adaptive_participation_stability_probe.yaml"
+    )
+    task_adaptive_participation(args, config, plot=False)
 
 
 def task_organic_capture(args: argparse.Namespace, config: str) -> None:
@@ -510,6 +529,9 @@ TASKS: Dict[str, Callable[[argparse.Namespace], None]] = {
     "frozen-fee-bonus-figures": task_fee_bonus_figures,
     "frozen-endogenous-participation-pilot": task_endogenous_participation_pilot,
     "frozen-adaptive-participation-pilot": task_adaptive_participation_pilot,
+    "frozen-adaptive-participation-stability-probe": (
+        task_adaptive_participation_stability_probe
+    ),
     "frozen-organic-capture-pilot": task_organic_capture_pilot,
     "frozen-organic-capture-main": task_organic_capture_main,
     "frozen-organic-capture-report": task_organic_capture_report,
