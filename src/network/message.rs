@@ -1,6 +1,7 @@
 use crate::blockchain::block::Block;
 use crate::blockchain::path::TransactionPaths;
 use crate::consensus::{RandaoSeed, Validator};
+use crate::network::RelayProfile;
 use crate::network::world_state::SlotManager;
 use std::sync::Arc;
 
@@ -40,6 +41,7 @@ pub enum Message {
         new_balance: f64,
     },
     UpdateNodeBalance(f64),
+    UpdateRelayProfile(RelayProfile),
     BlockProductionFailed {
         node_index: u32,
         slot: u64,
@@ -118,6 +120,10 @@ impl Message {
 
     pub fn new_update_node_balance_msg(new_balance: f64) -> Message {
         Message::UpdateNodeBalance(new_balance)
+    }
+
+    pub fn new_update_relay_profile_msg(relay_profile: RelayProfile) -> Message {
+        Message::UpdateRelayProfile(relay_profile)
     }
 
     pub fn new_block_production_failed_msg(node_index: u32, slot: u64, reason: String) -> Message {

@@ -442,7 +442,10 @@ impl Node {
             // 离线逻辑：如果节点离线，跳过大多数消息处理
             // 但 UpdateSlot 消息用于恢复在线逻辑，需要处理
             if (!self.is_online || !self.scheduled_online.load(Ordering::Relaxed))
-                && !matches!(msg, Message::UpdateSlot(_))
+                && !matches!(
+                    msg,
+                    Message::UpdateSlot(_) | Message::UpdateRelayProfile(_)
+                )
             {
                 debug!("Node[{}] is offline, skipping message", self.index);
                 match msg {
@@ -995,6 +998,13 @@ impl Node {
                     // WorldState 通知 Node 更新其 balance（例如获得奖励）
                     self.set_balance(new_balance);
                     debug!("Node[{}] updated balance to {}", self.index, new_balance);
+                }
+                Message::UpdateRelayProfile(relay_profile) => {
+                    self.set_relay_profile(relay_profile);
+                    debug!(
+                        "Node[{}] updated relay profile to {}",
+                        self.index, relay_profile
+                    );
                 }
                 Message::UpdateSlot(slot) => {
                     debug!("Node[{}] received msg[UpdateSlot]", self.index);

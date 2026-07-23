@@ -13,6 +13,9 @@ support the current frozen-v1 evaluation.
 - `frozen_v1_endogenous_participation_pilot.yaml`: reduced-form, paired-seed
   mean-field participation and heterogeneous-cost sensitivity calibrated from
   the RQ2 output; this suite does not rerun the Rust simulator.
+- `frozen_v1_adaptive_participation_pilot.yaml`: Rust adaptive-agent pilot in
+  which validators update Active/Lazy relay strategies from completed-window
+  reward and forwarding observations without future proposer information.
 - `frozen_v1_organic_capture_{pilot,main}.yaml`: organic-traffic capture under
   favorable placement.
 - `frozen_v1_reinvestment_gini_{pilot,main}.yaml`: paired long-term stake-Gini

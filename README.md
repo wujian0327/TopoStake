@@ -105,6 +105,20 @@ checks cost, interpolation, and initialization sensitivity. Its `GO` result
 only decides whether a dynamic Rust-agent experiment is worth implementing;
 it is not an equilibrium or real-validator participation claim.
 
+The history-only Rust adaptive-agent pilot then tests the endogenous chain
+inside the event-driven simulator:
+
+```bash
+python scripts/task.py frozen-adaptive-participation-pilot
+```
+
+Each validator receives a paired, fixed heterogeneous relay cost. Every five
+completed epochs, a seeded subset may switch between Lazy (`p=0.25`) and
+Active (`p=1`) using an EMA of the preceding windows' public active-minus-lazy
+expected reward per extra forward. The decision never reads future proposer
+draws. The pilot compares PoS, fee-only, and Full TopoStake from 25%, 50%, and
+75% initial active fractions and writes three independent figure files.
+
 ### 4. Organic-Traffic Capture Experiment
 
 ```bash

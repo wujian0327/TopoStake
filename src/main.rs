@@ -8,7 +8,9 @@ use topostake::consensus::topostake::TopoStakeConfig;
 use topostake::consensus::ConsensusType;
 use topostake::network;
 use topostake::network::graph::TopologyType;
-use topostake::network::{AdversaryPlacement, AttackMode, RelayProfile, SimulationConfig};
+use topostake::network::{
+    AdaptiveRelayConfig, AdversaryPlacement, AttackMode, RelayProfile, SimulationConfig,
+};
 
 #[derive(Parser, Debug)]
 #[clap(version = "1.0", author = "wujian", about = "TopoStake协议模拟")]
@@ -252,6 +254,46 @@ struct Args {
     #[clap(long, default_value = "0.0")]
     lazy_fraction: f64,
 
+    /// Let validators update Active/Lazy relay strategies from past observations
+    #[clap(long, default_value_t = false)]
+    adaptive_relay_participation: bool,
+
+    /// Initial fraction of validators using the Active relay strategy
+    #[clap(long, default_value = "0.5")]
+    adaptive_initial_active_fraction: f64,
+
+    /// Absolute per-forward cost scale calibrated before the adaptive run
+    #[clap(long, default_value = "0.0")]
+    adaptive_cost_reference: f64,
+
+    /// Median relay cost relative to the calibrated reference
+    #[clap(long, default_value = "1.0")]
+    adaptive_cost_median_multiplier: f64,
+
+    /// Log-space standard deviation of heterogeneous relay costs
+    #[clap(long, default_value = "0.75")]
+    adaptive_cost_log_sigma: f64,
+
+    /// Completed epochs observed before the first strategy update
+    #[clap(long, default_value = "5")]
+    adaptive_warmup_epochs: u64,
+
+    /// Epochs aggregated into each backward-looking benefit estimate
+    #[clap(long, default_value = "5")]
+    adaptive_update_interval_epochs: u64,
+
+    /// Fraction of validators allowed to reconsider per update
+    #[clap(long, default_value = "0.25")]
+    adaptive_update_fraction: f64,
+
+    /// EMA coefficient applied to completed-window benefit estimates
+    #[clap(long, default_value = "0.5")]
+    adaptive_benefit_ema_alpha: f64,
+
+    /// Relative switching band around each validator's relay cost
+    #[clap(long, default_value = "0.05")]
+    adaptive_switching_hysteresis: f64,
+
     /// Target corrupted real-stake fraction
     #[clap(long, default_value = "0.0")]
     adversary_stake_fraction: f64,
@@ -374,6 +416,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         relay_background_profile: args.relay_background_profile,
         focal_relayer_count: args.focal_relayer_count,
         lazy_fraction: args.lazy_fraction,
+        adaptive_relay: AdaptiveRelayConfig {
+            enabled: args.adaptive_relay_participation,
+            initial_active_fraction: args.adaptive_initial_active_fraction,
+            cost_reference: args.adaptive_cost_reference,
+            cost_median_multiplier: args.adaptive_cost_median_multiplier,
+            cost_log_sigma: args.adaptive_cost_log_sigma,
+            warmup_epochs: args.adaptive_warmup_epochs,
+            update_interval_epochs: args.adaptive_update_interval_epochs,
+            update_fraction: args.adaptive_update_fraction,
+            benefit_ema_alpha: args.adaptive_benefit_ema_alpha,
+            switching_hysteresis: args.adaptive_switching_hysteresis,
+        },
         adversary_stake_fraction: args.adversary_stake_fraction,
         adversary_placement: args.adversary_placement,
         attack_mode: args.attack_mode,

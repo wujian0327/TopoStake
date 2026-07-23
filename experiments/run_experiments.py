@@ -31,6 +31,8 @@ DIMENSION_KEYS = [
     "relay_background_profile",
     "focal_relayer_count",
     "lazy_fraction",
+    "adaptive_initial_active_fraction",
+    "adaptive_cost_median_multiplier",
     "adversary_stake_fraction",
     "adversary_placement",
     "eta_bonus_product",
@@ -94,6 +96,15 @@ CLI_KEYS = {
     "relay_background_profile": "--relay-background-profile",
     "focal_relayer_count": "--focal-relayer-count",
     "lazy_fraction": "--lazy-fraction",
+    "adaptive_initial_active_fraction": "--adaptive-initial-active-fraction",
+    "adaptive_cost_reference": "--adaptive-cost-reference",
+    "adaptive_cost_median_multiplier": "--adaptive-cost-median-multiplier",
+    "adaptive_cost_log_sigma": "--adaptive-cost-log-sigma",
+    "adaptive_warmup_epochs": "--adaptive-warmup-epochs",
+    "adaptive_update_interval_epochs": "--adaptive-update-interval-epochs",
+    "adaptive_update_fraction": "--adaptive-update-fraction",
+    "adaptive_benefit_ema_alpha": "--adaptive-benefit-ema-alpha",
+    "adaptive_switching_hysteresis": "--adaptive-switching-hysteresis",
     "unstable_fraction": "--unstable-fraction",
     "offline_probability": "--offline-probability",
     "outage_start_epoch": "--outage-start-epoch",
@@ -106,7 +117,11 @@ CLI_KEYS = {
     "attack_tx_rate_multiplier": "--attack-tx-rate-multiplier",
 }
 
-EXPERIMENT_OVERRIDE_KEYS = set(CLI_KEYS) | {"warmup_epochs", "real_time"}
+EXPERIMENT_OVERRIDE_KEYS = set(CLI_KEYS) | {
+    "warmup_epochs",
+    "real_time",
+    "adaptive_relay_participation",
+}
 
 RUN_ID_KEY_ALIASES = {
     "network_delay_multiplier": "netdelay",
@@ -306,6 +321,8 @@ def command_for_run(binary: str, run: Dict[str, Any]) -> List[str]:
         cmd.append("--real-time")
     if run.get("outage_common_slot_randomness"):
         cmd.append("--outage-common-slot-randomness")
+    if run.get("adaptive_relay_participation"):
+        cmd.append("--adaptive-relay-participation")
     return cmd
 
 

@@ -51,6 +51,57 @@ pub enum RelayProfile {
     Mixed,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdaptiveRelayConfig {
+    pub enabled: bool,
+    pub initial_active_fraction: f64,
+    pub cost_reference: f64,
+    pub cost_median_multiplier: f64,
+    pub cost_log_sigma: f64,
+    pub warmup_epochs: u64,
+    pub update_interval_epochs: u64,
+    pub update_fraction: f64,
+    pub benefit_ema_alpha: f64,
+    pub switching_hysteresis: f64,
+}
+
+impl Default for AdaptiveRelayConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            initial_active_fraction: 0.5,
+            cost_reference: 0.0,
+            cost_median_multiplier: 1.0,
+            cost_log_sigma: 0.75,
+            warmup_epochs: 5,
+            update_interval_epochs: 5,
+            update_fraction: 0.25,
+            benefit_ema_alpha: 0.5,
+            switching_hysteresis: 0.05,
+        }
+    }
+}
+
+impl AdaptiveRelayConfig {
+    fn resolved(mut self) -> Self {
+        self.initial_active_fraction = self.initial_active_fraction.clamp(0.0, 1.0);
+        self.update_fraction = self.update_fraction.clamp(0.0, 1.0);
+        self.benefit_ema_alpha = self.benefit_ema_alpha.clamp(0.0, 1.0);
+        self.switching_hysteresis = self.switching_hysteresis.clamp(0.0, 0.99);
+        self.update_interval_epochs = self.update_interval_epochs.max(1);
+        if !self.cost_reference.is_finite() || self.cost_reference < 0.0 {
+            self.cost_reference = 0.0;
+        }
+        if !self.cost_median_multiplier.is_finite() || self.cost_median_multiplier <= 0.0 {
+            self.cost_median_multiplier = 1.0;
+        }
+        if !self.cost_log_sigma.is_finite() || self.cost_log_sigma <= 0.0 {
+            self.cost_log_sigma = 0.75;
+        }
+        self
+    }
+}
+
 impl Display for AdversaryPlacement {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -170,6 +221,7 @@ pub struct SimulationConfig {
     pub relay_background_profile: RelayProfile,
     pub focal_relayer_count: u32,
     pub lazy_fraction: f64,
+    pub adaptive_relay: AdaptiveRelayConfig,
     pub adversary_stake_fraction: f64,
     pub adversary_placement: AdversaryPlacement,
     pub attack_mode: AttackMode,
@@ -220,6 +272,10 @@ impl SimulationConfig {
         self.offline_probability = self.offline_probability.clamp(0.0, 1.0);
         self.adversary_stake_fraction = self.adversary_stake_fraction.clamp(0.0, 1.0);
         self.lazy_fraction = self.lazy_fraction.clamp(0.0, 1.0);
+        self.adaptive_relay = self.adaptive_relay.resolved();
+        if self.adaptive_relay.enabled && self.adaptive_relay.cost_reference <= 0.0 {
+            panic!("adaptive relay participation requires a positive cost reference");
+        }
         self.reward_reinvestment_rate = if self.reward_reinvestment_rate.is_finite() {
             self.reward_reinvestment_rate.clamp(0.0, 1.0)
         } else {
@@ -536,7 +592,28 @@ pub async fn start_network(config: SimulationConfig) {
 
     // 找到最大度数
     let max_degree = node_degrees.values().cloned().max().unwrap_or(1);
-    if config.focal_relayer_count > 0 {
+    if config.adaptive_relay.enabled {
+        let relay_candidates: Vec<(u32, String)> = node_map
+            .iter()
+            .filter(|(_, node)| node.index < node_num)
+            .map(|(address, node)| (node.index, address.clone()))
+            .collect();
+        let lazy_addresses = select_lazy_relayer_addresses(
+            relay_candidates,
+            1.0 - config.adaptive_relay.initial_active_fraction,
+            config.failure_seed,
+        );
+        for (address, node) in node_map
+            .iter_mut()
+            .filter(|(_, node)| node.index < node_num)
+        {
+            node.set_relay_profile(if lazy_addresses.contains(address) {
+                RelayProfile::Lazy
+            } else {
+                RelayProfile::Active
+            });
+        }
+    } else if config.focal_relayer_count > 0 {
         let mut focal_candidates: Vec<(u32, String)> = node_map
             .iter()
             .filter(|(_, node)| node.index < node_num)
@@ -628,6 +705,7 @@ pub async fn start_network(config: SimulationConfig) {
     world.adversarial_nodes = adversarial_nodes.clone();
     world.node_degrees = node_degrees.clone();
     world.node_betweenness = node_betweenness.clone();
+    world.configure_adaptive_relay(config.adaptive_relay.clone(), config.failure_seed);
     info!(
         "Selected {} adversarial validators with target stake fraction {:.3}",
         adversarial_nodes.len(),

@@ -101,6 +101,8 @@ pub struct NodeEpochMetrics {
     pub fee_spent: f64,
     pub net_income: f64,
     pub relay_forward_attempts: u64,
+    pub relay_cost_per_forward: f64,
+    pub estimated_relay_benefit_per_forward: f64,
     pub degree: usize,
     pub betweenness: f64,
 }
@@ -213,13 +215,13 @@ impl NodeEpochMetrics {
     pub fn to_csv_header() -> String {
         "epoch,validator_id,relay_profile,focal_relayer,adversarial,economic_stake,balance,raw_contribution,saturated_contribution,ema_score,normalized_score,\
          bonus,unnormalized_proposer_weight,normalized_proposer_weight,proposer_count,relay_reward,proposer_reward,fee_spent,\
-         net_income,relay_forward_attempts,degree,betweenness"
+         net_income,relay_forward_attempts,relay_cost_per_forward,estimated_relay_benefit_per_forward,degree,betweenness"
             .to_string()
     }
 
     pub fn to_csv_row(&self) -> String {
         format!(
-            "{},{},{},{},{},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{},{:.6},{:.6},{:.6},{:.6},{},{},{}",
+            "{},{},{},{},{},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{},{:.6},{:.6},{:.6},{:.6},{},{:.12},{:.12},{},{}",
             self.epoch,
             self.validator_id,
             self.relay_profile,
@@ -240,6 +242,8 @@ impl NodeEpochMetrics {
             self.fee_spent,
             self.net_income,
             self.relay_forward_attempts,
+            self.relay_cost_per_forward,
+            self.estimated_relay_benefit_per_forward,
             self.degree,
             self.betweenness,
         )
