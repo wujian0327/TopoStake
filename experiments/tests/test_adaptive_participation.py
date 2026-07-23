@@ -10,6 +10,7 @@ if str(EXPERIMENTS) not in sys.path:
     sys.path.insert(0, str(EXPERIMENTS))
 
 from adaptive_participation_report import (  # noqa: E402
+    cohort_inclusion_metrics,
     grouped_rows,
     paired_rows,
     percentile,
@@ -46,7 +47,8 @@ class AdaptiveParticipationTests(unittest.TestCase):
             "seed_index": 0,
             "initial_active_fraction": 0.5,
             "cost_median_multiplier": 1.0,
-            "p95_inclusion_latency_s": 5.0,
+            "inclusion_within_horizon_rate": 0.7,
+            "restricted_mean_inclusion_latency_s": 5.0,
         }
         rows = [
             {
@@ -58,12 +60,14 @@ class AdaptiveParticipationTests(unittest.TestCase):
                 **common,
                 "protocol_label": "topostake",
                 "steady_active_stake_share": 0.7,
-                "p95_inclusion_latency_s": 3.0,
+                "inclusion_within_horizon_rate": 0.8,
+                "restricted_mean_inclusion_latency_s": 3.0,
             },
         ]
         pair = paired_rows(rows)[0]
         self.assertAlmostEqual(pair["active_stake_gain"], 0.3)
-        self.assertAlmostEqual(pair["p95_latency_reduction_s"], 2.0)
+        self.assertAlmostEqual(pair["inclusion_rate_gain"], 0.1)
+        self.assertAlmostEqual(pair["restricted_mean_latency_reduction_s"], 2.0)
 
     def test_grouped_rows_keep_initial_conditions_separate(self) -> None:
         rows = []
@@ -76,7 +80,10 @@ class AdaptiveParticipationTests(unittest.TestCase):
                     "cost_median_multiplier": 1.0,
                     "steady_active_fraction": value,
                     "steady_active_stake_share": value,
-                    "p95_inclusion_latency_s": 2.0,
+                    "inclusion_within_horizon_rate": 0.9,
+                    "completed_p95_inclusion_latency_s": 2.0,
+                    "timeout_adjusted_p95_latency_s": 2.0,
+                    "restricted_mean_inclusion_latency_s": 1.5,
                     "utility_consistency_share": 0.9,
                 }
             )
@@ -87,6 +94,34 @@ class AdaptiveParticipationTests(unittest.TestCase):
 
     def test_percentile_interpolates(self) -> None:
         self.assertAlmostEqual(percentile([1.0, 3.0], 0.5), 2.0)
+
+    def test_cohort_metrics_penalize_transactions_missing_at_horizon(self) -> None:
+        generated = [
+            {"tx_hash": "a", "created_epoch": "2", "created_slot": "0"},
+            {"tx_hash": "b", "created_epoch": "2", "created_slot": "1"},
+            {"tx_hash": "late", "created_epoch": "9", "created_slot": "4"},
+        ]
+        inclusion = [
+            {
+                "tx_hash": "a",
+                "included_slot": "12",
+                "latency_s": "2.0",
+            }
+        ]
+        metrics = cohort_inclusion_metrics(
+            generated,
+            inclusion,
+            warmup_epochs=2,
+            max_epochs=10,
+            slots_per_epoch=5,
+            slot_duration_s=1.0,
+            followup_epochs=2,
+        )
+        self.assertEqual(metrics["cohort_generated_tx"], 2)
+        self.assertEqual(metrics["cohort_included_tx"], 1)
+        self.assertAlmostEqual(metrics["inclusion_within_horizon_rate"], 0.5)
+        self.assertAlmostEqual(metrics["restricted_mean_inclusion_latency_s"], 6.0)
+        self.assertAlmostEqual(metrics["timeout_adjusted_p95_latency_s"], 9.6)
 
 
 if __name__ == "__main__":

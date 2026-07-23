@@ -169,8 +169,8 @@ def plot_latency(rows: list[dict[str, str]], output: Path) -> list[Path]:
     for protocol, (label, color, _linestyle, _marker) in SERIES.items():
         row = selected[protocol]
         labels.append(label)
-        values.append(number(row["p95_inclusion_latency_s"]))
-        errors.append(number(row["p95_inclusion_latency_s_ci95"]))
+        values.append(number(row["restricted_mean_inclusion_latency_s"]))
+        errors.append(number(row["restricted_mean_inclusion_latency_s_ci95"]))
         colors.append(color)
     positions = list(range(len(labels)))
     axis.bar(
@@ -184,7 +184,7 @@ def plot_latency(rows: list[dict[str, str]], output: Path) -> list[Path]:
         capsize=2.2,
     )
     axis.set_xticks(positions, labels, rotation=12, ha="right")
-    axis.set_ylabel("p95 inclusion latency (s)")
+    axis.set_ylabel("Restricted mean time to inclusion (s)")
     axis.set_ylim(bottom=0)
     style_axis(axis)
     fig.subplots_adjust(bottom=0.24, left=0.19, right=0.98, top=0.97)

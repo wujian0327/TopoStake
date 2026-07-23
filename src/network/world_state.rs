@@ -70,6 +70,8 @@ pub struct WorldState {
     adaptive_relay_metrics_file: Option<std::fs::File>,
     inclusion_samples_filename: PathBuf,
     inclusion_samples_file: Option<std::fs::File>,
+    generation_samples_filename: PathBuf,
+    generation_samples_file: Option<std::fs::File>,
     run_summary_filename: PathBuf,
     proposer_duties_filename: PathBuf,
     proposer_duties_file: Option<std::fs::File>,
@@ -344,6 +346,7 @@ impl WorldState {
         let node_epoch_metrics_filename = output_dir.join("node_epoch_metrics.csv");
         let adaptive_relay_metrics_filename = output_dir.join("adaptive_relay_metrics.csv");
         let inclusion_samples_filename = output_dir.join("inclusion_samples.csv");
+        let generation_samples_filename = output_dir.join("generation_samples.csv");
         let run_summary_filename = output_dir.join("run_summary.json");
         let proposer_duties_filename = output_dir.join("proposer_duties.csv");
         let _ = std::fs::remove_file(&metrics_path);
@@ -351,6 +354,7 @@ impl WorldState {
         let _ = std::fs::remove_file(&node_epoch_metrics_filename);
         let _ = std::fs::remove_file(&adaptive_relay_metrics_filename);
         let _ = std::fs::remove_file(&inclusion_samples_filename);
+        let _ = std::fs::remove_file(&generation_samples_filename);
         let _ = std::fs::remove_file(&run_summary_filename);
         let _ = std::fs::remove_file(&proposer_duties_filename);
         let metrics_slots_file = std::fs::OpenOptions::new()
@@ -377,6 +381,11 @@ impl WorldState {
             .create(true)
             .append(true)
             .open(&inclusion_samples_filename)
+            .ok();
+        let generation_samples_file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&generation_samples_filename)
             .ok();
         let proposer_duties_file = std::fs::OpenOptions::new()
             .create(true)
@@ -421,6 +430,8 @@ impl WorldState {
                 adaptive_relay_metrics_file,
                 inclusion_samples_filename,
                 inclusion_samples_file,
+                generation_samples_filename,
+                generation_samples_file,
                 run_summary_filename,
                 proposer_duties_filename,
                 proposer_duties_file,
@@ -1651,27 +1662,27 @@ impl WorldState {
                 / self.adaptive_relay_costs.len() as f64
         };
         let observed = observed_benefit
-            .map(|value| format!("{value:.12}"))
+            .map(|value| format!("{value:.17e}"))
             .unwrap_or_default();
         let smoothed = self
             .adaptive_benefit_ema
-            .map(|value| format!("{value:.12}"))
+            .map(|value| format!("{value:.17e}"))
             .unwrap_or_default();
         let active_reward = window
             .and_then(|value| value.active.expected_reward_per_stake())
-            .map(|value| format!("{value:.12}"))
+            .map(|value| format!("{value:.17e}"))
             .unwrap_or_default();
         let lazy_reward = window
             .and_then(|value| value.lazy.expected_reward_per_stake())
-            .map(|value| format!("{value:.12}"))
+            .map(|value| format!("{value:.17e}"))
             .unwrap_or_default();
         let active_work = window
             .and_then(|value| value.active.forwards_per_stake())
-            .map(|value| format!("{value:.12}"))
+            .map(|value| format!("{value:.17e}"))
             .unwrap_or_default();
         let lazy_work = window
             .and_then(|value| value.lazy.forwards_per_stake())
-            .map(|value| format!("{value:.12}"))
+            .map(|value| format!("{value:.17e}"))
             .unwrap_or_default();
         if let Some(file) = self.adaptive_relay_metrics_file.as_mut() {
             if file.metadata().map(|metadata| metadata.len()).unwrap_or(0) == 0 {
@@ -1682,7 +1693,7 @@ impl WorldState {
             }
             let _ = writeln!(
                 file,
-                "{epoch},{window_epochs},{update_applied},{active_fraction:.9},{active_stake_share:.9},{observed},{smoothed},{active_reward},{lazy_reward},{active_work},{lazy_work},{switched_active},{switched_lazy},{mean_cost:.12}"
+                "{epoch},{window_epochs},{update_applied},{active_fraction:.9},{active_stake_share:.9},{observed},{smoothed},{active_reward},{lazy_reward},{active_work},{lazy_work},{switched_active},{switched_lazy},{mean_cost:.17e}"
             );
             let _ = file.flush();
         }
@@ -1750,6 +1761,23 @@ impl WorldState {
                     epoch, tx_hash, created_slot, included_slot, latency, eligible
                 );
             }
+            let _ = file.flush();
+        }
+    }
+
+    fn write_generation_sample(&mut self, tx_hash: &str, epoch: u64, slot: u64) {
+        if self.generation_samples_file.is_none() {
+            self.generation_samples_file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&self.generation_samples_filename)
+                .ok();
+        }
+        if let Some(file) = self.generation_samples_file.as_mut() {
+            if file.metadata().map(|metadata| metadata.len()).unwrap_or(0) == 0 {
+                let _ = writeln!(file, "tx_hash,created_epoch,created_slot");
+            }
+            let _ = writeln!(file, "{tx_hash},{epoch},{slot}");
             let _ = file.flush();
         }
     }
@@ -1996,6 +2024,18 @@ impl WorldState {
                             let shared_self = shared_self.write().await;
                             let mut balances = shared_self.account_balances.write().await;
                             balances.insert(address, new_balance);
+                        }
+                        Message::RecordGeneratedTransaction {
+                            tx_hash,
+                            created_epoch,
+                            created_slot,
+                        } => {
+                            let mut shared_self = shared_self.write().await;
+                            shared_self.write_generation_sample(
+                                &tx_hash,
+                                created_epoch,
+                                created_slot,
+                            );
                         }
                         Message::SendBlock { block, from: _ } => {
                             {

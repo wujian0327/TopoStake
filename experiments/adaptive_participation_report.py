@@ -58,6 +58,84 @@ def percentile(values: Iterable[float], probability: float) -> float:
     return ordered[lower] * (1.0 - weight) + ordered[upper] * weight
 
 
+def cohort_inclusion_metrics(
+    generated: list[dict[str, str]],
+    inclusion: list[dict[str, str]],
+    *,
+    warmup_epochs: int,
+    max_epochs: int,
+    slots_per_epoch: int,
+    slot_duration_s: float,
+    followup_epochs: int,
+) -> dict[str, float | int]:
+    """Measure a generated-tx cohort with complete, fixed follow-up.
+
+    Transactions not included within the follow-up horizon receive the horizon
+    value.  This prevents survivor-only inclusion latency from looking
+    artificially small when forwarding is weak.
+    """
+
+    slots_per_epoch = max(slots_per_epoch, 1)
+    followup_slots = max(followup_epochs * slots_per_epoch, 1)
+    final_slot = max(max_epochs * slots_per_epoch - 1, 0)
+    earliest_slot = max(warmup_epochs, 0) * slots_per_epoch
+    latest_slot = final_slot - followup_slots
+    generated_by_hash: dict[str, int] = {}
+    for row in generated:
+        tx_hash = str(row.get("tx_hash", "")).strip()
+        if not tx_hash:
+            continue
+        created_slot = (
+            int(number(row.get("created_epoch"))) * slots_per_epoch
+            + int(number(row.get("created_slot")))
+        )
+        if earliest_slot <= created_slot <= latest_slot:
+            generated_by_hash.setdefault(tx_hash, created_slot)
+
+    included_by_hash: dict[str, tuple[int, float]] = {}
+    for row in inclusion:
+        tx_hash = str(row.get("tx_hash", "")).strip()
+        if tx_hash not in generated_by_hash:
+            continue
+        included_slot = int(number(row.get("included_slot")))
+        latency_s = max(number(row.get("latency_s")), 0.0)
+        prior = included_by_hash.get(tx_hash)
+        if prior is None or included_slot < prior[0]:
+            included_by_hash[tx_hash] = (included_slot, latency_s)
+
+    horizon_s = followup_slots * max(slot_duration_s, 0.0)
+    bounded_latencies = []
+    completed_latencies = []
+    included_count = 0
+    for tx_hash, created_slot in generated_by_hash.items():
+        inclusion_sample = included_by_hash.get(tx_hash)
+        if (
+            inclusion_sample is not None
+            and inclusion_sample[0] - created_slot <= followup_slots
+        ):
+            included_count += 1
+            latency_s = min(inclusion_sample[1], horizon_s)
+            bounded_latencies.append(latency_s)
+            completed_latencies.append(latency_s)
+        else:
+            bounded_latencies.append(horizon_s)
+
+    generated_count = len(generated_by_hash)
+    return {
+        "cohort_generated_tx": generated_count,
+        "cohort_included_tx": included_count,
+        "inclusion_within_horizon_rate": (
+            included_count / generated_count if generated_count else 0.0
+        ),
+        "completed_p95_inclusion_latency_s": percentile(completed_latencies, 0.95),
+        "timeout_adjusted_p95_latency_s": percentile(bounded_latencies, 0.95),
+        "restricted_mean_inclusion_latency_s": (
+            statistics.mean(bounded_latencies) if bounded_latencies else 0.0
+        ),
+        "followup_horizon_s": horizon_s,
+    }
+
+
 def mean_ci(values: Iterable[float]) -> tuple[float, float, int]:
     clean = [value for value in values if math.isfinite(value)]
     if not clean:
@@ -89,8 +167,18 @@ def aggregate_run(run: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, A
     epochs = read_csv(output_dir / "epoch_metrics.csv")
     nodes = read_csv(output_dir / "node_epoch_metrics.csv")
     inclusion = read_csv(output_dir / "inclusion_samples.csv")
+    generated = read_csv(output_dir / "generation_samples.csv")
     expected_epochs = int(run.get("max_epochs", 0))
     warmup = int(run.get("warmup_epochs", 0))
+    inclusion_metrics = cohort_inclusion_metrics(
+        generated,
+        inclusion,
+        warmup_epochs=warmup,
+        max_epochs=expected_epochs,
+        slots_per_epoch=int(number(run.get("slot_per_epoch"), 1)),
+        slot_duration_s=number(run.get("slot_duration"), 1.0),
+        followup_epochs=int(number(run.get("adaptive_followup_epochs"), 10)),
+    )
     hysteresis = number(run.get("adaptive_switching_hysteresis"), 0.05)
     steady_adaptive = [row for row in adaptive if int(number(row.get("epoch"))) >= warmup]
     steady_nodes = [row for row in nodes if int(number(row.get("epoch"))) >= warmup]
@@ -130,6 +218,7 @@ def aggregate_run(run: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, A
         and int(number(summary.get("completed_epochs"), -1)) >= expected_epochs
         and len(adaptive) >= expected_epochs
         and len(epochs) >= expected_epochs
+        and int(inclusion_metrics["cohort_generated_tx"]) > 0
     )
     benefit_accounting_errors = 0
     for row in adaptive:
@@ -172,6 +261,7 @@ def aggregate_run(run: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, A
         "p95_inclusion_latency_s": percentile(
             [number(row.get("latency_s")) for row in steady_inclusion], 0.95
         ),
+        **inclusion_metrics,
         "utility_consistency_share": (
             sum(consistency) / len(consistency) if consistency else 0.0
         ),
@@ -241,7 +331,10 @@ def grouped_rows(runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
             for metric in (
                 "steady_active_fraction",
                 "steady_active_stake_share",
-                "p95_inclusion_latency_s",
+                "inclusion_within_horizon_rate",
+                "completed_p95_inclusion_latency_s",
+                "timeout_adjusted_p95_latency_s",
+                "restricted_mean_inclusion_latency_s",
                 "utility_consistency_share",
             )
         }
@@ -313,8 +406,14 @@ def paired_rows(runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "cost_median_multiplier": cost,
                 "active_stake_gain": number(full["steady_active_stake_share"])
                 - number(fee["steady_active_stake_share"]),
-                "p95_latency_reduction_s": number(fee["p95_inclusion_latency_s"])
-                - number(full["p95_inclusion_latency_s"]),
+                "inclusion_rate_gain": number(
+                    full["inclusion_within_horizon_rate"]
+                )
+                - number(fee["inclusion_within_horizon_rate"]),
+                "restricted_mean_latency_reduction_s": number(
+                    fee["restricted_mean_inclusion_latency_s"]
+                )
+                - number(full["restricted_mean_inclusion_latency_s"]),
             }
         )
     return output
@@ -352,13 +451,19 @@ def main() -> int:
     passing_initials = sum(
         statistics.mean(values) >= 0.10 for values in gains_by_initial.values()
     )
+    inclusion_by_initial: dict[float, list[float]] = defaultdict(list)
     latency_by_initial: dict[float, list[float]] = defaultdict(list)
     for row in pairs:
-        latency_by_initial[number(row["initial_active_fraction"])].append(
-            number(row["p95_latency_reduction_s"])
+        inclusion_by_initial[number(row["initial_active_fraction"])].append(
+            number(row["inclusion_rate_gain"])
         )
-    improving_latency_initials = sum(
-        statistics.mean(values) > 0.0 for values in latency_by_initial.values()
+        latency_by_initial[number(row["initial_active_fraction"])].append(
+            number(row["restricted_mean_latency_reduction_s"])
+        )
+    improving_end_to_end_initials = sum(
+        statistics.mean(latency_by_initial[initial]) > 0.0
+        and statistics.mean(inclusion_by_initial[initial]) >= 0.0
+        for initial in latency_by_initial
     )
     complete = [row for row in runs if row["complete"]]
     utility_rows = [
@@ -401,7 +506,7 @@ def main() -> int:
         "initialization_robustness": all(
             spread <= 0.10 for spread in initialization_spreads.values()
         ),
-        "end_to_end_latency_direction": improving_latency_initials >= 2,
+        "end_to_end_inclusion_direction": improving_end_to_end_initials >= 2,
         "utility_consistency": bool(utility_rows)
         and statistics.mean(
             number(row["utility_consistency_share"]) for row in utility_rows
@@ -421,7 +526,9 @@ def main() -> int:
             "complete_runs": len(complete),
             "initial_conditions_with_at_least_10pp_gain": passing_initials,
             "required_initial_conditions": 2,
-            "initial_conditions_with_lower_p95_latency": improving_latency_initials,
+            "initial_conditions_with_better_bounded_inclusion": (
+                improving_end_to_end_initials
+            ),
             "initialization_spreads": initialization_spreads,
             "pairing_mismatches": pairing_mismatches,
         },
@@ -433,14 +540,15 @@ def main() -> int:
         "",
         "Validators update Active/Lazy strategies from completed-window public reward and forwarding observations. The model uses fixed calibrated costs and no future proposer draws; it is behavioral evidence, not an equilibrium proof.",
         "",
-        "| Protocol | Initial active | Steady active stake | p95 latency | Utility-consistent |",
-        "|---|---:|---:|---:|---:|",
+        "| Protocol | Initial active | Steady active stake | Included within horizon | Restricted mean | Utility-consistent |",
+        "|---|---:|---:|---:|---:|---:|",
     ]
     for row in groups:
         summary_lines.append(
             f"| {row['protocol_label']} | {number(row['initial_active_fraction']):.0%} | "
             f"{number(row['steady_active_stake_share']):.1%} | "
-            f"{number(row['p95_inclusion_latency_s']):.2f}s | "
+            f"{number(row['inclusion_within_horizon_rate']):.1%} | "
+            f"{number(row['restricted_mean_inclusion_latency_s']):.2f}s | "
             f"{number(row['utility_consistency_share']):.1%} |"
         )
     summary_lines.extend(

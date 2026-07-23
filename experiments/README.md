@@ -15,7 +15,9 @@ support the current frozen-v1 evaluation.
   the RQ2 output; this suite does not rerun the Rust simulator.
 - `frozen_v1_adaptive_participation_pilot.yaml`: Rust adaptive-agent pilot in
   which validators update Active/Lazy relay strategies from completed-window
-  reward and forwarding observations without future proposer information.
+  reward and forwarding observations without future proposer information;
+  the diagnostic configuration uses the `2x` cost regime and fixed-follow-up
+  transaction cohorts.
 - `frozen_v1_organic_capture_{pilot,main}.yaml`: organic-traffic capture under
   favorable placement.
 - `frozen_v1_reinvestment_gini_{pilot,main}.yaml`: paired long-term stake-Gini

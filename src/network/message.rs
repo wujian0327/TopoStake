@@ -18,6 +18,11 @@ pub enum Message {
     GenerateTransactionPaths {
         to: String,
     },
+    RecordGeneratedTransaction {
+        tx_hash: String,
+        created_epoch: u64,
+        created_slot: u64,
+    },
     SendRandaoSeed,
     ReceiveRandaoSeed(RandaoSeed),
     BecomeValidator(std::collections::HashMap<String, f64>),
@@ -70,6 +75,18 @@ impl Message {
 
     pub fn new_generate_transaction_path_msg(to: String) -> Message {
         Message::GenerateTransactionPaths { to }
+    }
+
+    pub fn new_record_generated_transaction_msg(
+        tx_hash: String,
+        created_epoch: u64,
+        created_slot: u64,
+    ) -> Message {
+        Message::RecordGeneratedTransaction {
+            tx_hash,
+            created_epoch,
+            created_slot,
+        }
     }
 
     pub fn new_send_randao_seed_msg() -> Message {

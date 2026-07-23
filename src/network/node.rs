@@ -826,6 +826,14 @@ impl Node {
                     if !is_cached {
                         continue;
                     }
+                    let _ = self
+                        .world_state_sender
+                        .send(Message::new_record_generated_transaction_msg(
+                            transaction_paths.transaction.hash.clone(),
+                            self.epoch,
+                            self.slot,
+                        ))
+                        .await;
                     match self.node_type {
                         NodeType::Sybil => {
                             //Sybil,伪造路径,再广播

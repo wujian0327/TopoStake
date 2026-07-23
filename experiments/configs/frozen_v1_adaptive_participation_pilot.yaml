@@ -7,7 +7,7 @@
   "timeout_seconds": 2400,
   "seeds": [0, 1, 2],
   "defaults": {
-    "run_revision": "adaptive-participation-history-only-v1",
+    "run_revision": "adaptive-participation-history-only-v2",
     "node_num": 100,
     "sybil_node_num": 0,
     "fake_node_num": 0,
@@ -46,14 +46,15 @@
     "adaptive_update_interval_epochs": 5,
     "adaptive_update_fraction": 0.25,
     "adaptive_benefit_ema_alpha": 0.5,
-    "adaptive_switching_hysteresis": 0.05
+    "adaptive_switching_hysteresis": 0.05,
+    "adaptive_followup_epochs": 10
   },
   "experiments": [
     {
       "name": "adaptive_participation",
       "protocols": ["pos", "topostake_eta0", "topostake"],
       "adaptive_initial_active_fraction": [0.25, 0.5, 0.75],
-      "adaptive_cost_median_multiplier": [1.0]
+      "adaptive_cost_median_multiplier": [2.0]
     }
   ]
 }
