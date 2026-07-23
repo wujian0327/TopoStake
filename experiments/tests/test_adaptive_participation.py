@@ -19,6 +19,7 @@ from adaptive_participation_report import (  # noqa: E402
     grouped_rows,
     paired_rows,
     percentile,
+    post_adaptation_stats,
 )
 from run_experiments import command_for_run  # noqa: E402
 from plot_adaptive_participation import (  # noqa: E402
@@ -132,6 +133,7 @@ class AdaptiveParticipationTests(unittest.TestCase):
             "adaptive_initial_active_fraction": 0.5,
             "adaptive_cost_reference": 1.4e-7,
             "adaptive_cost_median_multiplier": 1.0,
+            "adaptive_exploration_fraction": 0.05,
             "graph_seed": 1,
             "wallet_seed": 2,
             "workload_seed": 3,
@@ -144,6 +146,13 @@ class AdaptiveParticipationTests(unittest.TestCase):
         self.assertEqual(command.count("--adaptive-relay-participation"), 1)
         index = command.index("--adaptive-initial-active-fraction")
         self.assertEqual(command[index + 1], "0.5")
+        index = command.index("--adaptive-exploration-fraction")
+        self.assertEqual(command[index + 1], "0.05")
+
+    def test_post_adaptation_stability_uses_half_window_drift(self) -> None:
+        drift, spread = post_adaptation_stats([0.4, 0.6, 0.5, 0.5])
+        self.assertAlmostEqual(drift, 0.0)
+        self.assertGreater(spread, 0.0)
 
     def test_pair_direction_is_full_minus_fee_only(self) -> None:
         common = {

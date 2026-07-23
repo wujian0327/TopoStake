@@ -17,7 +17,8 @@ support the current frozen-v1 evaluation.
   which validators update Active/Lazy relay strategies from completed-window
   reward and forwarding observations without future proposer information;
   the second-stage configuration sweeps `1x`, `2x`, and `3x` cost regimes over
-  100 epochs and uses fixed-follow-up transaction cohorts.
+  100 epochs, uses 5% seeded exploration to preserve counterfactual coverage,
+  and evaluates fixed-follow-up transaction cohorts.
 - `frozen_v1_organic_capture_{pilot,main}.yaml`: organic-traffic capture under
   favorable placement.
 - `frozen_v1_reinvestment_gini_{pilot,main}.yaml`: paired long-term stake-Gini

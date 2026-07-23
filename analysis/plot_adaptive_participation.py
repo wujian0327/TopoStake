@@ -169,7 +169,7 @@ def plot_steady_state(rows: list[dict[str, str]], output: Path) -> list[Path]:
             label=label,
         )
     axis.set_xlabel("Median relay-cost multiplier")
-    axis.set_ylabel("Steady active-stake share (%)")
+    axis.set_ylabel("Post-adaptation active-stake share (%)")
     axis.set_xticks([1, 2, 3])
     axis.set_yticks([0, 20, 40, 60, 80, 100])
     axis.set_ylim(0, 100)

@@ -105,6 +105,7 @@ CLI_KEYS = {
     "adaptive_update_fraction": "--adaptive-update-fraction",
     "adaptive_benefit_ema_alpha": "--adaptive-benefit-ema-alpha",
     "adaptive_switching_hysteresis": "--adaptive-switching-hysteresis",
+    "adaptive_exploration_fraction": "--adaptive-exploration-fraction",
     "unstable_fraction": "--unstable-fraction",
     "offline_probability": "--offline-probability",
     "outage_start_epoch": "--outage-start-epoch",

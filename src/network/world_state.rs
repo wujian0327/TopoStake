@@ -19,7 +19,7 @@ use crate::wallet::Wallet;
 use log::{debug, error, info, warn};
 use rand::rngs::StdRng;
 use rand::seq::SliceRandom;
-use rand::SeedableRng;
+use rand::{Rng, SeedableRng};
 use rand_distr::{Distribution, LogNormal};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -172,6 +172,34 @@ impl AdaptiveObservationWindow {
         } else {
             None
         }
+    }
+}
+
+fn adaptive_target_profile(
+    active: bool,
+    benefit: f64,
+    cost: f64,
+    hysteresis: f64,
+    explore_opposite: bool,
+) -> RelayProfile {
+    let best_response = if active {
+        if benefit < cost * (1.0 - hysteresis) {
+            RelayProfile::Lazy
+        } else {
+            RelayProfile::Active
+        }
+    } else if benefit > cost * (1.0 + hysteresis) {
+        RelayProfile::Active
+    } else {
+        RelayProfile::Lazy
+    };
+    if explore_opposite {
+        match best_response {
+            RelayProfile::Active => RelayProfile::Lazy,
+            _ => RelayProfile::Active,
+        }
+    } else {
+        best_response
     }
 }
 
@@ -1508,6 +1536,7 @@ impl WorldState {
                 None,
                 0,
                 0,
+                0,
                 validators,
                 window_epochs,
                 None,
@@ -1527,6 +1556,7 @@ impl WorldState {
 
         let mut switched_active = 0usize;
         let mut switched_lazy = 0usize;
+        let mut exploratory_decisions = 0usize;
         if let Some(benefit) = self.adaptive_benefit_ema {
             let mut candidates: Vec<String> = self.adaptive_relay_costs.keys().cloned().collect();
             candidates.sort_by(|left, right| {
@@ -1547,6 +1577,7 @@ impl WorldState {
                 .max(1)
                 .min(candidates.len());
             let hysteresis = self.adaptive_relay_config.switching_hysteresis;
+            let exploration = self.adaptive_relay_config.exploration_fraction;
             for address in candidates.into_iter().take(update_count) {
                 let cost = self
                     .adaptive_relay_costs
@@ -1558,17 +1589,17 @@ impl WorldState {
                     .get(&address)
                     .map(|profile| profile == "active")
                     .unwrap_or(false);
-                let target = if active {
-                    if benefit < cost * (1.0 - hysteresis) {
-                        RelayProfile::Lazy
-                    } else {
-                        RelayProfile::Active
-                    }
-                } else if benefit > cost * (1.0 + hysteresis) {
-                    RelayProfile::Active
-                } else {
-                    RelayProfile::Lazy
-                };
+                let explore_opposite = rng.gen_bool(exploration);
+                if explore_opposite {
+                    exploratory_decisions += 1;
+                }
+                let target = adaptive_target_profile(
+                    active,
+                    benefit,
+                    cost,
+                    hysteresis,
+                    explore_opposite,
+                );
                 if active == (target == RelayProfile::Active) {
                     continue;
                 }
@@ -1596,6 +1627,7 @@ impl WorldState {
             observed_benefit,
             switched_active,
             switched_lazy,
+            exploratory_decisions,
             validators,
             window.epochs,
             Some(&window),
@@ -1643,6 +1675,7 @@ impl WorldState {
         observed_benefit: Option<f64>,
         switched_active: usize,
         switched_lazy: usize,
+        exploratory_decisions: usize,
         validators: &[Validator],
         window_epochs: u64,
         window: Option<&AdaptiveObservationWindow>,
@@ -1688,12 +1721,12 @@ impl WorldState {
             if file.metadata().map(|metadata| metadata.len()).unwrap_or(0) == 0 {
                 let _ = writeln!(
                     file,
-                    "epoch,window_epochs,update_applied,active_fraction,active_stake_share,observed_benefit_per_forward,smoothed_benefit_per_forward,active_expected_reward_per_stake,lazy_expected_reward_per_stake,active_forward_attempts_per_stake,lazy_forward_attempts_per_stake,switched_to_active,switched_to_lazy,mean_cost_per_forward"
+                    "epoch,window_epochs,update_applied,active_fraction,active_stake_share,observed_benefit_per_forward,smoothed_benefit_per_forward,active_expected_reward_per_stake,lazy_expected_reward_per_stake,active_forward_attempts_per_stake,lazy_forward_attempts_per_stake,switched_to_active,switched_to_lazy,exploratory_decisions,mean_cost_per_forward"
                 );
             }
             let _ = writeln!(
                 file,
-                "{epoch},{window_epochs},{update_applied},{active_fraction:.9},{active_stake_share:.9},{observed},{smoothed},{active_reward},{lazy_reward},{active_work},{lazy_work},{switched_active},{switched_lazy},{mean_cost:.17e}"
+                "{epoch},{window_epochs},{update_applied},{active_fraction:.9},{active_stake_share:.9},{observed},{smoothed},{active_reward},{lazy_reward},{active_work},{lazy_work},{switched_active},{switched_lazy},{exploratory_decisions},{mean_cost:.17e}"
             );
             let _ = file.flush();
         }
@@ -2426,6 +2459,34 @@ mod tests {
             lazy: AdaptiveGroupObservation::default(),
         };
         assert_eq!(window.observed_benefit_per_forward(), None);
+    }
+
+    #[test]
+    fn adaptive_best_response_respects_hysteresis() {
+        assert_eq!(
+            adaptive_target_profile(false, 1.2, 1.0, 0.05, false),
+            RelayProfile::Active
+        );
+        assert_eq!(
+            adaptive_target_profile(true, 0.8, 1.0, 0.05, false),
+            RelayProfile::Lazy
+        );
+        assert_eq!(
+            adaptive_target_profile(true, 1.0, 1.0, 0.05, false),
+            RelayProfile::Active
+        );
+    }
+
+    #[test]
+    fn adaptive_exploration_tries_opposite_best_response() {
+        assert_eq!(
+            adaptive_target_profile(false, 1.2, 1.0, 0.05, true),
+            RelayProfile::Lazy
+        );
+        assert_eq!(
+            adaptive_target_profile(true, 0.8, 1.0, 0.05, true),
+            RelayProfile::Active
+        );
     }
 
     #[test]

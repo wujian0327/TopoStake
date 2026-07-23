@@ -63,6 +63,7 @@ pub struct AdaptiveRelayConfig {
     pub update_fraction: f64,
     pub benefit_ema_alpha: f64,
     pub switching_hysteresis: f64,
+    pub exploration_fraction: f64,
 }
 
 impl Default for AdaptiveRelayConfig {
@@ -78,6 +79,7 @@ impl Default for AdaptiveRelayConfig {
             update_fraction: 0.25,
             benefit_ema_alpha: 0.5,
             switching_hysteresis: 0.05,
+            exploration_fraction: 0.0,
         }
     }
 }
@@ -88,6 +90,11 @@ impl AdaptiveRelayConfig {
         self.update_fraction = self.update_fraction.clamp(0.0, 1.0);
         self.benefit_ema_alpha = self.benefit_ema_alpha.clamp(0.0, 1.0);
         self.switching_hysteresis = self.switching_hysteresis.clamp(0.0, 0.99);
+        self.exploration_fraction = if self.exploration_fraction.is_finite() {
+            self.exploration_fraction.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
         self.update_interval_epochs = self.update_interval_epochs.max(1);
         if !self.cost_reference.is_finite() || self.cost_reference < 0.0 {
             self.cost_reference = 0.0;

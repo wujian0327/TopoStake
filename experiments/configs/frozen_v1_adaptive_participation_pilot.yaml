@@ -7,7 +7,7 @@
   "timeout_seconds": 3600,
   "seeds": [0, 1, 2],
   "defaults": {
-    "run_revision": "adaptive-participation-history-only-v3",
+    "run_revision": "adaptive-participation-history-only-v4",
     "node_num": 100,
     "sybil_node_num": 0,
     "fake_node_num": 0,
@@ -47,6 +47,7 @@
     "adaptive_update_fraction": 0.25,
     "adaptive_benefit_ema_alpha": 0.5,
     "adaptive_switching_hysteresis": 0.05,
+    "adaptive_exploration_fraction": 0.05,
     "adaptive_followup_epochs": 10
   },
   "experiments": [

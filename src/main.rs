@@ -294,6 +294,10 @@ struct Args {
     #[clap(long, default_value = "0.05")]
     adaptive_switching_hysteresis: f64,
 
+    /// Fraction of updating validators that try the opposite relay strategy
+    #[clap(long, default_value = "0.0")]
+    adaptive_exploration_fraction: f64,
+
     /// Target corrupted real-stake fraction
     #[clap(long, default_value = "0.0")]
     adversary_stake_fraction: f64,
@@ -427,6 +431,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             update_fraction: args.adaptive_update_fraction,
             benefit_ema_alpha: args.adaptive_benefit_ema_alpha,
             switching_hysteresis: args.adaptive_switching_hysteresis,
+            exploration_fraction: args.adaptive_exploration_fraction,
         },
         adversary_stake_fraction: args.adversary_stake_fraction,
         adversary_placement: args.adversary_placement,

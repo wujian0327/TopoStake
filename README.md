@@ -115,15 +115,18 @@ python scripts/task.py frozen-adaptive-participation-pilot
 Each validator receives a paired, fixed heterogeneous relay cost. Every five
 completed epochs, a seeded subset may switch between Lazy (`p=0.25`) and
 Active (`p=1`) using an EMA of the preceding windows' public active-minus-lazy
-expected reward per extra forward. The decision never reads future proposer
-draws. The second-stage pilot sweeps `1x`, `2x`, and `3x` cost-median regimes
+expected reward per extra forward; 5% of reconsidering validators instead
+try the opposite strategy to preserve observable counterfactuals. The
+decision never reads future proposer draws. The second-stage pilot sweeps
+`1x`, `2x`, and `3x` cost-median regimes
 over 100 epochs, comparing PoS, fee-only, and Full TopoStake from 25%, 50%,
 and 75% initial active fractions. Generated transactions are tracked as a
 fixed-follow-up cohort, so unfinished transactions affect both the inclusion
 rate and restricted mean time to inclusion. Missing Active/Lazy
 counterfactuals are reported as unavailable rather than accounting errors,
-and acceptance also checks counterfactual coverage and tail stability. The
-report writes three independent figure files.
+and acceptance checks coverage separately for fee-only and Full TopoStake.
+Post-adaptation stability uses first-half versus second-half mean drift rather
+than a tail maximum. The report writes three independent figure files.
 
 ### 4. Organic-Traffic Capture Experiment
 

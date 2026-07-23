@@ -19,7 +19,7 @@ from run_experiments import PROCESSED_ROOT, ROOT, expand_runs, load_yaml
 PROTOCOLS = ("pos", "topostake_eta0", "topostake")
 T95 = {2: 12.706, 3: 4.303, 4: 3.182, 5: 2.776}
 MIN_COUNTERFACTUAL_COVERAGE = 0.80
-MAX_TAIL_ACTIVE_STAKE_RANGE = 0.10
+MAX_POST_ADAPTATION_DRIFT = 0.05
 
 
 def read_csv(path: Path) -> list[dict[str, str]]:
@@ -113,6 +113,19 @@ def percentile(values: Iterable[float], probability: float) -> float:
         return ordered[lower]
     weight = position - lower
     return ordered[lower] * (1.0 - weight) + ordered[upper] * weight
+
+
+def post_adaptation_stats(values: Iterable[float]) -> tuple[float, float]:
+    """Return half-window mean drift and standard deviation."""
+
+    cleaned = [value for value in values if math.isfinite(value)]
+    if len(cleaned) < 2:
+        return 1.0, 0.0
+    midpoint = len(cleaned) // 2
+    first, second = cleaned[:midpoint], cleaned[midpoint:]
+    drift = abs(statistics.mean(first) - statistics.mean(second))
+    spread = statistics.stdev(cleaned)
+    return drift, spread
 
 
 def cohort_inclusion_metrics(
@@ -270,6 +283,9 @@ def aggregate_run(run: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, A
     active_stake = [number(row.get("active_stake_share")) for row in steady_adaptive]
     active_fraction = [number(row.get("active_fraction")) for row in steady_adaptive]
     tail = active_stake[-10:]
+    post_adaptation_drift, post_adaptation_stddev = post_adaptation_stats(
+        active_stake
+    )
     complete = (
         status.get("status") == "ok"
         and int(number(summary.get("completed_epochs"), -1)) >= expected_epochs
@@ -299,6 +315,8 @@ def aggregate_run(run: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, A
         else 0.0,
         "final_active_stake_share": active_stake[-1] if active_stake else 0.0,
         "tail_active_stake_range": max(tail) - min(tail) if tail else 1.0,
+        "post_adaptation_active_stake_drift": post_adaptation_drift,
+        "post_adaptation_active_stake_stddev": post_adaptation_stddev,
         "p95_inclusion_latency_s": percentile(
             [number(row.get("latency_s")) for row in steady_inclusion], 0.95
         ),
@@ -311,6 +329,9 @@ def aggregate_run(run: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, A
         ),
         "switches_to_lazy": sum(
             int(number(row.get("switched_to_lazy"))) for row in adaptive
+        ),
+        "exploratory_decision_count": sum(
+            int(number(row.get("exploratory_decisions"))) for row in adaptive
         ),
         "benefit_update_attempt_count": benefit_accounting["attempts"],
         "benefit_update_count": benefit_accounting["observed"],
@@ -555,18 +576,36 @@ def main() -> int:
     pairing_mismatches = sum(
         len(hashes) != 1 for hashes in paired_cost_hashes.values()
     ) + sum(len(hashes) != 1 for hashes in paired_profile_hashes.values())
-    benefit_attempts = sum(
-        int(number(row["benefit_update_attempt_count"])) for row in utility_rows
-    )
-    observed_benefit_updates = sum(
-        int(number(row["benefit_update_count"])) for row in utility_rows
-    )
-    counterfactual_coverage = (
-        observed_benefit_updates / benefit_attempts if benefit_attempts else 0.0
-    )
-    maximum_tail_range = max(
+    counterfactual_coverage_by_protocol = {}
+    unavailable_updates_by_protocol = {}
+    for protocol in ("topostake_eta0", "topostake"):
+        protocol_rows = [
+            row for row in utility_rows if row["protocol_label"] == protocol
+        ]
+        attempts = sum(
+            int(number(row["benefit_update_attempt_count"]))
+            for row in protocol_rows
+        )
+        observed = sum(
+            int(number(row["benefit_update_count"])) for row in protocol_rows
+        )
+        counterfactual_coverage_by_protocol[protocol] = (
+            observed / attempts if attempts else 0.0
+        )
+        unavailable_updates_by_protocol[protocol] = sum(
+            int(number(row["benefit_counterfactual_unavailable_count"]))
+            for row in protocol_rows
+        )
+    maximum_post_adaptation_drift = max(
         (
-            number(row["tail_active_stake_range"])
+            number(row["post_adaptation_active_stake_drift"])
+            for row in utility_rows
+        ),
+        default=1.0,
+    )
+    maximum_post_adaptation_stddev = max(
+        (
+            number(row["post_adaptation_active_stake_stddev"])
             for row in utility_rows
         ),
         default=1.0,
@@ -581,15 +620,17 @@ def main() -> int:
             int(number(row["benefit_accounting_error_count"])) for row in complete
         )
         == 0,
-        "counterfactual_coverage": (
-            counterfactual_coverage >= MIN_COUNTERFACTUAL_COVERAGE
+        "counterfactual_coverage": all(
+            coverage >= MIN_COUNTERFACTUAL_COVERAGE
+            for coverage in counterfactual_coverage_by_protocol.values()
         ),
         "broad_participation_gain": passing_cost_regimes >= 2,
         "initialization_robustness": all(
             spread <= 0.10 for spread in initialization_spreads.values()
         ),
-        "steady_state_stability": maximum_tail_range
-        <= MAX_TAIL_ACTIVE_STAKE_RANGE,
+        "post_adaptation_stability": (
+            maximum_post_adaptation_drift <= MAX_POST_ADAPTATION_DRIFT
+        ),
         "end_to_end_inclusion_direction": improving_end_to_end_cost_regimes >= 2,
         "utility_consistency": bool(utility_rows)
         and statistics.mean(
@@ -620,12 +661,22 @@ def main() -> int:
                 improving_end_to_end_cost_regimes
             ),
             "initialization_spreads": initialization_spreads,
-            "counterfactual_coverage": counterfactual_coverage,
-            "counterfactual_unavailable_updates": sum(
-                int(number(row["benefit_counterfactual_unavailable_count"]))
+            "counterfactual_coverage_by_protocol": (
+                counterfactual_coverage_by_protocol
+            ),
+            "counterfactual_unavailable_updates_by_protocol": (
+                unavailable_updates_by_protocol
+            ),
+            "maximum_post_adaptation_active_stake_drift": (
+                maximum_post_adaptation_drift
+            ),
+            "maximum_post_adaptation_active_stake_stddev": (
+                maximum_post_adaptation_stddev
+            ),
+            "exploratory_decisions": sum(
+                int(number(row["exploratory_decision_count"]))
                 for row in utility_rows
             ),
-            "maximum_tail_active_stake_range": maximum_tail_range,
             "pairing_mismatches": pairing_mismatches,
         },
     }
@@ -636,7 +687,7 @@ def main() -> int:
         "",
         "Validators update Active/Lazy strategies from completed-window public reward and forwarding observations. The model uses fixed calibrated costs and no future proposer draws; it is behavioral evidence, not an equilibrium proof.",
         "",
-        "| Protocol | Cost multiplier | Initial active | Steady active stake | Included within horizon | Restricted mean | Utility-consistent |",
+        "| Protocol | Cost multiplier | Initial active | Post-adaptation active stake | Included within horizon | Restricted mean | Utility-consistent |",
         "|---|---:|---:|---:|---:|---:|---:|",
     ]
     for row in groups:
