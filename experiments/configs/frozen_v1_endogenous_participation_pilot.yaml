@@ -1,0 +1,48 @@
+{
+  "suite": "frozen_v1_endogenous_participation_pilot_v1",
+  "input_paired_csv": "results/processed/frozen_v1_fee_bonus_main_paired.csv",
+  "lazy_fractions": [0.25, 0.50, 0.75],
+  "metrics": {
+    "expected_reward_premium": "stake_weighted_expected_participation_reward_premium_per_stake",
+    "forwarding_work_premium": "participation_forward_premium_per_stake",
+    "latency": "p95_inclusion_latency_s_pooled"
+  },
+  "strategies": {
+    "lazy_forward_probability": 0.25,
+    "active_forward_probability": 1.0
+  },
+  "cost_model": {
+    "distribution": "lognormal",
+    "reference": "geometric_mean_fee_only_break_even",
+    "regime_multipliers": {
+      "low": 0.5,
+      "medium": 1.0,
+      "high": 2.0
+    },
+    "sweep_min_multiplier": 0.25,
+    "sweep_max_multiplier": 8.0,
+    "sweep_points": 49,
+    "primary_log_sigma": 0.75,
+    "log_sigma_sensitivity": [0.50, 0.75, 1.00]
+  },
+  "curve_model": {
+    "primary": "linear",
+    "sensitivity": ["clamp"]
+  },
+  "dynamics": {
+    "initial_active_fractions": [0.25, 0.50, 0.75],
+    "update_rate": 0.25,
+    "max_steps": 500,
+    "tolerance": 1e-10
+  },
+  "bootstrap": {
+    "samples": 2000,
+    "seed": 240531
+  },
+  "go_no_go": {
+    "minimum_seed_count": 20,
+    "minimum_participation_gain": 0.10,
+    "minimum_passing_cost_regimes": 2,
+    "maximum_initialization_spread": 0.01
+  }
+}

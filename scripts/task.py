@@ -241,6 +241,29 @@ def task_fee_bonus_figures(args: argparse.Namespace) -> None:
     run([PYTHON, "analysis/plot_fee_bonus_long_horizon.py", "--config", config])
 
 
+def task_endogenous_participation_pilot(args: argparse.Namespace) -> None:
+    config = (
+        args.config
+        or "experiments/configs/frozen_v1_endogenous_participation_pilot.yaml"
+    )
+    run(
+        [
+            PYTHON,
+            "experiments/endogenous_participation_report.py",
+            "--config",
+            config,
+        ]
+    )
+    run(
+        [
+            PYTHON,
+            "analysis/plot_endogenous_participation.py",
+            "--config",
+            config,
+        ]
+    )
+
+
 def task_organic_capture(args: argparse.Namespace, config: str) -> None:
     task_run_experiments(config, force=args.force, dry_run=args.dry_run)
     if args.dry_run:
@@ -465,6 +488,7 @@ TASKS: Dict[str, Callable[[argparse.Namespace], None]] = {
     "frozen-fee-bonus-main": task_fee_bonus_main,
     "frozen-fee-bonus-report": task_fee_bonus_report,
     "frozen-fee-bonus-figures": task_fee_bonus_figures,
+    "frozen-endogenous-participation-pilot": task_endogenous_participation_pilot,
     "frozen-organic-capture-pilot": task_organic_capture_pilot,
     "frozen-organic-capture-main": task_organic_capture_main,
     "frozen-organic-capture-report": task_organic_capture_report,

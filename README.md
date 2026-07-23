@@ -92,6 +92,19 @@ reward premiums from the existing per-validator metrics.  It also converts
 the frozen proposer weights into an expected reward-per-stake premium.  These
 steps only reprocess existing raw outputs; they do not rerun the simulator.
 
+The reduced-form endogenous-participation pilot consumes the paired RQ2 CSV;
+it does not rerun Rust:
+
+```bash
+python scripts/task.py frozen-endogenous-participation-pilot
+```
+
+It reconstructs fee-only and Full expected break-even benefit curves, solves
+the heterogeneous-cost mean-field fixed point, bootstraps paired seeds, and
+checks cost, interpolation, and initialization sensitivity. Its `GO` result
+only decides whether a dynamic Rust-agent experiment is worth implementing;
+it is not an equilibrium or real-validator participation claim.
+
 ### 4. Organic-Traffic Capture Experiment
 
 ```bash
