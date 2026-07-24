@@ -870,7 +870,16 @@ def main() -> int:
             "cost_regimes_with_better_bounded_inclusion": (
                 improving_end_to_end_cost_regimes
             ),
-            "initialization_spreads": initialization_spreads,
+            "initialization_spreads": (
+                initialization_spreads
+                if requires_initialization_robustness(acceptance_profile)
+                else {}
+            ),
+            "parameter_variant_spreads": (
+                initialization_spreads
+                if acceptance_profile == "sensitivity"
+                else {}
+            ),
             "acceptance_profile": acceptance_profile,
             "condition_active_stake_gain_means": condition_gain_means,
             "condition_active_stake_gain_intervals": condition_gain_intervals,
