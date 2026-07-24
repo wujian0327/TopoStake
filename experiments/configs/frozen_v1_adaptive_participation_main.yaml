@@ -13,7 +13,7 @@
     115, 116, 117, 118, 119
   ],
   "defaults": {
-    "run_revision": "adaptive-participation-holdout-v1",
+    "run_revision": "adaptive-participation-holdout-v2",
     "node_num": 100,
     "sybil_node_num": 0,
     "fake_node_num": 0,
@@ -67,7 +67,7 @@
       "name": "pos_baseline",
       "protocols": ["pos"],
       "adaptive_initial_active_fraction": [0.50],
-      "adaptive_cost_median_multiplier": [2.0]
+      "adaptive_cost_median_multiplier": [1.0, 2.0, 3.0]
     }
   ]
 }
