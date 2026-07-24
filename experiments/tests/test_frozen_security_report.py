@@ -28,6 +28,7 @@ def synthetic_run(seed: int, padding: int, contribution: float) -> dict[str, obj
         {
             "suite": "test",
             "protocol_version": "frozen-v1",
+            "run_revision": "relay-focal-v2",
             "experiment": "path_padding_end_to_end",
             "protocol_label": "topostake",
             "protocol": "topostake",
@@ -112,6 +113,7 @@ class FrozenSecurityReportTests(unittest.TestCase):
         self.assertTrue(checks["run-completeness"]["passed"])
         self.assertTrue(checks["seed-coverage"]["passed"])
         self.assertTrue(checks["run-revision-consistency"]["passed"])
+        self.assertTrue(checks["git-revision-provenance"]["passed"])
         self.assertTrue(checks["score-dependent-proposer-bound"]["passed"])
         one_seed = {item["name"]: item for item in validation(rows[:1], expected_seeds=2)}
         self.assertFalse(one_seed["seed-coverage"]["passed"])
@@ -119,6 +121,10 @@ class FrozenSecurityReportTests(unittest.TestCase):
         checks = {item["name"]: item for item in validation(rows, expected_seeds=2)}
         self.assertFalse(checks["score-independent-proposer-cap"]["passed"])
         rows[1]["git_commit_sha"] = "different-commit"
+        checks = {item["name"]: item for item in validation(rows, expected_seeds=2)}
+        self.assertTrue(checks["run-revision-consistency"]["passed"])
+        self.assertTrue(checks["git-revision-provenance"]["passed"])
+        rows[1]["run_revision"] = "different-semantic-revision"
         checks = {item["name"]: item for item in validation(rows, expected_seeds=2)}
         self.assertFalse(checks["run-revision-consistency"]["passed"])
 
