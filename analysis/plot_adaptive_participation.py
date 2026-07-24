@@ -201,39 +201,6 @@ def plot_latency(rows: list[dict[str, str]], output: Path) -> list[Path]:
             number(row["restricted_mean_inclusion_latency_s_ci95"])
             for row in selected
         ]
-        if protocol == "pos" and len(selected) == 1:
-            reference_x = [1.0, 3.0]
-            reference_y = y[0]
-            reference_ci = ci[0]
-            axis.plot(
-                reference_x,
-                [reference_y, reference_y],
-                color=color,
-                linestyle=linestyle,
-                linewidth=1.4,
-                label=label,
-            )
-            axis.fill_between(
-                reference_x,
-                [reference_y - reference_ci] * 2,
-                [reference_y + reference_ci] * 2,
-                color=color,
-                alpha=0.10,
-                linewidth=0,
-            )
-            axis.errorbar(
-                x,
-                y,
-                yerr=ci,
-                color=color,
-                linestyle="none",
-                marker=marker,
-                markersize=4.0,
-                markerfacecolor="white",
-                capsize=2.2,
-                label="_nolegend_",
-            )
-            continue
         axis.errorbar(
             x,
             y,
