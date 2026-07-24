@@ -1,0 +1,73 @@
+{
+  "suite": "frozen_v1_adaptive_participation_main",
+  "protocol_version": "frozen-v1",
+  "acceptance_profile": "holdout",
+  "build_command": ["cargo", "build", "--release"],
+  "binary": "target/release/topostake",
+  "max_parallel": 3,
+  "timeout_seconds": 7200,
+  "seeds": [
+    100, 101, 102, 103, 104,
+    105, 106, 107, 108, 109,
+    110, 111, 112, 113, 114,
+    115, 116, 117, 118, 119
+  ],
+  "defaults": {
+    "run_revision": "adaptive-participation-holdout-v1",
+    "node_num": 100,
+    "sybil_node_num": 0,
+    "fake_node_num": 0,
+    "unstable_node_num": 0,
+    "topology": "ba",
+    "tx_rate": 20,
+    "stake_gini": 0.6,
+    "transaction_fee": 0.001,
+    "base_reward": 0.1,
+    "reward_reinvestment_rate": 0.0,
+    "slot_duration": 1,
+    "slot_per_epoch": 5,
+    "max_epochs": 200,
+    "warmup_epochs": 100,
+    "max_tx_per_block": 80,
+    "time_scale": 0.05,
+    "topostake_target_depth": 4,
+    "beta": 0.8,
+    "topostake_saturation_k": 1.0,
+    "topostake_score_cost_reference": 0.00001,
+    "topostake_score_floor_kappa": 1.0,
+    "topostake_bonus_zeta": 1.0,
+    "eta": 0.5,
+    "bonus_cap": 1.0,
+    "proposer_fee_ratio": 0.5,
+    "reward_settlement_depth": 2,
+    "topostake_score_activation_delay_epochs": 2,
+    "topostake_max_path_hops": 16,
+    "topostake_evidence_work_limit": 4096,
+    "topostake_challenge_work_limit": 1024,
+    "relay_profile": "active",
+    "adaptive_relay_participation": true,
+    "adaptive_cost_reference": 1.4055695425812074e-7,
+    "adaptive_cost_log_sigma": 0.75,
+    "adaptive_warmup_epochs": 5,
+    "adaptive_update_interval_epochs": 5,
+    "adaptive_update_fraction": 0.10,
+    "adaptive_benefit_ema_alpha": 0.25,
+    "adaptive_switching_hysteresis": 0.10,
+    "adaptive_exploration_fraction": 0.05,
+    "adaptive_followup_epochs": 10
+  },
+  "experiments": [
+    {
+      "name": "adaptive_holdout",
+      "protocols": ["topostake_eta0", "topostake"],
+      "adaptive_initial_active_fraction": [0.50],
+      "adaptive_cost_median_multiplier": [1.0, 2.0, 3.0]
+    },
+    {
+      "name": "pos_baseline",
+      "protocols": ["pos"],
+      "adaptive_initial_active_fraction": [0.50],
+      "adaptive_cost_median_multiplier": [2.0]
+    }
+  ]
+}

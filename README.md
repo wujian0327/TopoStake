@@ -128,6 +128,25 @@ and acceptance checks coverage separately for fee-only and Full TopoStake.
 Post-adaptation stability uses first-half versus second-half mean drift rather
 than a tail maximum. The report writes three independent figure files.
 
+After pilot development, run the frozen holdout and the separate behavioral
+parameter sensitivity check:
+
+```bash
+python scripts/task.py frozen-adaptive-participation-main --dry-run
+python scripts/task.py frozen-adaptive-participation-main
+python scripts/task.py frozen-adaptive-participation-sensitivity --dry-run
+python scripts/task.py frozen-adaptive-participation-sensitivity
+```
+
+The holdout uses 20 paired seeds disjoint from the pilot seeds, fixes the
+initial active-stake share at 50%, and compares Fee-only with Full TopoStake
+at `1x`, `2x`, and `3x` median relay cost. A single `2x` PoS condition provides
+the no-incentive reference without redundantly repeating it across cost
+labels. The frozen acceptance rule requires a positive paired 95% confidence
+lower bound at `3x` and at least one lower-cost regime; it evaluates
+finite-horizon response rather than equilibrium convergence. The sensitivity
+suite uses separate seeds and changes one behavioral parameter at a time.
+
 Before a full rerun, the 24-run stability probe tests the representative and
 previously least stable conditions with slower updates, stronger smoothing,
 and a 300-epoch horizon whose post-adaptation analysis begins at epoch 200:

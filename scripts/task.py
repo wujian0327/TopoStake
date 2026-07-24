@@ -303,6 +303,22 @@ def task_adaptive_participation_stability_probe(
     task_adaptive_participation(args, config, plot=False)
 
 
+def task_adaptive_participation_main(args: argparse.Namespace) -> None:
+    config = (
+        args.config
+        or "experiments/configs/frozen_v1_adaptive_participation_main.yaml"
+    )
+    task_adaptive_participation(args, config)
+
+
+def task_adaptive_participation_sensitivity(args: argparse.Namespace) -> None:
+    config = (
+        args.config
+        or "experiments/configs/frozen_v1_adaptive_participation_sensitivity.yaml"
+    )
+    task_adaptive_participation(args, config, plot=False)
+
+
 def task_organic_capture(args: argparse.Namespace, config: str) -> None:
     task_run_experiments(config, force=args.force, dry_run=args.dry_run)
     if args.dry_run:
@@ -531,6 +547,10 @@ TASKS: Dict[str, Callable[[argparse.Namespace], None]] = {
     "frozen-adaptive-participation-pilot": task_adaptive_participation_pilot,
     "frozen-adaptive-participation-stability-probe": (
         task_adaptive_participation_stability_probe
+    ),
+    "frozen-adaptive-participation-main": task_adaptive_participation_main,
+    "frozen-adaptive-participation-sensitivity": (
+        task_adaptive_participation_sensitivity
     ),
     "frozen-organic-capture-pilot": task_organic_capture_pilot,
     "frozen-organic-capture-main": task_organic_capture_main,

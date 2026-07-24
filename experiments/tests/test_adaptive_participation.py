@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+import statistics
 import sys
 import tempfile
 import unittest
@@ -18,6 +20,7 @@ from adaptive_participation_report import (  # noqa: E402
     cohort_inclusion_metrics,
     grouped_rows,
     grouped_post_adaptation_drifts,
+    mean_ci,
     paired_rows,
     percentile,
     post_adaptation_stats,
@@ -187,12 +190,71 @@ class AdaptiveParticipationTests(unittest.TestCase):
         self.assertEqual({run["max_epochs"] for run in runs}, {300})
         self.assertEqual({run["warmup_epochs"] for run in runs}, {200})
 
+    def test_holdout_expands_to_140_runs_with_disjoint_seeds(self) -> None:
+        config = (
+            EXPERIMENTS
+            / "configs"
+            / "frozen_v1_adaptive_participation_main.yaml"
+        )
+        runs = expand_runs(load_yaml(config))
+        self.assertEqual(len(runs), 140)
+        self.assertEqual(len({run["run_id"] for run in runs}), 140)
+        self.assertEqual({run["seed_value"] for run in runs}, set(range(100, 120)))
+        self.assertEqual({run["adaptive_initial_active_fraction"] for run in runs}, {0.5})
+        self.assertEqual({run["max_epochs"] for run in runs}, {200})
+        self.assertEqual({run["warmup_epochs"] for run in runs}, {100})
+        self.assertEqual(
+            sum(run["protocol_label"] == "pos" for run in runs),
+            20,
+        )
+        self.assertEqual(
+            {
+                run["adaptive_cost_median_multiplier"]
+                for run in runs
+                if run["protocol_label"] != "pos"
+            },
+            {1.0, 2.0, 3.0},
+        )
+
+    def test_sensitivity_expands_to_40_one_factor_runs(self) -> None:
+        config = (
+            EXPERIMENTS
+            / "configs"
+            / "frozen_v1_adaptive_participation_sensitivity.yaml"
+        )
+        runs = expand_runs(load_yaml(config))
+        self.assertEqual(len(runs), 40)
+        self.assertEqual(len({run["run_id"] for run in runs}), 40)
+        self.assertEqual({run["seed_value"] for run in runs}, set(range(200, 205)))
+        by_experiment = {}
+        for run in runs:
+            by_experiment.setdefault(run["experiment"], run)
+        self.assertEqual(
+            by_experiment["frozen_baseline"]["adaptive_update_fraction"], 0.10
+        )
+        self.assertEqual(
+            by_experiment["faster_updates"]["adaptive_update_fraction"], 0.20
+        )
+        self.assertEqual(
+            by_experiment["lower_hysteresis"]["adaptive_switching_hysteresis"],
+            0.05,
+        )
+        self.assertEqual(
+            by_experiment["lower_exploration"]["adaptive_exploration_fraction"],
+            0.025,
+        )
+
     def test_pair_direction_is_full_minus_fee_only(self) -> None:
         common = {
+            "experiment": "test",
             "complete": True,
             "seed_index": 0,
+            "seed_value": 100,
             "initial_active_fraction": 0.5,
             "cost_median_multiplier": 1.0,
+            "adaptive_update_fraction": 0.10,
+            "adaptive_switching_hysteresis": 0.10,
+            "adaptive_exploration_fraction": 0.05,
             "inclusion_within_horizon_rate": 0.7,
             "restricted_mean_inclusion_latency_s": 5.0,
         }
@@ -220,10 +282,14 @@ class AdaptiveParticipationTests(unittest.TestCase):
         for seed, value in ((0, 0.6), (1, 0.8)):
             rows.append(
                 {
+                    "experiment": "test",
                     "complete": True,
                     "protocol_label": "topostake",
                     "initial_active_fraction": 0.5,
                     "cost_median_multiplier": 1.0,
+                    "adaptive_update_fraction": 0.10,
+                    "adaptive_switching_hysteresis": 0.10,
+                    "adaptive_exploration_fraction": 0.05,
                     "steady_active_fraction": value,
                     "steady_active_stake_share": value,
                     "inclusion_within_horizon_rate": 0.9,
@@ -237,6 +303,13 @@ class AdaptiveParticipationTests(unittest.TestCase):
         self.assertEqual(len(grouped), 1)
         self.assertAlmostEqual(grouped[0]["steady_active_stake_share"], 0.7)
         self.assertEqual(grouped[0]["steady_active_stake_share_n"], 2)
+
+    def test_holdout_ci_uses_student_t_for_twenty_pairs(self) -> None:
+        mean, ci, count = mean_ci(range(20))
+        expected = 2.093 * statistics.stdev(range(20)) / math.sqrt(20)
+        self.assertEqual(count, 20)
+        self.assertAlmostEqual(mean, 9.5)
+        self.assertAlmostEqual(ci, expected)
 
     def test_percentile_interpolates(self) -> None:
         self.assertAlmostEqual(percentile([1.0, 3.0], 0.5), 2.0)

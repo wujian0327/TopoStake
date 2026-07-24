@@ -17,7 +17,18 @@ from run_experiments import PROCESSED_ROOT, ROOT, expand_runs, load_yaml
 
 
 PROTOCOLS = ("pos", "topostake_eta0", "topostake")
-T95 = {2: 12.706, 3: 4.303, 4: 3.182, 5: 2.776}
+T95 = {
+    2: 12.706,
+    3: 4.303,
+    4: 3.182,
+    5: 2.776,
+    6: 2.571,
+    7: 2.447,
+    8: 2.365,
+    9: 2.306,
+    10: 2.262,
+    20: 2.093,
+}
 MIN_COUNTERFACTUAL_COVERAGE = 0.80
 MAX_GROUP_POST_ADAPTATION_DRIFT = 0.05
 MAX_P90_INDIVIDUAL_DRIFT = 0.10
@@ -332,8 +343,21 @@ def aggregate_run(run: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, A
         "run_id": run.get("run_id", ""),
         "protocol_label": run.get("protocol_label", ""),
         "seed_index": int(number(run.get("seed_index"))),
+        "seed_value": int(number(run.get("seed_value"))),
         "initial_active_fraction": number(run.get("adaptive_initial_active_fraction")),
         "cost_median_multiplier": number(run.get("adaptive_cost_median_multiplier"), 1.0),
+        "adaptive_update_fraction": number(
+            run.get("adaptive_update_fraction"), 0.10
+        ),
+        "adaptive_benefit_ema_alpha": number(
+            run.get("adaptive_benefit_ema_alpha"), 0.25
+        ),
+        "adaptive_switching_hysteresis": number(
+            run.get("adaptive_switching_hysteresis"), 0.10
+        ),
+        "adaptive_exploration_fraction": number(
+            run.get("adaptive_exploration_fraction"), 0.05
+        ),
         "status": status.get("status", "missing"),
         "complete": complete,
         "cost_assignment_hash": hashlib.sha256(cost_assignment.encode()).hexdigest(),
@@ -375,13 +399,24 @@ def aggregate_run(run: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, A
     }
     trajectory = [
         {
+            "experiment": run.get("experiment", ""),
             "protocol_label": run.get("protocol_label", ""),
             "seed_index": int(number(run.get("seed_index"))),
+            "seed_value": int(number(run.get("seed_value"))),
             "initial_active_fraction": number(
                 run.get("adaptive_initial_active_fraction")
             ),
             "cost_median_multiplier": number(
                 run.get("adaptive_cost_median_multiplier"), 1.0
+            ),
+            "adaptive_update_fraction": number(
+                run.get("adaptive_update_fraction"), 0.10
+            ),
+            "adaptive_switching_hysteresis": number(
+                run.get("adaptive_switching_hysteresis"), 0.10
+            ),
+            "adaptive_exploration_fraction": number(
+                run.get("adaptive_exploration_fraction"), 0.05
             ),
             "epoch": int(number(row.get("epoch"))),
             "active_fraction": number(row.get("active_fraction")),
@@ -401,22 +436,32 @@ def grouped_rows(runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     for key in sorted(
         {
             (
+                row["experiment"],
                 row["protocol_label"],
                 row["initial_active_fraction"],
                 row["cost_median_multiplier"],
+                row["adaptive_update_fraction"],
+                row["adaptive_switching_hysteresis"],
+                row["adaptive_exploration_fraction"],
             )
             for row in runs
             if row["complete"]
         }
     ):
-        protocol, initial, cost = key
+        experiment, protocol, initial, cost, update_fraction, hysteresis, exploration = (
+            key
+        )
         selected = [
             row
             for row in runs
             if row["complete"]
+            and row["experiment"] == experiment
             and row["protocol_label"] == protocol
             and row["initial_active_fraction"] == initial
             and row["cost_median_multiplier"] == cost
+            and row["adaptive_update_fraction"] == update_fraction
+            and row["adaptive_switching_hysteresis"] == hysteresis
+            and row["adaptive_exploration_fraction"] == exploration
         ]
         values: dict[str, list[float]] = {
             metric: [number(row[metric]) for row in selected]
@@ -431,9 +476,13 @@ def grouped_rows(runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
             )
         }
         row: dict[str, Any] = {
+            "experiment": experiment,
             "protocol_label": protocol,
             "initial_active_fraction": initial,
             "cost_median_multiplier": cost,
+            "adaptive_update_fraction": update_fraction,
+            "adaptive_switching_hysteresis": hysteresis,
+            "adaptive_exploration_fraction": exploration,
         }
         for metric, metric_values in values.items():
             mean, ci, count = mean_ci(metric_values)
@@ -445,24 +494,43 @@ def grouped_rows(runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def grouped_trajectory(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    groups: dict[tuple[str, float, float, int], list[float]] = defaultdict(list)
+    groups: dict[
+        tuple[str, str, float, float, float, float, float, int], list[float]
+    ] = defaultdict(list)
     for row in rows:
         groups[
             (
+                str(row["experiment"]),
                 str(row["protocol_label"]),
                 number(row["initial_active_fraction"]),
                 number(row["cost_median_multiplier"]),
+                number(row["adaptive_update_fraction"]),
+                number(row["adaptive_switching_hysteresis"]),
+                number(row["adaptive_exploration_fraction"]),
                 int(number(row["epoch"])),
             )
         ].append(number(row["active_stake_share"]))
     output = []
-    for (protocol, initial, cost, epoch), values in sorted(groups.items()):
+    for (
+        experiment,
+        protocol,
+        initial,
+        cost,
+        update_fraction,
+        hysteresis,
+        exploration,
+        epoch,
+    ), values in sorted(groups.items()):
         mean, ci, count = mean_ci(values)
         output.append(
             {
+                "experiment": experiment,
                 "protocol_label": protocol,
                 "initial_active_fraction": initial,
                 "cost_median_multiplier": cost,
+                "adaptive_update_fraction": update_fraction,
+                "adaptive_switching_hysteresis": hysteresis,
+                "adaptive_exploration_fraction": exploration,
                 "epoch": epoch,
                 "active_stake_share": mean,
                 "ci95": ci,
@@ -475,6 +543,7 @@ def grouped_trajectory(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def paired_rows(runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     index = {
         (
+            row["experiment"],
             row["seed_index"],
             row["initial_active_fraction"],
             row["cost_median_multiplier"],
@@ -484,18 +553,29 @@ def paired_rows(runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if row["complete"]
     }
     output = []
-    for seed, initial, cost, protocol in sorted(index):
+    for experiment, seed, initial, cost, protocol in sorted(index):
         if protocol != "topostake":
             continue
-        full = index[(seed, initial, cost, protocol)]
-        fee = index.get((seed, initial, cost, "topostake_eta0"))
+        full = index[(experiment, seed, initial, cost, protocol)]
+        fee = index.get((experiment, seed, initial, cost, "topostake_eta0"))
         if fee is None:
             continue
         output.append(
             {
+                "experiment": experiment,
                 "seed_index": seed,
+                "seed_value": int(number(full.get("seed_value"))),
                 "initial_active_fraction": initial,
                 "cost_median_multiplier": cost,
+                "adaptive_update_fraction": number(
+                    full["adaptive_update_fraction"]
+                ),
+                "adaptive_switching_hysteresis": number(
+                    full["adaptive_switching_hysteresis"]
+                ),
+                "adaptive_exploration_fraction": number(
+                    full["adaptive_exploration_fraction"]
+                ),
                 "active_stake_gain": number(full["steady_active_stake_share"])
                 - number(fee["steady_active_stake_share"]),
                 "inclusion_rate_gain": number(
@@ -536,23 +616,29 @@ def main() -> int:
     write_csv(prefix.with_name(prefix.name + "_trajectory.csv"), trajectories)
     write_csv(prefix.with_name(prefix.name + "_paired.csv"), pairs)
 
-    gains_by_condition: dict[tuple[float, float], list[float]] = defaultdict(list)
+    gains_by_condition: dict[tuple[str, float, float], list[float]] = defaultdict(list)
     for row in pairs:
         key = (
+            str(row["experiment"]),
             number(row["cost_median_multiplier"]),
             number(row["initial_active_fraction"]),
         )
         gains_by_condition[key].append(number(row["active_stake_gain"]))
     passing_initials_by_cost: dict[float, int] = defaultdict(int)
-    for (cost, _initial), values in gains_by_condition.items():
+    for (_experiment, cost, _initial), values in gains_by_condition.items():
         passing_initials_by_cost[cost] += statistics.mean(values) >= 0.10
     passing_cost_regimes = sum(
         passing >= 2 for passing in passing_initials_by_cost.values()
     )
-    inclusion_by_condition: dict[tuple[float, float], list[float]] = defaultdict(list)
-    latency_by_condition: dict[tuple[float, float], list[float]] = defaultdict(list)
+    inclusion_by_condition: dict[
+        tuple[str, float, float], list[float]
+    ] = defaultdict(list)
+    latency_by_condition: dict[tuple[str, float, float], list[float]] = defaultdict(
+        list
+    )
     for row in pairs:
         key = (
+            str(row["experiment"]),
             number(row["cost_median_multiplier"]),
             number(row["initial_active_fraction"]),
         )
@@ -561,8 +647,8 @@ def main() -> int:
             number(row["restricted_mean_latency_reduction_s"])
         )
     improving_initials_by_cost: dict[float, int] = defaultdict(int)
-    for cost, initial in latency_by_condition:
-        key = (cost, initial)
+    for experiment, cost, initial in latency_by_condition:
+        key = (experiment, cost, initial)
         improving_initials_by_cost[cost] += (
             statistics.mean(latency_by_condition[key]) > 0.0
             and statistics.mean(inclusion_by_condition[key]) >= 0.0
@@ -596,10 +682,15 @@ def main() -> int:
             initialization_spreads[key] = (
                 max(values) - min(values) if values else 1.0
             )
-    paired_cost_hashes: dict[tuple[int, float, float], set[str]] = defaultdict(set)
-    paired_profile_hashes: dict[tuple[int, float, float], set[str]] = defaultdict(set)
+    paired_cost_hashes: dict[tuple[str, int, float, float], set[str]] = defaultdict(
+        set
+    )
+    paired_profile_hashes: dict[
+        tuple[str, int, float, float], set[str]
+    ] = defaultdict(set)
     for row in complete:
         key = (
+            row["experiment"],
             row["seed_index"],
             row["initial_active_fraction"],
             row["cost_median_multiplier"],
@@ -658,15 +749,36 @@ def main() -> int:
         and p90_post_adaptation_drift <= MAX_P90_INDIVIDUAL_DRIFT
     )
     condition_gain_means = {
-        f"initial={initial:g}@cost={cost:g}": statistics.mean(values)
-        for (cost, initial), values in sorted(gains_by_condition.items())
-    }
-    condition_inclusion_direction = {
-        f"initial={initial:g}@cost={cost:g}": (
-            statistics.mean(latency_by_condition[(cost, initial)]) > 0.0
-            and statistics.mean(inclusion_by_condition[(cost, initial)]) >= 0.0
+        f"{experiment}@initial={initial:g}@cost={cost:g}": statistics.mean(values)
+        for (experiment, cost, initial), values in sorted(
+            gains_by_condition.items()
         )
-        for cost, initial in sorted(latency_by_condition)
+    }
+    condition_gain_intervals = {}
+    condition_positive_seed_counts = {}
+    for (experiment, cost, initial), values in sorted(gains_by_condition.items()):
+        mean, ci, count = mean_ci(values)
+        key = f"{experiment}@initial={initial:g}@cost={cost:g}"
+        condition_gain_intervals[key] = {
+            "mean": mean,
+            "ci95": ci,
+            "lower": mean - ci,
+            "upper": mean + ci,
+            "n": count,
+        }
+        condition_positive_seed_counts[key] = sum(value > 0.0 for value in values)
+    condition_inclusion_direction = {
+        f"{experiment}@initial={initial:g}@cost={cost:g}": (
+            statistics.mean(
+                latency_by_condition[(experiment, cost, initial)]
+            )
+            > 0.0
+            and statistics.mean(
+                inclusion_by_condition[(experiment, cost, initial)]
+            )
+            >= 0.0
+        )
+        for experiment, cost, initial in sorted(latency_by_condition)
     }
     if acceptance_profile == "stability_probe":
         participation_pass = (
@@ -677,6 +789,28 @@ def main() -> int:
         inclusion_pass = (
             sum(condition_inclusion_direction.values()) >= 3
         )
+    elif acceptance_profile == "holdout":
+        high_cost_key = "adaptive_holdout@initial=0.5@cost=3"
+        lower_cost_keys = (
+            "adaptive_holdout@initial=0.5@cost=1",
+            "adaptive_holdout@initial=0.5@cost=2",
+        )
+        participation_pass = (
+            high_cost_key in condition_gain_intervals
+            and condition_gain_intervals[high_cost_key]["lower"] > 0.0
+            and any(
+                key in condition_gain_intervals
+                and condition_gain_intervals[key]["lower"] > 0.0
+                for key in lower_cost_keys
+            )
+        )
+        inclusion_pass = condition_inclusion_direction.get(high_cost_key, False)
+    elif acceptance_profile == "sensitivity":
+        participation_pass = (
+            len(condition_gain_means) == 4
+            and all(value > 0.0 for value in condition_gain_means.values())
+        )
+        inclusion_pass = sum(condition_inclusion_direction.values()) >= 3
     else:
         participation_pass = passing_cost_regimes >= 2
         inclusion_pass = improving_end_to_end_cost_regimes >= 2
@@ -684,8 +818,8 @@ def main() -> int:
         "run_completeness": len(complete) == len(expected),
         "paired_cost_and_initial_strategy": bool(complete)
         and pairing_mismatches == 0,
-        "historical_benefit_updates": bool(complete)
-        and all(number(row["benefit_update_count"]) > 0 for row in complete),
+        "historical_benefit_updates": bool(utility_rows)
+        and all(number(row["benefit_update_count"]) > 0 for row in utility_rows),
         "benefit_accounting": sum(
             int(number(row["benefit_accounting_error_count"])) for row in complete
         )
@@ -695,7 +829,6 @@ def main() -> int:
             for coverage in counterfactual_coverage_by_protocol.values()
         ),
         "broad_participation_gain": participation_pass,
-        "post_adaptation_stability": stability_pass,
         "end_to_end_inclusion_direction": inclusion_pass,
         "utility_consistency": bool(utility_rows)
         and statistics.mean(
@@ -707,6 +840,8 @@ def main() -> int:
         )
         == 0,
     }
+    if acceptance_profile == "stability_probe":
+        checks["post_adaptation_stability"] = stability_pass
     if acceptance_profile != "stability_probe":
         checks["initialization_robustness"] = all(
             spread <= 0.10 for spread in initialization_spreads.values()
@@ -732,6 +867,8 @@ def main() -> int:
             "initialization_spreads": initialization_spreads,
             "acceptance_profile": acceptance_profile,
             "condition_active_stake_gain_means": condition_gain_means,
+            "condition_active_stake_gain_intervals": condition_gain_intervals,
+            "condition_positive_seed_counts": condition_positive_seed_counts,
             "condition_inclusion_direction": condition_inclusion_direction,
             "counterfactual_coverage_by_protocol": (
                 counterfactual_coverage_by_protocol
@@ -764,16 +901,17 @@ def main() -> int:
     acceptance_path = prefix.with_name(prefix.name + "_acceptance.json")
     acceptance_path.write_text(json.dumps(acceptance, indent=2) + "\n", encoding="utf-8")
     summary_lines = [
-        "# History-only adaptive participation pilot",
+        f"# History-only adaptive participation: {acceptance_profile}",
         "",
         "Validators update Active/Lazy strategies from completed-window public reward and forwarding observations. The model uses fixed calibrated costs and no future proposer draws; it is behavioral evidence, not an equilibrium proof.",
         "",
-        "| Protocol | Cost multiplier | Initial active | Post-adaptation active stake | Included within horizon | Restricted mean | Utility-consistent |",
-        "|---|---:|---:|---:|---:|---:|---:|",
+        "| Condition | Protocol | Cost multiplier | Initial active | Post-adaptation active stake | Included within horizon | Restricted mean | Utility-consistent |",
+        "|---|---|---:|---:|---:|---:|---:|---:|",
     ]
     for row in groups:
         summary_lines.append(
-            f"| {row['protocol_label']} | {number(row['cost_median_multiplier']):g} | "
+            f"| {row['experiment']} | {row['protocol_label']} | "
+            f"{number(row['cost_median_multiplier']):g} | "
             f"{number(row['initial_active_fraction']):.0%} | "
             f"{number(row['steady_active_stake_share']):.1%} | "
             f"{number(row['inclusion_within_horizon_rate']):.1%} | "
@@ -783,7 +921,20 @@ def main() -> int:
     summary_lines.extend(
         [
             "",
-            "Pilot acceptance: **" + ("PASS" if acceptance["pass"] else "FAIL") + "**",
+            "| Paired condition | Full-minus-fee active stake | Positive seeds |",
+            "|---|---:|---:|",
+        ]
+    )
+    for key, interval in condition_gain_intervals.items():
+        summary_lines.append(
+            f"| {key} | {interval['mean']:.1%} "
+            f"$\\pm$ {interval['ci95']:.1%} | "
+            f"{condition_positive_seed_counts[key]}/{interval['n']} |"
+        )
+    summary_lines.extend(
+        [
+            "",
+            "Acceptance: **" + ("PASS" if acceptance["pass"] else "FAIL") + "**",
             "",
         ]
     )
