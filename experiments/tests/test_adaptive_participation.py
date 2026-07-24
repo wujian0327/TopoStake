@@ -201,28 +201,27 @@ class AdaptiveParticipationTests(unittest.TestCase):
         self.assertEqual({run["max_epochs"] for run in runs}, {300})
         self.assertEqual({run["warmup_epochs"] for run in runs}, {200})
 
-    def test_holdout_expands_to_140_runs_with_disjoint_seeds(self) -> None:
+    def test_holdout_expands_to_180_runs_with_disjoint_seeds(self) -> None:
         config = (
             EXPERIMENTS
             / "configs"
             / "frozen_v1_adaptive_participation_main.yaml"
         )
         runs = expand_runs(load_yaml(config))
-        self.assertEqual(len(runs), 140)
-        self.assertEqual(len({run["run_id"] for run in runs}), 140)
+        self.assertEqual(len(runs), 180)
+        self.assertEqual(len({run["run_id"] for run in runs}), 180)
         self.assertEqual({run["seed_value"] for run in runs}, set(range(100, 120)))
         self.assertEqual({run["adaptive_initial_active_fraction"] for run in runs}, {0.5})
         self.assertEqual({run["max_epochs"] for run in runs}, {200})
         self.assertEqual({run["warmup_epochs"] for run in runs}, {100})
         self.assertEqual(
             sum(run["protocol_label"] == "pos" for run in runs),
-            20,
+            60,
         )
         self.assertEqual(
             {
                 run["adaptive_cost_median_multiplier"]
                 for run in runs
-                if run["protocol_label"] != "pos"
             },
             {1.0, 2.0, 3.0},
         )
