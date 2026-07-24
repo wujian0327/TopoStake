@@ -61,7 +61,7 @@ class FrozenSecurityReportTests(unittest.TestCase):
     def test_security_configs_expand_to_unique_runs(self) -> None:
         expected = {
             "frozen_v1_security_pilot.yaml": 38,
-            "frozen_v1_security_main.yaml": 1580,
+            "frozen_v1_security_main.yaml": 1700,
         }
         for filename, count in expected.items():
             spec = load_yaml(ROOT / "experiments" / "configs" / filename)
@@ -69,6 +69,26 @@ class FrozenSecurityReportTests(unittest.TestCase):
             self.assertEqual(len(runs), count)
             self.assertEqual(len({run["run_id"] for run in runs}), count)
             self.assertTrue(all(run["protocol_version"] == "frozen-v1" for run in runs))
+
+    def test_scale_sweep_adds_only_larger_validator_counts(self) -> None:
+        spec = load_yaml(ROOT / "experiments" / "configs" / "frozen_v1_security_main.yaml")
+        runs = expand_runs(spec)
+        scale = [run for run in runs if run["experiment"] == "proposer_envelope_scale"]
+        baseline = [
+            run
+            for run in runs
+            if run["experiment"] == "proposer_influence_envelope"
+            and run["node_num"] == 100
+            and run["adversary_stake_fraction"] == 0.2
+            and run["eta"] == 1.0
+        ]
+        self.assertEqual(len(scale), 120)
+        self.assertEqual({run["node_num"] for run in scale}, {250, 500})
+        self.assertEqual(len(baseline), 60)
+        self.assertEqual(
+            {run["adversary_placement"] for run in scale},
+            {"random", "high-degree", "high-betweenness"},
+        )
 
     def test_padding_comparison_is_paired_by_seed(self) -> None:
         rows = [
