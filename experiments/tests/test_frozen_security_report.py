@@ -61,7 +61,7 @@ class FrozenSecurityReportTests(unittest.TestCase):
     def test_security_configs_expand_to_unique_runs(self) -> None:
         expected = {
             "frozen_v1_security_pilot.yaml": 38,
-            "frozen_v1_security_main.yaml": 1340,
+            "frozen_v1_security_main.yaml": 1580,
         }
         for filename, count in expected.items():
             spec = load_yaml(ROOT / "experiments" / "configs" / filename)
