@@ -464,7 +464,7 @@ def figure_proposer_envelope(
     if not selected:
         return []
     markers = {"random": "o", "high-degree": "s", "high-betweenness": "^"}
-    eta_colors = {0.25: BLUE, 0.5: RED}
+    eta_colors = {0.25: BLUE, 0.5: RED, 1.0: ORANGE}
     outputs: list[str] = []
     specifications = [
         (
