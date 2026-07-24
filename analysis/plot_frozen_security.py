@@ -71,6 +71,7 @@ FIGURE_CONTENTS = {
     "frozen_padding_b": "fixed-path padding non-amplification",
     "frozen_proposer_envelope_a": "observed proposer weight versus score-dependent bound",
     "frozen_proposer_envelope_b": "score-dependent bound versus score-independent cap",
+    "frozen_proposer_scale_a": "proposer-envelope utilization versus validator count",
     "frozen_relay_network_stress_a": "network-wide relay-strategy latency stress",
     "frozen_relay_network_stress_b": "network-wide evidence-eligibility stress",
 }
@@ -545,6 +546,87 @@ def figure_proposer_envelope(
     return outputs
 
 
+def proposer_scale_points(
+    rows: Iterable[dict[str, str]],
+) -> dict[str, list[tuple[float, float, float, int]]]:
+    buckets: dict[tuple[str, float], list[float]] = defaultdict(list)
+    for row in rows:
+        experiment = row.get("experiment")
+        node_num = as_float(row.get("node_num"))
+        stake = as_float(row.get("adversary_stake_fraction"))
+        eta = as_float(row.get("eta"))
+        is_reused_baseline = (
+            experiment == "proposer_influence_envelope"
+            and node_num == 100
+            and abs(stake - 0.2) < 1e-12
+            and abs(eta - 1.0) < 1e-12
+        )
+        if experiment != "proposer_envelope_scale" and not is_reused_baseline:
+            continue
+        observed = as_float(row.get("adversary_proposer_weight_share_mean"))
+        bound = as_float(row.get("score_dependent_proposer_weight_bound_mean"))
+        placement = row.get("adversary_placement", "")
+        if (
+            not placement
+            or not all(math.isfinite(value) for value in (node_num, observed, bound))
+            or bound <= 0.0
+        ):
+            continue
+        buckets[(placement, node_num)].append(observed / bound)
+
+    result: dict[str, list[tuple[float, float, float, int]]] = defaultdict(list)
+    for (placement, node_num), values in sorted(buckets.items()):
+        mean, ci, n = mean_ci(values)
+        result[placement].append((node_num, mean, ci, n))
+    return result
+
+
+def figure_proposer_scale(
+    rows: list[dict[str, str]], output_dir: Path, seed_count: int, expected_seeds: int
+) -> list[str]:
+    points_by_placement = proposer_scale_points(rows)
+    if not points_by_placement:
+        return []
+    styles = {
+        "random": (BLUE, "o", "Random"),
+        "high-degree": (ORANGE, "s", "High degree"),
+        "high-betweenness": (GREEN, "^", "High betweenness"),
+    }
+    fig, ax = plt.subplots(figsize=(3.45, 2.55))
+    for placement in ("random", "high-degree", "high-betweenness"):
+        points = points_by_placement.get(placement, [])
+        if not points:
+            continue
+        color, marker, label = styles[placement]
+        ax.errorbar(
+            [point[0] for point in points],
+            [point[1] for point in points],
+            yerr=[point[2] for point in points],
+            color=color,
+            marker=marker,
+            linewidth=1.2,
+            markersize=4.5,
+            capsize=2.5,
+            label=label,
+            zorder=3,
+        )
+    ax.axhline(
+        1.0,
+        color=RED,
+        linestyle="--",
+        linewidth=1.0,
+        label="Analytical envelope",
+    )
+    ax.set_xticks([100, 250, 500], ["100", "250", "500"])
+    ax.set_xlabel("Validators")
+    ax.set_ylabel("Envelope utilization")
+    ax.set_ylim(0.0, 1.05)
+    style_axis(ax)
+    ax.legend(frameon=False, ncol=2, loc="best", fontsize=6.3)
+    fig.subplots_adjust(bottom=0.18, left=0.19, right=0.97, top=0.97)
+    return save_figure(fig, output_dir, "frozen_proposer_scale_a")
+
+
 def figure_relay_network_stress(
     rows: list[dict[str, str]], output_dir: Path, seed_count: int, expected_seeds: int
 ) -> list[str]:
@@ -613,6 +695,7 @@ def main() -> int:
     )
     outputs.extend(padding_outputs)
     outputs.extend(figure_proposer_envelope(runs, args.output_dir, len(seeds), args.expected_seeds))
+    outputs.extend(figure_proposer_scale(runs, args.output_dir, len(seeds), args.expected_seeds))
     outputs.extend(figure_relay_network_stress(runs, args.output_dir, len(seeds), args.expected_seeds))
 
     warnings = [padding_warning] if padding_warning else []
