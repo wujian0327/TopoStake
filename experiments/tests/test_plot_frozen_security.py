@@ -14,10 +14,33 @@ from plot_frozen_security import (  # noqa: E402
     grouped_stats,
     mean_ci,
     paired_metric,
+    proposer_scale_points,
 )
 
 
 class FrozenSecurityPlotTests(unittest.TestCase):
+    def test_proposer_scale_reuses_100_node_eta1_baseline(self) -> None:
+        def row(experiment: str, node_num: int, eta: float, observed: float) -> dict[str, str]:
+            return {
+                "experiment": experiment,
+                "node_num": str(node_num),
+                "adversary_stake_fraction": "0.2",
+                "adversary_placement": "random",
+                "eta": str(eta),
+                "adversary_proposer_weight_share_mean": str(observed),
+                "score_dependent_proposer_weight_bound_mean": "0.25",
+            }
+
+        rows = [
+            row("proposer_influence_envelope", 100, 1.0, 0.20),
+            row("proposer_influence_envelope", 100, 0.5, 0.24),
+            row("proposer_envelope_scale", 250, 1.0, 0.19),
+            row("proposer_envelope_scale", 500, 1.0, 0.18),
+        ]
+        points = proposer_scale_points(rows)["random"]
+        self.assertEqual([point[0] for point in points], [100.0, 250.0, 500.0])
+        self.assertEqual([round(point[1], 2) for point in points], [0.80, 0.76, 0.72])
+
     def test_complete_runs_excludes_matrix_placeholders(self) -> None:
         rows = [
             {"status": "ok", "complete": "True", "finite_metrics": "True"},
