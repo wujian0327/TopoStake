@@ -278,6 +278,205 @@ def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         writer.writerows(rows)
 
 
+PROCESSED_RUN_FLOAT_FIELDS = (
+    "initial_active_fraction",
+    "cost_median_multiplier",
+    "adaptive_update_fraction",
+    "adaptive_benefit_ema_alpha",
+    "adaptive_switching_hysteresis",
+    "adaptive_exploration_fraction",
+    "steady_active_fraction",
+    "steady_active_stake_share",
+    "final_active_stake_share",
+    "tail_active_stake_range",
+    "post_adaptation_active_stake_drift",
+    "post_adaptation_active_stake_stddev",
+    "p95_inclusion_latency_s",
+    "inclusion_within_horizon_rate",
+    "completed_p95_inclusion_latency_s",
+    "timeout_adjusted_p95_latency_s",
+    "restricted_mean_inclusion_latency_s",
+    "followup_horizon_s",
+    "utility_consistency_share",
+)
+PROCESSED_RUN_INT_FIELDS = (
+    "seed_index",
+    "seed_value",
+    "steady_epoch_count",
+    "cohort_generated_tx",
+    "cohort_included_tx",
+    "switches_to_active",
+    "switches_to_lazy",
+    "exploratory_decision_count",
+    "benefit_update_attempt_count",
+    "benefit_update_count",
+    "benefit_counterfactual_unavailable_count",
+    "benefit_accounting_error_count",
+    "bound_violation_count",
+)
+MERGED_RUN_KEY_FIELDS = (
+    "experiment",
+    "protocol_label",
+    "seed_value",
+    "initial_active_fraction",
+    "cost_median_multiplier",
+    "adaptive_update_fraction",
+    "adaptive_benefit_ema_alpha",
+    "adaptive_switching_hysteresis",
+    "adaptive_exploration_fraction",
+)
+TRAJECTORY_KEY_FIELDS = (
+    "experiment",
+    "protocol_label",
+    "initial_active_fraction",
+    "cost_median_multiplier",
+    "adaptive_update_fraction",
+    "adaptive_switching_hysteresis",
+    "adaptive_exploration_fraction",
+    "epoch",
+)
+
+
+def coerce_processed_run(row: dict[str, Any]) -> dict[str, Any]:
+    output = dict(row)
+    output["complete"] = truthy(row.get("complete"))
+    for field in PROCESSED_RUN_FLOAT_FIELDS:
+        output[field] = number(row.get(field))
+    for field in PROCESSED_RUN_INT_FIELDS:
+        output[field] = int(number(row.get(field)))
+    return output
+
+
+def expected_merged_run_key(run: dict[str, Any]) -> tuple[Any, ...]:
+    return (
+        str(run.get("experiment", "")),
+        str(run.get("protocol_label", "")),
+        int(number(run.get("seed_value"))),
+        number(run.get("adaptive_initial_active_fraction")),
+        number(run.get("adaptive_cost_median_multiplier"), 1.0),
+        number(run.get("adaptive_update_fraction"), 0.10),
+        number(run.get("adaptive_benefit_ema_alpha"), 0.25),
+        number(run.get("adaptive_switching_hysteresis"), 0.10),
+        number(run.get("adaptive_exploration_fraction"), 0.05),
+    )
+
+
+def processed_merged_run_key(run: dict[str, Any]) -> tuple[Any, ...]:
+    return tuple(run[field] for field in MERGED_RUN_KEY_FIELDS)
+
+
+def pool_grouped_trajectories(
+    paths: Iterable[Path],
+) -> list[dict[str, Any]]:
+    """Combine per-part trajectory means and confidence intervals exactly."""
+
+    buckets: dict[tuple[Any, ...], list[tuple[float, float, int]]] = defaultdict(
+        list
+    )
+    for path in paths:
+        part_keys: set[tuple[Any, ...]] = set()
+        for row in read_csv(path):
+            key = (
+                str(row.get("experiment", "")),
+                str(row.get("protocol_label", "")),
+                number(row.get("initial_active_fraction")),
+                number(row.get("cost_median_multiplier"), 1.0),
+                number(row.get("adaptive_update_fraction"), 0.10),
+                number(row.get("adaptive_switching_hysteresis"), 0.10),
+                number(row.get("adaptive_exploration_fraction"), 0.05),
+                int(number(row.get("epoch"))),
+            )
+            if key in part_keys:
+                raise ValueError(f"duplicate trajectory condition in {path}: {key}")
+            part_keys.add(key)
+            sample_count = int(number(row.get("n")))
+            if sample_count < 2:
+                raise ValueError(
+                    f"trajectory condition needs at least two samples in {path}: {key}"
+                )
+            mean = number(row.get("active_stake_share"))
+            confidence = number(row.get("ci95"))
+            critical = T95.get(sample_count, 1.96)
+            standard_deviation = (
+                confidence * math.sqrt(sample_count) / critical
+            )
+            buckets[key].append((mean, standard_deviation, sample_count))
+
+    output = []
+    for key, summaries in sorted(buckets.items()):
+        total_count = sum(count for _mean, _spread, count in summaries)
+        combined_mean = sum(
+            mean * count for mean, _spread, count in summaries
+        ) / total_count
+        sum_squares = sum(
+            (count - 1) * spread**2 + count * (mean - combined_mean) ** 2
+            for mean, spread, count in summaries
+        )
+        combined_spread = math.sqrt(sum_squares / (total_count - 1))
+        confidence = (
+            T95.get(total_count, 1.96)
+            * combined_spread
+            / math.sqrt(total_count)
+        )
+        row = dict(zip(TRAJECTORY_KEY_FIELDS, key))
+        row.update(
+            {
+                "active_stake_share": combined_mean,
+                "ci95": confidence,
+                "n": total_count,
+            }
+        )
+        output.append(row)
+    return output
+
+
+def merge_processed_parts(
+    run_paths: Iterable[Path],
+    trajectory_paths: Iterable[Path],
+    expected: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    run_paths = list(run_paths)
+    trajectory_paths = list(trajectory_paths)
+    if len(run_paths) < 2 or len(run_paths) != len(trajectory_paths):
+        raise ValueError(
+            "processed merge requires matching --part-runs and "
+            "--part-trajectory arguments for at least two parts"
+        )
+
+    expected_keys = {expected_merged_run_key(run) for run in expected}
+    seed_indices = {
+        seed_value: index
+        for index, seed_value in enumerate(
+            sorted({int(number(run.get("seed_value"))) for run in expected})
+        )
+    }
+    runs = []
+    actual_keys: set[tuple[Any, ...]] = set()
+    for path in run_paths:
+        for raw_row in read_csv(path):
+            row = coerce_processed_run(raw_row)
+            key = processed_merged_run_key(row)
+            if key in actual_keys:
+                raise ValueError(f"duplicate processed run across parts: {key}")
+            actual_keys.add(key)
+            if row["seed_value"] not in seed_indices:
+                raise ValueError(
+                    f"unexpected seed value {row['seed_value']} in {path}"
+                )
+            row["seed_index"] = seed_indices[row["seed_value"]]
+            runs.append(row)
+
+    missing = expected_keys - actual_keys
+    extra = actual_keys - expected_keys
+    if missing or extra:
+        raise ValueError(
+            f"processed parts do not match the frozen config: "
+            f"missing={len(missing)}, extra={len(extra)}"
+        )
+    trajectories = pool_grouped_trajectories(trajectory_paths)
+    return runs, trajectories
+
+
 def aggregate_run(run: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     output_dir = Path(run["output_dir"])
     status = read_json(output_dir / "runner_status.json")
@@ -601,19 +800,40 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", required=True)
     parser.add_argument("--allow-incomplete", action="store_true")
+    parser.add_argument(
+        "--part-runs",
+        type=Path,
+        action="append",
+        default=[],
+        help="Processed *_runs.csv from one independently executed seed tranche.",
+    )
+    parser.add_argument(
+        "--part-trajectory",
+        type=Path,
+        action="append",
+        default=[],
+        help="Processed *_trajectory.csv paired with --part-runs.",
+    )
     args = parser.parse_args()
     config_path = (ROOT / args.config).resolve()
     spec = load_yaml(config_path)
     acceptance_profile = str(spec.get("acceptance_profile", "full_pilot"))
     expected = expand_runs(spec)
-    runs = []
-    trajectory = []
-    for expected_run in expected:
-        run, samples = aggregate_run(expected_run)
-        runs.append(run)
-        trajectory.extend(samples)
+    if args.part_runs or args.part_trajectory:
+        runs, trajectories = merge_processed_parts(
+            [path.resolve() for path in args.part_runs],
+            [path.resolve() for path in args.part_trajectory],
+            expected,
+        )
+    else:
+        runs = []
+        trajectory = []
+        for expected_run in expected:
+            run, samples = aggregate_run(expected_run)
+            runs.append(run)
+            trajectory.extend(samples)
+        trajectories = grouped_trajectory(trajectory)
     groups = grouped_rows(runs)
-    trajectories = grouped_trajectory(trajectory)
     pairs = paired_rows(runs)
     suite = str(spec.get("suite", config_path.stem))
     prefix = PROCESSED_ROOT / suite
@@ -773,6 +993,33 @@ def main() -> int:
             "n": count,
         }
         condition_positive_seed_counts[key] = sum(value > 0.0 for value in values)
+    condition_latency_intervals = {}
+    condition_latency_positive_seed_counts = {}
+    condition_inclusion_rate_intervals = {}
+    for condition, values in sorted(latency_by_condition.items()):
+        experiment, cost, initial = condition
+        key = f"{experiment}@initial={initial:g}@cost={cost:g}"
+        mean, ci, count = mean_ci(values)
+        condition_latency_intervals[key] = {
+            "mean": mean,
+            "ci95": ci,
+            "lower": mean - ci,
+            "upper": mean + ci,
+            "n": count,
+        }
+        condition_latency_positive_seed_counts[key] = sum(
+            value > 0.0 for value in values
+        )
+        inclusion_mean, inclusion_ci, inclusion_count = mean_ci(
+            inclusion_by_condition[condition]
+        )
+        condition_inclusion_rate_intervals[key] = {
+            "mean": inclusion_mean,
+            "ci95": inclusion_ci,
+            "lower": inclusion_mean - inclusion_ci,
+            "upper": inclusion_mean + inclusion_ci,
+            "n": inclusion_count,
+        }
     condition_inclusion_direction = {
         f"{experiment}@initial={initial:g}@cost={cost:g}": (
             statistics.mean(
@@ -852,66 +1099,72 @@ def main() -> int:
         checks["initialization_robustness"] = all(
             spread <= 0.10 for spread in initialization_spreads.values()
         )
+    diagnostics = {
+        "expected_runs": len(expected),
+        "complete_runs": len(complete),
+        "acceptance_profile": acceptance_profile,
+        "condition_active_stake_gain_means": condition_gain_means,
+        "condition_active_stake_gain_intervals": condition_gain_intervals,
+        "condition_positive_seed_counts": condition_positive_seed_counts,
+        "condition_latency_reduction_intervals": condition_latency_intervals,
+        "condition_latency_positive_seed_counts": (
+            condition_latency_positive_seed_counts
+        ),
+        "condition_inclusion_rate_gain_intervals": (
+            condition_inclusion_rate_intervals
+        ),
+        "condition_inclusion_direction": condition_inclusion_direction,
+        "counterfactual_coverage_by_protocol": counterfactual_coverage_by_protocol,
+        "counterfactual_unavailable_updates_by_protocol": (
+            unavailable_updates_by_protocol
+        ),
+        "maximum_post_adaptation_active_stake_drift": (
+            maximum_post_adaptation_drift
+        ),
+        "p90_individual_post_adaptation_active_stake_drift": (
+            p90_post_adaptation_drift
+        ),
+        "group_post_adaptation_active_stake_drifts": (
+            group_post_adaptation_drifts
+        ),
+        "maximum_group_post_adaptation_active_stake_drift": (
+            maximum_group_post_adaptation_drift
+        ),
+        "maximum_post_adaptation_active_stake_stddev": (
+            maximum_post_adaptation_stddev
+        ),
+        "exploratory_decisions": sum(
+            int(number(row["exploratory_decision_count"]))
+            for row in utility_rows
+        ),
+        "pairing_mismatches": pairing_mismatches,
+    }
+    if acceptance_profile == "full_pilot":
+        diagnostics.update(
+            {
+                "initial_conditions_with_at_least_10pp_gain_by_cost": dict(
+                    sorted(passing_initials_by_cost.items())
+                ),
+                "cost_regimes_with_broad_participation_gain": (
+                    passing_cost_regimes
+                ),
+                "required_cost_regimes": 2,
+                "initial_conditions_with_better_bounded_inclusion_by_cost": dict(
+                    sorted(improving_initials_by_cost.items())
+                ),
+                "cost_regimes_with_better_bounded_inclusion": (
+                    improving_end_to_end_cost_regimes
+                ),
+                "initialization_spreads": initialization_spreads,
+            }
+        )
+    elif acceptance_profile == "sensitivity":
+        diagnostics["parameter_variant_spreads"] = initialization_spreads
     acceptance = {
         "suite": suite,
         "pass": all(checks.values()),
         "checks": checks,
-        "diagnostics": {
-            "expected_runs": len(expected),
-            "complete_runs": len(complete),
-            "initial_conditions_with_at_least_10pp_gain_by_cost": dict(
-                sorted(passing_initials_by_cost.items())
-            ),
-            "cost_regimes_with_broad_participation_gain": passing_cost_regimes,
-            "required_cost_regimes": 2,
-            "initial_conditions_with_better_bounded_inclusion_by_cost": dict(
-                sorted(improving_initials_by_cost.items())
-            ),
-            "cost_regimes_with_better_bounded_inclusion": (
-                improving_end_to_end_cost_regimes
-            ),
-            "initialization_spreads": (
-                initialization_spreads
-                if requires_initialization_robustness(acceptance_profile)
-                else {}
-            ),
-            "parameter_variant_spreads": (
-                initialization_spreads
-                if acceptance_profile == "sensitivity"
-                else {}
-            ),
-            "acceptance_profile": acceptance_profile,
-            "condition_active_stake_gain_means": condition_gain_means,
-            "condition_active_stake_gain_intervals": condition_gain_intervals,
-            "condition_positive_seed_counts": condition_positive_seed_counts,
-            "condition_inclusion_direction": condition_inclusion_direction,
-            "counterfactual_coverage_by_protocol": (
-                counterfactual_coverage_by_protocol
-            ),
-            "counterfactual_unavailable_updates_by_protocol": (
-                unavailable_updates_by_protocol
-            ),
-            "maximum_post_adaptation_active_stake_drift": (
-                maximum_post_adaptation_drift
-            ),
-            "p90_individual_post_adaptation_active_stake_drift": (
-                p90_post_adaptation_drift
-            ),
-            "group_post_adaptation_active_stake_drifts": (
-                group_post_adaptation_drifts
-            ),
-            "maximum_group_post_adaptation_active_stake_drift": (
-                maximum_group_post_adaptation_drift
-            ),
-            "maximum_post_adaptation_active_stake_stddev": (
-                maximum_post_adaptation_stddev
-            ),
-            "exploratory_decisions": sum(
-                int(number(row["exploratory_decision_count"]))
-                for row in utility_rows
-            ),
-            "pairing_mismatches": pairing_mismatches,
-        },
+        "diagnostics": diagnostics,
     }
     acceptance_path = prefix.with_name(prefix.name + "_acceptance.json")
     acceptance_path.write_text(json.dumps(acceptance, indent=2) + "\n", encoding="utf-8")
@@ -936,15 +1189,18 @@ def main() -> int:
     summary_lines.extend(
         [
             "",
-            "| Paired condition | Full-minus-fee active stake | Positive seeds |",
-            "|---|---:|---:|",
+            "| Paired condition | Full-minus-fee active stake | Positive seeds | Restricted-mean reduction | Positive seeds |",
+            "|---|---:|---:|---:|---:|",
         ]
     )
     for key, interval in condition_gain_intervals.items():
+        latency = condition_latency_intervals[key]
         summary_lines.append(
             f"| {key} | {interval['mean']:.1%} "
             f"$\\pm$ {interval['ci95']:.1%} | "
-            f"{condition_positive_seed_counts[key]}/{interval['n']} |"
+            f"{condition_positive_seed_counts[key]}/{interval['n']} | "
+            f"{latency['mean']:.2f}s $\\pm$ {latency['ci95']:.2f}s | "
+            f"{condition_latency_positive_seed_counts[key]}/{latency['n']} |"
         )
     summary_lines.extend(
         [

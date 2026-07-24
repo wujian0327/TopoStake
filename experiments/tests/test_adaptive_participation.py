@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import math
 import statistics
 import sys
@@ -21,6 +22,7 @@ from adaptive_participation_report import (  # noqa: E402
     grouped_rows,
     grouped_post_adaptation_drifts,
     mean_ci,
+    merge_processed_parts,
     paired_rows,
     percentile,
     post_adaptation_stats,
@@ -319,6 +321,104 @@ class AdaptiveParticipationTests(unittest.TestCase):
         self.assertEqual(count, 20)
         self.assertAlmostEqual(mean, 9.5)
         self.assertAlmostEqual(ci, expected)
+
+    def test_processed_parts_merge_by_seed_value_and_pool_trajectory(self) -> None:
+        trajectory_fields = [
+            "experiment",
+            "protocol_label",
+            "initial_active_fraction",
+            "cost_median_multiplier",
+            "adaptive_update_fraction",
+            "adaptive_switching_hysteresis",
+            "adaptive_exploration_fraction",
+            "epoch",
+            "active_stake_share",
+            "ci95",
+            "n",
+        ]
+        run_fields = [
+            "experiment",
+            "protocol_label",
+            "seed_index",
+            "seed_value",
+            "initial_active_fraction",
+            "cost_median_multiplier",
+            "adaptive_update_fraction",
+            "adaptive_benefit_ema_alpha",
+            "adaptive_switching_hysteresis",
+            "adaptive_exploration_fraction",
+            "complete",
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            run_paths = []
+            trajectory_paths = []
+            for part, (seed_value, mean) in enumerate(((100, 0.4), (101, 0.6))):
+                run_path = root / f"runs-{part}.csv"
+                trajectory_path = root / f"trajectory-{part}.csv"
+                with run_path.open("w", newline="", encoding="utf-8") as handle:
+                    writer = csv.DictWriter(handle, fieldnames=run_fields)
+                    writer.writeheader()
+                    writer.writerow(
+                        {
+                            "experiment": "holdout",
+                            "protocol_label": "topostake",
+                            "seed_index": 0,
+                            "seed_value": seed_value,
+                            "initial_active_fraction": 0.5,
+                            "cost_median_multiplier": 2.0,
+                            "adaptive_update_fraction": 0.1,
+                            "adaptive_benefit_ema_alpha": 0.25,
+                            "adaptive_switching_hysteresis": 0.1,
+                            "adaptive_exploration_fraction": 0.05,
+                            "complete": True,
+                        }
+                    )
+                with trajectory_path.open(
+                    "w", newline="", encoding="utf-8"
+                ) as handle:
+                    writer = csv.DictWriter(handle, fieldnames=trajectory_fields)
+                    writer.writeheader()
+                    writer.writerow(
+                        {
+                            "experiment": "holdout",
+                            "protocol_label": "topostake",
+                            "initial_active_fraction": 0.5,
+                            "cost_median_multiplier": 2.0,
+                            "adaptive_update_fraction": 0.1,
+                            "adaptive_switching_hysteresis": 0.1,
+                            "adaptive_exploration_fraction": 0.05,
+                            "epoch": 0,
+                            "active_stake_share": mean,
+                            "ci95": 0.0,
+                            "n": 2,
+                        }
+                    )
+                run_paths.append(run_path)
+                trajectory_paths.append(trajectory_path)
+            expected = [
+                {
+                    "experiment": "holdout",
+                    "protocol_label": "topostake",
+                    "seed_value": seed_value,
+                    "adaptive_initial_active_fraction": 0.5,
+                    "adaptive_cost_median_multiplier": 2.0,
+                    "adaptive_update_fraction": 0.1,
+                    "adaptive_benefit_ema_alpha": 0.25,
+                    "adaptive_switching_hysteresis": 0.1,
+                    "adaptive_exploration_fraction": 0.05,
+                }
+                for seed_value in (100, 101)
+            ]
+            runs, trajectories = merge_processed_parts(
+                run_paths, trajectory_paths, expected
+            )
+            self.assertEqual([row["seed_index"] for row in runs], [0, 1])
+            self.assertEqual(trajectories[0]["n"], 4)
+            self.assertAlmostEqual(
+                trajectories[0]["active_stake_share"], 0.5
+            )
+            self.assertGreater(trajectories[0]["ci95"], 0.0)
 
     def test_percentile_interpolates(self) -> None:
         self.assertAlmostEqual(percentile([1.0, 3.0], 0.5), 2.0)

@@ -147,6 +147,24 @@ lower bound at `3x` and at least one lower-cost regime; it evaluates
 finite-horizon response rather than equilibrium convergence. The sensitivity
 suite uses separate seeds and changes one behavioral parameter at a time.
 
+When the holdout is split across machines, keep each machine's processed
+outputs separate and merge by the recorded `seed_value`:
+
+```bash
+python experiments/adaptive_participation_report.py \
+  --config experiments/configs/frozen_v1_adaptive_participation_main.yaml \
+  --part-runs /path/to/part1_runs.csv \
+  --part-trajectory /path/to/part1_trajectory.csv \
+  --part-runs /path/to/part2_runs.csv \
+  --part-trajectory /path/to/part2_trajectory.csv
+python analysis/plot_adaptive_participation.py \
+  --config experiments/configs/frozen_v1_adaptive_participation_main.yaml
+```
+
+The merge rejects duplicate or missing frozen conditions, remaps local
+`seed_index` values from globally unique `seed_value` fields, and pools
+trajectory variances before recomputing the 20-seed confidence intervals.
+
 Before a full rerun, the 24-run stability probe tests the representative and
 previously least stable conditions with slower updates, stronger smoothing,
 and a 300-epoch horizon whose post-adaptation analysis begins at epoch 200:
