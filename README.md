@@ -138,14 +138,13 @@ python scripts/task.py frozen-adaptive-participation-sensitivity --dry-run
 python scripts/task.py frozen-adaptive-participation-sensitivity
 ```
 
-The holdout uses 20 paired seeds disjoint from the pilot seeds, fixes the
-initial active-stake share at 50%, and compares Fee-only with Full TopoStake
-at `1x`, `2x`, and `3x` median relay cost. A single `2x` PoS condition provides
-the no-incentive reference without redundantly repeating it across cost
-labels. The frozen acceptance rule requires a positive paired 95% confidence
-lower bound at `3x` and at least one lower-cost regime; it evaluates
-finite-horizon response rather than equilibrium convergence. The sensitivity
-suite uses separate seeds and changes one behavioral parameter at a time.
+The 180-run holdout uses 20 paired seeds disjoint from the pilot seeds, fixes
+the initial active-stake share at 50%, and evaluates PoS, Fee-only, and Full
+TopoStake at `1x`, `2x`, and `3x` median relay cost. The frozen acceptance rule
+requires a positive paired 95% confidence lower bound at `3x` and at least one
+lower-cost regime; it evaluates finite-horizon response rather than equilibrium
+convergence. The sensitivity suite uses separate seeds and changes one
+behavioral parameter at a time.
 
 When the holdout is split across machines, keep each machine's processed
 outputs separate and merge by the recorded `seed_value`:
