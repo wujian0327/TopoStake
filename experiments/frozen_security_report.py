@@ -65,7 +65,14 @@ RUN_METRICS = [
     "theoretical_proposer_weight_bound",
     "observed_adversary_proposer_share",
 ]
-IDENTITY_FIELDS = ["suite", "protocol_version", "experiment", "protocol_label", "protocol"]
+IDENTITY_FIELDS = [
+    "suite",
+    "protocol_version",
+    "run_revision",
+    "experiment",
+    "protocol_label",
+    "protocol",
+]
 SCENARIO_FIELDS = IDENTITY_FIELDS + DIMENSION_KEYS
 
 
@@ -433,7 +440,12 @@ def validation(rows: list[dict[str, Any]], expected_seeds: int) -> list[dict[str
     max_order_excess = max(
         (to_float(row["max_bound_order_excess"]) for row in complete), default=0.0
     )
-    revisions = {
+    run_revisions = {
+        str(row.get("run_revision", "")).strip()
+        for row in complete
+        if str(row.get("run_revision", "")).strip()
+    }
+    git_revisions = {
         str(row.get("git_commit_sha", "")).strip()
         for row in complete
         if str(row.get("git_commit_sha", "")).strip()
@@ -447,9 +459,16 @@ def validation(rows: list[dict[str, Any]], expected_seeds: int) -> list[dict[str
         ),
         check(
             "run-revision-consistency",
-            len(revisions) == 1 and "unknown" not in revisions,
+            len(run_revisions) == 1,
+            "semantic run revisions={}".format(
+                ",".join(sorted(run_revisions)) if run_revisions else "missing"
+            ),
+        ),
+        check(
+            "git-revision-provenance",
+            bool(git_revisions) and "unknown" not in git_revisions,
             "referenced git revisions={}".format(
-                ",".join(sorted(revisions)) if revisions else "missing"
+                ",".join(sorted(git_revisions)) if git_revisions else "missing"
             ),
         ),
         check(
