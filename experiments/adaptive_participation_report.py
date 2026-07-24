@@ -34,6 +34,12 @@ MAX_GROUP_POST_ADAPTATION_DRIFT = 0.05
 MAX_P90_INDIVIDUAL_DRIFT = 0.10
 
 
+def requires_initialization_robustness(acceptance_profile: str) -> bool:
+    """Only the multi-initial-condition pilot has this acceptance dimension."""
+
+    return acceptance_profile == "full_pilot"
+
+
 def read_csv(path: Path) -> list[dict[str, str]]:
     if not path.exists():
         return []
@@ -842,7 +848,7 @@ def main() -> int:
     }
     if acceptance_profile == "stability_probe":
         checks["post_adaptation_stability"] = stability_pass
-    if acceptance_profile != "stability_probe":
+    if requires_initialization_robustness(acceptance_profile):
         checks["initialization_robustness"] = all(
             spread <= 0.10 for spread in initialization_spreads.values()
         )

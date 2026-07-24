@@ -24,6 +24,7 @@ from adaptive_participation_report import (  # noqa: E402
     paired_rows,
     percentile,
     post_adaptation_stats,
+    requires_initialization_robustness,
 )
 from run_experiments import command_for_run, expand_runs, load_yaml  # noqa: E402
 from plot_adaptive_participation import (  # noqa: E402
@@ -34,6 +35,14 @@ from plot_adaptive_participation import (  # noqa: E402
 
 
 class AdaptiveParticipationTests(unittest.TestCase):
+    def test_initialization_robustness_only_applies_to_multi_initial_pilot(
+        self,
+    ) -> None:
+        self.assertTrue(requires_initialization_robustness("full_pilot"))
+        self.assertFalse(requires_initialization_robustness("sensitivity"))
+        self.assertFalse(requires_initialization_robustness("holdout"))
+        self.assertFalse(requires_initialization_robustness("stability_probe"))
+
     def test_multi_cost_plots_are_generated_independently(self) -> None:
         groups = []
         trajectory = []
