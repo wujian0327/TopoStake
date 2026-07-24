@@ -22,7 +22,7 @@ support the current frozen-v1 evaluation.
 - `frozen_v1_adaptive_participation_stability_probe.yaml`: 24-run targeted
   probe with a 300-epoch horizon, analysis from epoch 200, slower strategy
   updates, and representative plus prior boundary conditions.
-- `frozen_v1_adaptive_participation_main.yaml`: pre-specified 140-run holdout
+- `frozen_v1_adaptive_participation_main.yaml`: pre-specified 180-run holdout
   with 20 seeds disjoint from pilot development, Fee-only and Full TopoStake
   at `1x`, `2x`, and `3x` relay cost, plus one PoS reference condition.
 - `frozen_v1_adaptive_participation_sensitivity.yaml`: 40-run one-factor
