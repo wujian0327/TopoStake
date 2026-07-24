@@ -58,6 +58,15 @@
       "attack_mode": "max-score"
     },
     {
+      "name": "proposer_envelope_scale",
+      "protocols": ["topostake"],
+      "node_num": [250, 500],
+      "adversary_stake_fraction": [0.2],
+      "adversary_placement": ["random", "high-degree", "high-betweenness"],
+      "eta": [1.0],
+      "attack_mode": "max-score"
+    },
+    {
       "name": "flooding_cost_to_influence",
       "protocols": ["topostake"],
       "attack_tx_rate_multiplier": [0, 0.5, 1, 2, 5],
