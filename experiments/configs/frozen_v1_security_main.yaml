@@ -61,7 +61,7 @@
       "name": "proposer_envelope_scale",
       "protocols": ["topostake"],
       "node_num": [100, 250, 500],
-      "tx_rate": [20],
+      "tx_rate": [5],
       "max_epochs": 20,
       "adversary_stake_fraction": [0.2],
       "adversary_placement": ["random", "high-degree", "high-betweenness"],
