@@ -27,6 +27,7 @@ from adaptive_participation_report import (  # noqa: E402
     percentile,
     post_adaptation_stats,
     requires_initialization_robustness,
+    sensitivity_reference_pairs,
 )
 from run_experiments import command_for_run, expand_runs, load_yaml  # noqa: E402
 from plot_adaptive_participation import (  # noqa: E402
@@ -226,21 +227,22 @@ class AdaptiveParticipationTests(unittest.TestCase):
             {1.0, 2.0, 3.0},
         )
 
-    def test_sensitivity_expands_to_40_one_factor_runs(self) -> None:
+    def test_sensitivity_expands_to_120_one_factor_runs(self) -> None:
         config = (
             EXPERIMENTS
             / "configs"
             / "frozen_v1_adaptive_participation_sensitivity.yaml"
         )
         runs = expand_runs(load_yaml(config))
-        self.assertEqual(len(runs), 40)
-        self.assertEqual(len({run["run_id"] for run in runs}), 40)
-        self.assertEqual({run["seed_value"] for run in runs}, set(range(200, 205)))
+        self.assertEqual(len(runs), 120)
+        self.assertEqual(len({run["run_id"] for run in runs}), 120)
+        self.assertEqual({run["seed_value"] for run in runs}, set(range(100, 120)))
         by_experiment = {}
         for run in runs:
             by_experiment.setdefault(run["experiment"], run)
         self.assertEqual(
-            by_experiment["frozen_baseline"]["adaptive_update_fraction"], 0.10
+            set(by_experiment),
+            {"faster_updates", "lower_hysteresis", "lower_exploration"},
         )
         self.assertEqual(
             by_experiment["faster_updates"]["adaptive_update_fraction"], 0.20
@@ -253,6 +255,48 @@ class AdaptiveParticipationTests(unittest.TestCase):
             by_experiment["lower_exploration"]["adaptive_exploration_fraction"],
             0.025,
         )
+
+    def test_sensitivity_reuses_matching_main_holdout_pairs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "main_paired.csv"
+            fields = (
+                "experiment",
+                "seed_index",
+                "seed_value",
+                "initial_active_fraction",
+                "cost_median_multiplier",
+                "active_stake_gain",
+            )
+            with path.open("w", newline="", encoding="utf-8") as handle:
+                writer = csv.DictWriter(handle, fieldnames=fields)
+                writer.writeheader()
+                for index, seed in enumerate((100, 101)):
+                    writer.writerow(
+                        {
+                            "experiment": "adaptive_holdout",
+                            "seed_index": index,
+                            "seed_value": seed,
+                            "initial_active_fraction": 0.5,
+                            "cost_median_multiplier": 2.0,
+                            "active_stake_gain": 0.2,
+                        }
+                    )
+            rows = sensitivity_reference_pairs(
+                {
+                    "seeds": [100, 101],
+                    "sensitivity_reference": {
+                        "paired_csv": str(path),
+                        "experiment": "adaptive_holdout",
+                        "label": "frozen_baseline",
+                        "initial_active_fraction": 0.5,
+                        "cost_median_multiplier": 2.0,
+                        "expected_pairs": 2,
+                    },
+                }
+            )
+            self.assertEqual(len(rows), 2)
+            self.assertEqual({row["experiment"] for row in rows}, {"frozen_baseline"})
+            self.assertEqual({int(row["seed_value"]) for row in rows}, {100, 101})
 
     def test_pair_direction_is_full_minus_fee_only(self) -> None:
         common = {
