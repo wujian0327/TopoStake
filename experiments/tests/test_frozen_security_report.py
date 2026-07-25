@@ -19,7 +19,7 @@ from frozen_security_report import (  # noqa: E402
     paired_differences,
     validation,
 )
-from run_experiments import expand_runs, load_yaml  # noqa: E402
+from run_experiments import expand_runs, filter_runs, load_yaml  # noqa: E402
 
 
 def synthetic_run(seed: int, padding: int, contribution: float) -> dict[str, object]:
@@ -77,12 +77,15 @@ class FrozenSecurityReportTests(unittest.TestCase):
         scale = [run for run in runs if run["experiment"] == "proposer_envelope_scale"]
         self.assertEqual(len(scale), 180)
         self.assertEqual({run["node_num"] for run in scale}, {100, 250, 500})
-        self.assertEqual({run["tx_rate"] for run in scale}, {20})
+        self.assertEqual({run["tx_rate"] for run in scale}, {5})
         self.assertEqual({run["max_epochs"] for run in scale}, {20})
         self.assertEqual(
             {run["adversary_placement"] for run in scale},
             {"random", "high-degree", "high-betweenness"},
         )
+        node_500 = filter_runs(scale, node_nums=[500])
+        self.assertEqual(len(node_500), 60)
+        self.assertEqual({run["node_num"] for run in node_500}, {500})
 
     def test_padding_comparison_is_paired_by_seed(self) -> None:
         rows = [
