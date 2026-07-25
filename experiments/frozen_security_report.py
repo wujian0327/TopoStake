@@ -436,6 +436,9 @@ def fixed_padding_check(path: Path = FIXED_PADDING_REPORT) -> dict[str, Any]:
 def validation(rows: list[dict[str, Any]], expected_seeds: int) -> list[dict[str, Any]]:
     complete = [row for row in rows if row["complete"]]
     non_finite_runs = [row for row in complete if not row["finite_metrics"]]
+    scale_runs = [
+        row for row in complete if row.get("experiment") == "proposer_envelope_scale"
+    ]
     non_finite_details = "; ".join(
         "{}[experiment={},nodes={},placement={},eta={},seed={},fields={}]".format(
             row.get("run_id", "unknown"),
@@ -573,6 +576,36 @@ def validation(rows: list[dict[str, Any]], expected_seeds: int) -> list[dict[str
             "non-finite runs={}{}".format(
                 len(non_finite_runs),
                 f": {non_finite_details}" if non_finite_details else "",
+            ),
+        ),
+        check(
+            "scale-evidence-nonvacuity",
+            all(
+                int(to_float(row.get("cohort_included_tx_total"))) > 0
+                and int(to_float(row.get("eligible_path_count"))) > 0
+                and to_float(row.get("adversary_raw_contribution_total")) > 0.0
+                for row in scale_runs
+            ),
+            "runs={}, minimum cohort={}, eligible paths={}, adversarial contribution={:.6g}".format(
+                len(scale_runs),
+                min(
+                    (
+                        int(to_float(row.get("cohort_included_tx_total")))
+                        for row in scale_runs
+                    ),
+                    default=0,
+                ),
+                min(
+                    (int(to_float(row.get("eligible_path_count"))) for row in scale_runs),
+                    default=0,
+                ),
+                min(
+                    (
+                        to_float(row.get("adversary_raw_contribution_total"))
+                        for row in scale_runs
+                    ),
+                    default=0.0,
+                ),
             ),
         ),
     ]
