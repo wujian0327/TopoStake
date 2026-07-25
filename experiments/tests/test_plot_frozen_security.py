@@ -19,7 +19,7 @@ from plot_frozen_security import (  # noqa: E402
 
 
 class FrozenSecurityPlotTests(unittest.TestCase):
-    def test_proposer_scale_reuses_100_node_eta1_baseline(self) -> None:
+    def test_proposer_scale_uses_calibrated_scale_experiment_only(self) -> None:
         def row(experiment: str, node_num: int, eta: float, observed: float) -> dict[str, str]:
             return {
                 "experiment": experiment,
@@ -33,13 +33,13 @@ class FrozenSecurityPlotTests(unittest.TestCase):
 
         rows = [
             row("proposer_influence_envelope", 100, 1.0, 0.20),
-            row("proposer_influence_envelope", 100, 0.5, 0.24),
+            row("proposer_envelope_scale", 100, 1.0, 0.21),
             row("proposer_envelope_scale", 250, 1.0, 0.19),
             row("proposer_envelope_scale", 500, 1.0, 0.18),
         ]
         points = proposer_scale_points(rows)["random"]
         self.assertEqual([point[0] for point in points], [100.0, 250.0, 500.0])
-        self.assertEqual([round(point[1], 2) for point in points], [0.80, 0.76, 0.72])
+        self.assertEqual([round(point[1], 2) for point in points], [0.84, 0.76, 0.72])
 
     def test_complete_runs_excludes_matrix_placeholders(self) -> None:
         rows = [
