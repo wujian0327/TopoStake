@@ -62,7 +62,7 @@ class FrozenSecurityReportTests(unittest.TestCase):
     def test_security_configs_expand_to_unique_runs(self) -> None:
         expected = {
             "frozen_v1_security_pilot.yaml": 38,
-            "frozen_v1_security_main.yaml": 1700,
+            "frozen_v1_security_main.yaml": 1760,
         }
         for filename, count in expected.items():
             spec = load_yaml(ROOT / "experiments" / "configs" / filename)
@@ -71,21 +71,14 @@ class FrozenSecurityReportTests(unittest.TestCase):
             self.assertEqual(len({run["run_id"] for run in runs}), count)
             self.assertTrue(all(run["protocol_version"] == "frozen-v1" for run in runs))
 
-    def test_scale_sweep_adds_only_larger_validator_counts(self) -> None:
+    def test_scale_sweep_uses_one_calibrated_load_at_all_sizes(self) -> None:
         spec = load_yaml(ROOT / "experiments" / "configs" / "frozen_v1_security_main.yaml")
         runs = expand_runs(spec)
         scale = [run for run in runs if run["experiment"] == "proposer_envelope_scale"]
-        baseline = [
-            run
-            for run in runs
-            if run["experiment"] == "proposer_influence_envelope"
-            and run["node_num"] == 100
-            and run["adversary_stake_fraction"] == 0.2
-            and run["eta"] == 1.0
-        ]
-        self.assertEqual(len(scale), 120)
-        self.assertEqual({run["node_num"] for run in scale}, {250, 500})
-        self.assertEqual(len(baseline), 60)
+        self.assertEqual(len(scale), 180)
+        self.assertEqual({run["node_num"] for run in scale}, {100, 250, 500})
+        self.assertEqual({run["tx_rate"] for run in scale}, {20})
+        self.assertEqual({run["max_epochs"] for run in scale}, {20})
         self.assertEqual(
             {run["adversary_placement"] for run in scale},
             {"random", "high-degree", "high-betweenness"},
@@ -146,6 +139,22 @@ class FrozenSecurityReportTests(unittest.TestCase):
         self.assertIn("diagnostic-run", diagnostic["detail"])
         self.assertIn("nodes=500", diagnostic["detail"])
         self.assertIn("p95_inclusion_latency_s_pooled", diagnostic["detail"])
+
+    def test_scale_runs_require_nonvacuous_evidence(self) -> None:
+        row = synthetic_run(0, 0, 10.0)
+        row.update(
+            {
+                "experiment": "proposer_envelope_scale",
+                "cohort_included_tx_total": 10,
+                "eligible_path_count": 8,
+                "adversary_raw_contribution_total": 1.0,
+            }
+        )
+        checks = {item["name"]: item for item in validation([row], expected_seeds=1)}
+        self.assertTrue(checks["scale-evidence-nonvacuity"]["passed"])
+        row["eligible_path_count"] = 0
+        checks = {item["name"]: item for item in validation([row], expected_seeds=1)}
+        self.assertFalse(checks["scale-evidence-nonvacuity"]["passed"])
 
     def test_focal_relayer_isolation_is_validated(self) -> None:
         row = synthetic_run(0, 0, 10.0)
