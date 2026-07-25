@@ -553,15 +553,7 @@ def proposer_scale_points(
     for row in rows:
         experiment = row.get("experiment")
         node_num = as_float(row.get("node_num"))
-        stake = as_float(row.get("adversary_stake_fraction"))
-        eta = as_float(row.get("eta"))
-        is_reused_baseline = (
-            experiment == "proposer_influence_envelope"
-            and node_num == 100
-            and abs(stake - 0.2) < 1e-12
-            and abs(eta - 1.0) < 1e-12
-        )
-        if experiment != "proposer_envelope_scale" and not is_reused_baseline:
+        if experiment != "proposer_envelope_scale":
             continue
         observed = as_float(row.get("adversary_proposer_weight_share_mean"))
         bound = as_float(row.get("score_dependent_proposer_weight_bound_mean"))
