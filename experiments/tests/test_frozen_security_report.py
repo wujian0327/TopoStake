@@ -128,6 +128,25 @@ class FrozenSecurityReportTests(unittest.TestCase):
         checks = {item["name"]: item for item in validation(rows, expected_seeds=2)}
         self.assertFalse(checks["run-revision-consistency"]["passed"])
 
+    def test_non_finite_metric_diagnostic_names_run_and_field(self) -> None:
+        row = synthetic_run(0, 0, 10.0)
+        row.update(
+            {
+                "run_id": "diagnostic-run",
+                "node_num": 500,
+                "adversary_placement": "high-degree",
+                "eta": 1.0,
+                "non_finite_fields": "p95_inclusion_latency_s_pooled",
+                "finite_metrics": False,
+            }
+        )
+        checks = {item["name"]: item for item in validation([row], expected_seeds=1)}
+        diagnostic = checks["finite-security-metrics"]
+        self.assertFalse(diagnostic["passed"])
+        self.assertIn("diagnostic-run", diagnostic["detail"])
+        self.assertIn("nodes=500", diagnostic["detail"])
+        self.assertIn("p95_inclusion_latency_s_pooled", diagnostic["detail"])
+
     def test_focal_relayer_isolation_is_validated(self) -> None:
         row = synthetic_run(0, 0, 10.0)
         row.update(
