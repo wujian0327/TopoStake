@@ -54,46 +54,6 @@ def read_json(path: Path) -> dict[str, Any]:
         return {}
 
 
-def sensitivity_reference_pairs(spec: dict[str, Any]) -> list[dict[str, Any]]:
-    """Load the frozen 20-seed baseline from the main adaptive holdout."""
-
-    reference = spec.get("sensitivity_reference")
-    if not reference:
-        return []
-    path = Path(str(reference["paired_csv"]))
-    if not path.is_absolute():
-        path = ROOT / path
-    rows = read_csv(path)
-    experiment = str(reference["experiment"])
-    label = str(reference.get("label", "frozen_baseline"))
-    initial = number(reference["initial_active_fraction"])
-    cost = number(reference["cost_median_multiplier"])
-    expected_seeds = {int(seed) for seed in spec.get("seeds", [])}
-    selected: dict[int, dict[str, Any]] = {}
-    for row in rows:
-        if (
-            str(row.get("experiment")) != experiment
-            or number(row.get("initial_active_fraction")) != initial
-            or number(row.get("cost_median_multiplier")) != cost
-        ):
-            continue
-        seed = int(number(row.get("seed_value"), -1))
-        if seed in selected:
-            raise ValueError(f"duplicate sensitivity baseline seed {seed} in {path}")
-        selected[seed] = {**row, "experiment": label}
-    expected_pairs = int(reference.get("expected_pairs", len(expected_seeds)))
-    if (
-        len(selected) != expected_pairs
-        or set(selected) != expected_seeds
-    ):
-        raise ValueError(
-            "sensitivity baseline reference must contain exactly the configured "
-            f"paired seeds; found {sorted(selected)} in {path}, expected "
-            f"{sorted(expected_seeds)}"
-        )
-    return [selected[seed] for seed in sorted(selected)]
-
-
 def number(value: Any, default: float = 0.0) -> float:
     try:
         result = float(value)
@@ -875,21 +835,15 @@ def main() -> int:
         trajectories = grouped_trajectory(trajectory)
     groups = grouped_rows(runs)
     pairs = paired_rows(runs)
-    reference_pairs = (
-        sensitivity_reference_pairs(spec)
-        if acceptance_profile == "sensitivity"
-        else []
-    )
-    analysis_pairs = reference_pairs + pairs
     suite = str(spec.get("suite", config_path.stem))
     prefix = PROCESSED_ROOT / suite
     write_csv(prefix.with_name(prefix.name + "_runs.csv"), runs)
     write_csv(prefix.with_name(prefix.name + "_groups.csv"), groups)
     write_csv(prefix.with_name(prefix.name + "_trajectory.csv"), trajectories)
-    write_csv(prefix.with_name(prefix.name + "_paired.csv"), analysis_pairs)
+    write_csv(prefix.with_name(prefix.name + "_paired.csv"), pairs)
 
     gains_by_condition: dict[tuple[str, float, float], list[float]] = defaultdict(list)
-    for row in analysis_pairs:
+    for row in pairs:
         key = (
             str(row["experiment"]),
             number(row["cost_median_multiplier"]),
@@ -908,7 +862,7 @@ def main() -> int:
     latency_by_condition: dict[tuple[str, float, float], list[float]] = defaultdict(
         list
     )
-    for row in analysis_pairs:
+    for row in pairs:
         key = (
             str(row["experiment"]),
             number(row["cost_median_multiplier"]),
@@ -1144,10 +1098,6 @@ def main() -> int:
     }
     if acceptance_profile == "stability_probe":
         checks["post_adaptation_stability"] = stability_pass
-    if acceptance_profile == "sensitivity":
-        checks["baseline_reference_coverage"] = (
-            len(reference_pairs) == len(spec.get("seeds", []))
-        )
     if requires_initialization_robustness(acceptance_profile):
         checks["initialization_robustness"] = all(
             spread <= 0.10 for spread in initialization_spreads.values()
@@ -1191,7 +1141,6 @@ def main() -> int:
             for row in utility_rows
         ),
         "pairing_mismatches": pairing_mismatches,
-        "sensitivity_reference_pairs": len(reference_pairs),
     }
     if acceptance_profile == "full_pilot":
         diagnostics.update(

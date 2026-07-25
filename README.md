@@ -143,10 +143,9 @@ the initial active-stake share at 50%, and evaluates PoS, Fee-only, and Full
 TopoStake at `1x`, `2x`, and `3x` median relay cost. The frozen acceptance rule
 requires a positive paired 95% confidence lower bound at `3x` and at least one
 lower-cost regime; it evaluates finite-horizon response rather than equilibrium
-convergence. The 120-run sensitivity suite reuses the same 20 paired seeds and
-the main holdout's frozen `2x` baseline, then changes one behavioral parameter
-at a time. Before running it, retain
-`results/processed/frozen_v1_adaptive_participation_main_paired.csv`.
+convergence. The independent 160-run sensitivity suite uses 20 separate paired
+seeds, reruns the frozen `2x` baseline, and changes one behavioral parameter at
+a time; it does not merge observations from the main holdout.
 
 When the holdout is split across machines, keep each machine's processed
 outputs separate and merge by the recorded `seed_value`:

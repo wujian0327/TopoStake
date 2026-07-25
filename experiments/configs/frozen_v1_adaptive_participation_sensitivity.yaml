@@ -7,21 +7,13 @@
   "max_parallel": 3,
   "timeout_seconds": 7200,
   "seeds": [
-    100, 101, 102, 103, 104,
-    105, 106, 107, 108, 109,
-    110, 111, 112, 113, 114,
-    115, 116, 117, 118, 119
+    200, 201, 202, 203, 204,
+    205, 206, 207, 208, 209,
+    210, 211, 212, 213, 214,
+    215, 216, 217, 218, 219
   ],
-  "sensitivity_reference": {
-    "paired_csv": "results/processed/frozen_v1_adaptive_participation_main_paired.csv",
-    "experiment": "adaptive_holdout",
-    "label": "frozen_baseline",
-    "initial_active_fraction": 0.50,
-    "cost_median_multiplier": 2.0,
-    "expected_pairs": 20
-  },
   "defaults": {
-    "run_revision": "adaptive-participation-sensitivity-v2",
+    "run_revision": "adaptive-participation-sensitivity-v3",
     "node_num": 100,
     "sybil_node_num": 0,
     "fake_node_num": 0,
@@ -65,6 +57,12 @@
     "adaptive_followup_epochs": 10
   },
   "experiments": [
+    {
+      "name": "frozen_baseline",
+      "protocols": ["topostake_eta0", "topostake"],
+      "adaptive_initial_active_fraction": [0.50],
+      "adaptive_cost_median_multiplier": [2.0]
+    },
     {
       "name": "faster_updates",
       "protocols": ["topostake_eta0", "topostake"],
