@@ -65,6 +65,19 @@ RUN_METRICS = [
     "theoretical_proposer_weight_bound",
     "observed_adversary_proposer_share",
 ]
+FINITE_SECURITY_METRICS = [
+    "max_score_bound_excess",
+    "max_cap_bound_excess",
+    "max_bound_order_excess",
+    "adversary_raw_contribution_total",
+    "adversary_relay_reward_total",
+    "adversary_credit_share",
+    "adversary_relay_reward_share",
+    "credit_ineligible_path_rate",
+    "relay_reward_per_stake",
+    "inclusion_ratio",
+    "p95_inclusion_latency_s_pooled",
+]
 IDENTITY_FIELDS = [
     "suite",
     "protocol_version",
@@ -318,22 +331,13 @@ def aggregate_run(run: dict[str, Any]) -> dict[str, Any]:
     out["focal_proposer_weight_mean"] = mean_ci95(
         to_float(row.get("normalized_proposer_weight"), math.nan) for row in focal
     )[0]
-    out["finite_metrics"] = all(
-        math.isfinite(to_float(out.get(field), math.nan))
-        for field in [
-            "max_score_bound_excess",
-            "max_cap_bound_excess",
-            "max_bound_order_excess",
-            "adversary_raw_contribution_total",
-            "adversary_relay_reward_total",
-            "adversary_credit_share",
-            "adversary_relay_reward_share",
-            "credit_ineligible_path_rate",
-            "relay_reward_per_stake",
-            "inclusion_ratio",
-            "p95_inclusion_latency_s_pooled",
-        ]
-    )
+    non_finite_fields = [
+        field
+        for field in FINITE_SECURITY_METRICS
+        if not math.isfinite(to_float(out.get(field), math.nan))
+    ]
+    out["non_finite_fields"] = ",".join(non_finite_fields)
+    out["finite_metrics"] = not non_finite_fields
     return out
 
 
@@ -431,6 +435,19 @@ def fixed_padding_check(path: Path = FIXED_PADDING_REPORT) -> dict[str, Any]:
 
 def validation(rows: list[dict[str, Any]], expected_seeds: int) -> list[dict[str, Any]]:
     complete = [row for row in rows if row["complete"]]
+    non_finite_runs = [row for row in complete if not row["finite_metrics"]]
+    non_finite_details = "; ".join(
+        "{}[experiment={},nodes={},placement={},eta={},seed={},fields={}]".format(
+            row.get("run_id", "unknown"),
+            row.get("experiment", ""),
+            row.get("node_num", ""),
+            row.get("adversary_placement", ""),
+            row.get("eta", ""),
+            row.get("seed_value", ""),
+            row.get("non_finite_fields", "unknown"),
+        )
+        for row in non_finite_runs[:10]
+    )
     scenario_counts: dict[tuple[Any, ...], int] = defaultdict(int)
     for row in complete:
         scenario_counts[scenario_key(row)] += 1
@@ -552,8 +569,11 @@ def validation(rows: list[dict[str, Any]], expected_seeds: int) -> list[dict[str
         ),
         check(
             "finite-security-metrics",
-            all(row["finite_metrics"] for row in complete),
-            f"non-finite runs={sum(not row['finite_metrics'] for row in complete)}",
+            not non_finite_runs,
+            "non-finite runs={}{}".format(
+                len(non_finite_runs),
+                f": {non_finite_details}" if non_finite_details else "",
+            ),
         ),
     ]
 
