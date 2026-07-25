@@ -272,6 +272,7 @@ def filter_runs(
     runs: List[Dict[str, Any]],
     protocols: Iterable[str] | None = None,
     seed_indices: Iterable[int] | None = None,
+    node_nums: Iterable[int] | None = None,
     tx_rates: Iterable[float] | None = None,
     unstable_fractions: Iterable[float] | None = None,
     stake_ginis: Iterable[float] | None = None,
@@ -279,6 +280,7 @@ def filter_runs(
 ) -> List[Dict[str, Any]]:
     protocol_set = set(protocols or [])
     seed_set = set(seed_indices or [])
+    node_num_set = set(node_nums or [])
     tx_rate_set = set(tx_rates or [])
     unstable_fraction_set = set(unstable_fractions or [])
     stake_gini_set = set(stake_ginis or [])
@@ -289,6 +291,8 @@ def filter_runs(
         if protocol_set and run.get("protocol_label") not in protocol_set and run.get("protocol") not in protocol_set:
             continue
         if seed_set and int(run.get("seed_index", -1)) not in seed_set:
+            continue
+        if node_num_set and int(run.get("node_num", -1)) not in node_num_set:
             continue
         if tx_rate_set and float(run.get("tx_rate", -1)) not in tx_rate_set:
             continue
@@ -461,6 +465,7 @@ def main() -> int:
     parser.add_argument("--only", action="append", help="Run only this experiment group")
     parser.add_argument("--protocol", action="append", help="Run only this protocol/protocol label")
     parser.add_argument("--seed-index", action="append", type=int, help="Run only this zero-based seed index")
+    parser.add_argument("--node-num", action="append", type=int, help="Run only this validator count")
     parser.add_argument("--tx-rate", action="append", type=float, help="Run only this input transaction rate")
     parser.add_argument("--unstable-fraction", action="append", type=float, help="Run only this unstable node fraction")
     parser.add_argument("--stake-gini", action="append", type=float, help="Run only this stake Gini value")
@@ -479,6 +484,7 @@ def main() -> int:
         runs,
         args.protocol,
         args.seed_index,
+        args.node_num,
         args.tx_rate,
         args.unstable_fraction,
         args.stake_gini,
