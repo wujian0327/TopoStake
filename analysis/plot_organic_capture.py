@@ -312,7 +312,7 @@ def main() -> int:
     render_metric(
         rows,
         "adversary_organic_relay_reward_share",
-        "Relay reward share (%)",
+        "Contribution / reward share (%)",
         "",
         args.output_dir / "organic_capture_a",
         lambda stake: stake,
