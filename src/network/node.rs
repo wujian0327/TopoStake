@@ -274,8 +274,7 @@ impl Node {
     }
 
     fn should_forward_relay_path(&mut self) -> bool {
-        self.failure_rng
-            .gen_bool(self.relay_forward_probability())
+        self.failure_rng.gen_bool(self.relay_forward_probability())
     }
 
     pub fn set_failure_seed(&mut self, seed: u64) {
@@ -442,10 +441,7 @@ impl Node {
             // 离线逻辑：如果节点离线，跳过大多数消息处理
             // 但 UpdateSlot 消息用于恢复在线逻辑，需要处理
             if (!self.is_online || !self.scheduled_online.load(Ordering::Relaxed))
-                && !matches!(
-                    msg,
-                    Message::UpdateSlot(_) | Message::UpdateRelayProfile(_)
-                )
+                && !matches!(msg, Message::UpdateSlot(_) | Message::UpdateRelayProfile(_))
             {
                 debug!("Node[{}] is offline, skipping message", self.index);
                 match msg {
@@ -767,7 +763,10 @@ impl Node {
                             .await;
                     });
                 }
-                Message::GenerateTransactionPaths { to } => {
+                Message::GenerateTransactionPaths {
+                    to,
+                    self_generated_attack,
+                } => {
                     // 检查余额是否充足
                     let total_transaction_cost = 2.0 * self.transaction_fee;
                     if !self.deduct_balance(total_transaction_cost) {
@@ -787,8 +786,13 @@ impl Node {
                         ))
                         .await;
 
-                    let mut transaction =
-                        Transaction::with_fee(to, 0, self.transaction_fee, self.wallet.clone());
+                    let mut transaction = Transaction::with_fee_and_attack_marker(
+                        to,
+                        0,
+                        self.transaction_fee,
+                        self.wallet.clone(),
+                        self_generated_attack,
+                    );
                     transaction.data = logical_tx_metadata(self.epoch, self.slot);
                     let mut transaction_paths =
                         TransactionPaths::new_with_epoch(transaction, self.epoch);

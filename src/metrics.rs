@@ -118,6 +118,41 @@ pub struct RunSummary {
     pub adversary_fee_spent: f64,
     pub adversary_reward_income: f64,
     pub adversary_net_income: f64,
+    pub attack_tx_submitted: u64,
+    pub attack_tx_included: u64,
+    pub attack_fee_paid: f64,
+    pub attack_irrecoverable_cost_paid: f64,
+    pub attack_certified_path_cost: f64,
+    pub attack_proposer_fee_recovery: f64,
+    pub attack_relay_fee_recovery: f64,
+    pub attack_coalition_raw_contribution: f64,
+    pub attack_direct_net_cost: f64,
+    pub adversary_proposer_weight_share_mean: f64,
+    pub adversary_real_stake_share: f64,
+    pub coalition_identity_hash: String,
+    pub background_workload_hash: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+pub struct AttackOnlyMetrics {
+    pub attack_tx_submitted: u64,
+    pub attack_tx_included: u64,
+    pub attack_fee_paid: f64,
+    pub attack_irrecoverable_cost_paid: f64,
+    pub attack_certified_path_cost: f64,
+    pub attack_proposer_fee_recovery: f64,
+    pub attack_relay_fee_recovery: f64,
+    pub attack_coalition_raw_contribution: f64,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct FloodingAuditState {
+    pub attack: AttackOnlyMetrics,
+    pub background_workload_trace: Vec<String>,
+    pub metrics_warmup_epochs: u64,
+    pub metric_epoch_count: u64,
+    pub adversary_proposer_weight_share_sum: f64,
+    pub adversary_real_stake_share_sum: f64,
 }
 
 impl SlotMetrics {
@@ -221,7 +256,7 @@ impl NodeEpochMetrics {
 
     pub fn to_csv_row(&self) -> String {
         format!(
-            "{},{},{},{},{},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{},{:.6},{:.6},{:.6},{:.6},{},{:.12},{:.12},{},{}",
+            "{},{},{},{},{},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{},{:.6},{:.6},{:.6},{:.6},{},{:.17e},{:.12},{},{}",
             self.epoch,
             self.validator_id,
             self.relay_profile,

@@ -8,11 +8,11 @@ use crate::consensus::pow::PowConsensus;
 use crate::consensus::topostake::{TopoStakeConfig, TopoStakeConsensus};
 use crate::consensus::{Consensus, ConsensusMetricsSnapshot, ConsensusType, RandaoSeed, Validator};
 use crate::metrics::{
-    self, calculate_hhi, calculate_stake_concentration, EpochMetrics, NodeEpochMetrics, RunSummary,
-    SlotMetrics,
+    self, calculate_hhi, calculate_stake_concentration, AttackOnlyMetrics, EpochMetrics,
+    FloodingAuditState, NodeEpochMetrics, RunSummary, SlotMetrics,
 };
-use crate::network::{calculate_gini, AdaptiveRelayConfig, RelayProfile};
 use crate::network::message::Message;
+use crate::network::{calculate_gini, AdaptiveRelayConfig, RelayProfile};
 use crate::tools;
 use crate::tools::get_timestamp;
 use crate::wallet::Wallet;
@@ -27,7 +27,7 @@ use std::fmt;
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::RwLock;
@@ -89,6 +89,7 @@ pub struct WorldState {
     generated_tx_counter: Arc<AtomicU64>,
     last_generated_tx_counter: u64,
     fee_spent: Arc<std::sync::Mutex<HashMap<String, f64>>>,
+    flooding_audit: Arc<Mutex<FloodingAuditState>>,
     pub nodes_index: HashMap<String, u32>,
     pub adversarial_nodes: HashSet<String>,
     pub focal_relayer_nodes: HashSet<String>,
@@ -105,7 +106,7 @@ pub struct WorldState {
     last_block_production_failed: usize,
     pub base_reward: f64, // 所有共识的固定奖励
     reward_reinvestment_rate: f64,
-    pub max_epochs: u64,  // 最大运行Epoch数
+    pub max_epochs: u64, // 最大运行Epoch数
     max_tx_per_block: usize,
     confirmation_latency_adjustment_s: f64,
 }
@@ -163,10 +164,9 @@ struct AdaptiveObservationWindow {
 
 impl AdaptiveObservationWindow {
     fn observed_benefit_per_forward(&self) -> Option<f64> {
-        let reward_premium = self.active.expected_reward_per_stake()?
-            - self.lazy.expected_reward_per_stake()?;
-        let work_premium =
-            self.active.forwards_per_stake()? - self.lazy.forwards_per_stake()?;
+        let reward_premium =
+            self.active.expected_reward_per_stake()? - self.lazy.expected_reward_per_stake()?;
+        let work_premium = self.active.forwards_per_stake()? - self.lazy.forwards_per_stake()?;
         if work_premium > 0.0 && reward_premium.is_finite() {
             Some(reward_premium / work_premium)
         } else {
@@ -324,6 +324,7 @@ impl WorldState {
         confirmation_latency_adjustment_s: f64,
         generated_tx_counter: Arc<AtomicU64>,
         fee_spent: Arc<std::sync::Mutex<HashMap<String, f64>>>,
+        flooding_audit: Arc<Mutex<FloodingAuditState>>,
     ) -> (Self, Sender<Message>, Receiver<Message>) {
         let (sender, receiver) = tokio::sync::mpsc::channel(4096);
         let nodes_sender: HashMap<String, Sender<Message>> = HashMap::new();
@@ -477,6 +478,7 @@ impl WorldState {
                 generated_tx_counter,
                 last_generated_tx_counter: 0,
                 fee_spent,
+                flooding_audit,
                 nodes_index: HashMap::new(),
                 adversarial_nodes: HashSet::new(),
                 focal_relayer_nodes: HashSet::new(),
@@ -505,11 +507,7 @@ impl WorldState {
         )
     }
 
-    pub fn configure_adaptive_relay(
-        &mut self,
-        config: AdaptiveRelayConfig,
-        failure_seed: u64,
-    ) {
+    pub fn configure_adaptive_relay(&mut self, config: AdaptiveRelayConfig, failure_seed: u64) {
         self.adaptive_relay_config = config;
         self.adaptive_failure_seed = failure_seed;
         self.adaptive_relay_costs.clear();
@@ -522,11 +520,8 @@ impl WorldState {
 
         let median = self.adaptive_relay_config.cost_reference
             * self.adaptive_relay_config.cost_median_multiplier;
-        let distribution = LogNormal::new(
-            median.ln(),
-            self.adaptive_relay_config.cost_log_sigma,
-        )
-        .expect("validated adaptive relay cost distribution");
+        let distribution = LogNormal::new(median.ln(), self.adaptive_relay_config.cost_log_sigma)
+            .expect("validated adaptive relay cost distribution");
         let mut rng = StdRng::seed_from_u64(failure_seed ^ 0x4144_4150_5449_5645);
         let mut addresses: Vec<String> = self.nodes_index.keys().cloned().collect();
         addresses.sort_by(|left, right| {
@@ -608,7 +603,10 @@ impl WorldState {
             return false;
         }
         self.outage_duration_epochs == 0
-            || epoch < self.outage_start_epoch.saturating_add(self.outage_duration_epochs)
+            || epoch
+                < self
+                    .outage_start_epoch
+                    .saturating_add(self.outage_duration_epochs)
     }
 
     fn update_scheduled_availability(&self, epoch: u64) {
@@ -861,12 +859,7 @@ impl WorldState {
         } else {
             self.blockchain.read().await.get_last_index() + 1
         };
-        let next_seed = derive_election_seed(
-            self.election_seed,
-            next_epoch,
-            0,
-            seed_block_index,
-        );
+        let next_seed = derive_election_seed(self.election_seed, next_epoch, 0, seed_block_index);
         self.current_slot = Arc::new(RwLock::new(SlotManager {
             randao_seeds: vec![],
             slot_duration: self.slot_duration,
@@ -1169,12 +1162,19 @@ impl WorldState {
         self.write_inclusion_samples(&inclusion_samples);
 
         let reward_report = self.estimate_epoch_rewards(&epoch_blocks, validators, &snapshot);
-        let next_validators = reinvest_epoch_rewards(
-            validators,
-            &reward_report,
-            self.reward_reinvestment_rate,
-        );
+        let next_validators =
+            reinvest_epoch_rewards(validators, &reward_report, self.reward_reinvestment_rate);
         let organic_capture = self.organic_capture_report(&epoch_blocks, validators, &snapshot);
+        let attack_capture = self.attack_capture_report(&epoch_blocks, validators, &snapshot);
+        if let Ok(mut audit) = self.flooding_audit.lock() {
+            audit.attack.attack_tx_included += attack_capture.attack_tx_included;
+            audit.attack.attack_certified_path_cost += attack_capture.attack_certified_path_cost;
+            audit.attack.attack_proposer_fee_recovery +=
+                attack_capture.attack_proposer_fee_recovery;
+            audit.attack.attack_relay_fee_recovery += attack_capture.attack_relay_fee_recovery;
+            audit.attack.attack_coalition_raw_contribution +=
+                attack_capture.attack_coalition_raw_contribution;
+        }
         for (address, reward) in reward_report.total_by_address() {
             *self.total_reward_income.entry(address).or_insert(0.0) += reward;
         }
@@ -1215,6 +1215,13 @@ impl WorldState {
             .sum();
         let adversary_proposer_weight_share =
             metrics::share_for(&self.adversarial_nodes, &proposer_weights);
+        if let Ok(mut audit) = self.flooding_audit.lock() {
+            if epoch >= audit.metrics_warmup_epochs {
+                audit.metric_epoch_count += 1;
+                audit.adversary_proposer_weight_share_sum += adversary_proposer_weight_share;
+                audit.adversary_real_stake_share_sum += adversary_real_stake_share;
+            }
+        }
         let eta = snapshot.topostake_eta.unwrap_or(0.0);
         let bonus_cap = snapshot.topostake_bonus_cap.unwrap_or(0.0);
         let zeta = snapshot.topostake_bonus_zeta.unwrap_or(1.0);
@@ -1298,8 +1305,7 @@ impl WorldState {
             organic_valid_path_count: organic_capture.valid_path_count,
             organic_relay_reward: organic_capture.relay_reward,
             adversary_organic_relay_reward: organic_capture.adversary_relay_reward,
-            adversary_organic_relay_reward_share: organic_capture
-                .adversary_relay_reward_share(),
+            adversary_organic_relay_reward_share: organic_capture.adversary_relay_reward_share(),
             organic_raw_contribution: organic_capture.raw_contribution,
             adversary_organic_raw_contribution: organic_capture.adversary_raw_contribution,
             adversary_organic_raw_contribution_share: organic_capture
@@ -1434,9 +1440,7 @@ impl WorldState {
                     .get(&validator.address)
                     .copied()
                     .unwrap_or(0.0),
-                estimated_relay_benefit_per_forward: self
-                    .adaptive_benefit_ema
-                    .unwrap_or(0.0),
+                estimated_relay_benefit_per_forward: self.adaptive_benefit_ema.unwrap_or(0.0),
                 degree: self
                     .node_degrees
                     .get(&validator.address)
@@ -1516,24 +1520,22 @@ impl WorldState {
             epoch_window.active.expected_reward;
         self.adaptive_observation_window.active.forward_attempts +=
             epoch_window.active.forward_attempts;
-        self.adaptive_observation_window.lazy.stake_exposure +=
-            epoch_window.lazy.stake_exposure;
-        self.adaptive_observation_window.lazy.expected_reward +=
-            epoch_window.lazy.expected_reward;
+        self.adaptive_observation_window.lazy.stake_exposure += epoch_window.lazy.stake_exposure;
+        self.adaptive_observation_window.lazy.expected_reward += epoch_window.lazy.expected_reward;
         self.adaptive_observation_window.lazy.forward_attempts +=
             epoch_window.lazy.forward_attempts;
 
         let completed_epochs = epoch + 1;
         let warmup = self.adaptive_relay_config.warmup_epochs;
         let interval = self.adaptive_relay_config.update_interval_epochs;
-        let update_due = completed_epochs >= warmup
-            && (completed_epochs - warmup) % interval == 0;
+        let update_due = completed_epochs >= warmup && (completed_epochs - warmup) % interval == 0;
         if !update_due {
             let window_epochs = self.adaptive_observation_window.epochs;
             self.write_adaptive_relay_metrics(
                 epoch,
                 false,
                 None,
+                0,
                 0,
                 0,
                 0,
@@ -1557,6 +1559,7 @@ impl WorldState {
         let mut switched_active = 0usize;
         let mut switched_lazy = 0usize;
         let mut exploratory_decisions = 0usize;
+        let mut reconsidered_validators = 0usize;
         if let Some(benefit) = self.adaptive_benefit_ema {
             let mut candidates: Vec<String> = self.adaptive_relay_costs.keys().cloned().collect();
             candidates.sort_by(|left, right| {
@@ -1566,9 +1569,7 @@ impl WorldState {
                     .then_with(|| left.cmp(right))
             });
             let mut rng = StdRng::seed_from_u64(
-                self.adaptive_failure_seed
-                    ^ 0x5550_4441_5445_5253
-                    ^ self.adaptive_update_round,
+                self.adaptive_failure_seed ^ 0x5550_4441_5445_5253 ^ self.adaptive_update_round,
             );
             candidates.shuffle(&mut rng);
             let update_count = ((candidates.len() as f64
@@ -1579,6 +1580,7 @@ impl WorldState {
             let hysteresis = self.adaptive_relay_config.switching_hysteresis;
             let exploration = self.adaptive_relay_config.exploration_fraction;
             for address in candidates.into_iter().take(update_count) {
+                reconsidered_validators += 1;
                 let cost = self
                     .adaptive_relay_costs
                     .get(&address)
@@ -1593,13 +1595,8 @@ impl WorldState {
                 if explore_opposite {
                     exploratory_decisions += 1;
                 }
-                let target = adaptive_target_profile(
-                    active,
-                    benefit,
-                    cost,
-                    hysteresis,
-                    explore_opposite,
-                );
+                let target =
+                    adaptive_target_profile(active, benefit, cost, hysteresis, explore_opposite);
                 if active == (target == RelayProfile::Active) {
                     continue;
                 }
@@ -1609,8 +1606,7 @@ impl WorldState {
                         .await
                         .is_ok()
                     {
-                        self.node_relay_profiles
-                            .insert(address, target.to_string());
+                        self.node_relay_profiles.insert(address, target.to_string());
                         if target == RelayProfile::Active {
                             switched_active += 1;
                         } else {
@@ -1628,6 +1624,7 @@ impl WorldState {
             switched_active,
             switched_lazy,
             exploratory_decisions,
+            reconsidered_validators,
             validators,
             window.epochs,
             Some(&window),
@@ -1676,6 +1673,7 @@ impl WorldState {
         switched_active: usize,
         switched_lazy: usize,
         exploratory_decisions: usize,
+        reconsidered_validators: usize,
         validators: &[Validator],
         window_epochs: u64,
         window: Option<&AdaptiveObservationWindow>,
@@ -1691,8 +1689,7 @@ impl WorldState {
         let mean_cost = if self.adaptive_relay_costs.is_empty() {
             0.0
         } else {
-            self.adaptive_relay_costs.values().sum::<f64>()
-                / self.adaptive_relay_costs.len() as f64
+            self.adaptive_relay_costs.values().sum::<f64>() / self.adaptive_relay_costs.len() as f64
         };
         let observed = observed_benefit
             .map(|value| format!("{value:.17e}"))
@@ -1721,12 +1718,12 @@ impl WorldState {
             if file.metadata().map(|metadata| metadata.len()).unwrap_or(0) == 0 {
                 let _ = writeln!(
                     file,
-                    "epoch,window_epochs,update_applied,active_fraction,active_stake_share,observed_benefit_per_forward,smoothed_benefit_per_forward,active_expected_reward_per_stake,lazy_expected_reward_per_stake,active_forward_attempts_per_stake,lazy_forward_attempts_per_stake,switched_to_active,switched_to_lazy,exploratory_decisions,mean_cost_per_forward"
+                    "epoch,window_epochs,update_applied,active_fraction,active_stake_share,observed_benefit_per_forward,smoothed_benefit_per_forward,active_expected_reward_per_stake,lazy_expected_reward_per_stake,active_forward_attempts_per_stake,lazy_forward_attempts_per_stake,switched_to_active,switched_to_lazy,exploratory_decisions,reconsidered_validators,mean_cost_per_forward"
                 );
             }
             let _ = writeln!(
                 file,
-                "{epoch},{window_epochs},{update_applied},{active_fraction:.9},{active_stake_share:.9},{observed},{smoothed},{active_reward},{lazy_reward},{active_work},{lazy_work},{switched_active},{switched_lazy},{exploratory_decisions},{mean_cost:.17e}"
+                "{epoch},{window_epochs},{update_applied},{active_fraction:.9},{active_stake_share:.9},{observed},{smoothed},{active_reward},{lazy_reward},{active_work},{lazy_work},{switched_active},{switched_lazy},{exploratory_decisions},{reconsidered_validators},{mean_cost:.17e}"
             );
             let _ = file.flush();
         }
@@ -1766,10 +1763,7 @@ impl WorldState {
         }
     }
 
-    fn write_inclusion_samples(
-        &mut self,
-        samples: &[(u64, String, u64, u64, f64, bool)],
-    ) {
+    fn write_inclusion_samples(&mut self, samples: &[(u64, String, u64, u64, f64, bool)]) {
         if samples.is_empty() {
             return;
         }
@@ -1836,6 +1830,34 @@ impl WorldState {
                     .unwrap_or(0.0)
             })
             .sum();
+        let audit = self
+            .flooding_audit
+            .lock()
+            .map(|state| state.clone())
+            .unwrap_or_default();
+        let attack = audit.attack;
+        let attack_direct_net_cost = attack.attack_fee_paid + attack.attack_irrecoverable_cost_paid
+            - attack.attack_proposer_fee_recovery
+            - attack.attack_relay_fee_recovery;
+        let adversary_proposer_weight_share_mean = if audit.metric_epoch_count == 0 {
+            0.0
+        } else {
+            audit.adversary_proposer_weight_share_sum / audit.metric_epoch_count as f64
+        };
+        let adversary_real_stake_share = if audit.metric_epoch_count == 0 {
+            0.0
+        } else {
+            audit.adversary_real_stake_share_sum / audit.metric_epoch_count as f64
+        };
+        let mut coalition_identities: Vec<&str> =
+            self.adversarial_nodes.iter().map(String::as_str).collect();
+        coalition_identities.sort_unstable();
+        let coalition_identity_hash = hex::encode(tools::Hasher::hash(
+            coalition_identities.join("\n").into_bytes(),
+        ));
+        let background_workload_hash = hex::encode(tools::Hasher::hash(
+            audit.background_workload_trace.join("\n").into_bytes(),
+        ));
         let summary = RunSummary {
             run_id: self.run_id.clone(),
             completed_epochs,
@@ -1846,6 +1868,19 @@ impl WorldState {
             adversary_fee_spent,
             adversary_reward_income,
             adversary_net_income: adversary_reward_income - adversary_fee_spent,
+            attack_tx_submitted: attack.attack_tx_submitted,
+            attack_tx_included: attack.attack_tx_included,
+            attack_fee_paid: attack.attack_fee_paid,
+            attack_irrecoverable_cost_paid: attack.attack_irrecoverable_cost_paid,
+            attack_certified_path_cost: attack.attack_certified_path_cost,
+            attack_proposer_fee_recovery: attack.attack_proposer_fee_recovery,
+            attack_relay_fee_recovery: attack.attack_relay_fee_recovery,
+            attack_coalition_raw_contribution: attack.attack_coalition_raw_contribution,
+            attack_direct_net_cost,
+            adversary_proposer_weight_share_mean,
+            adversary_real_stake_share,
+            coalition_identity_hash,
+            background_workload_hash,
         };
         if let Ok(json) = serde_json::to_string_pretty(&summary) {
             let _ = tokio::fs::write(&self.run_summary_filename, json).await;
@@ -1889,6 +1924,60 @@ impl WorldState {
             }
         }
         raw
+    }
+
+    fn attack_capture_report(
+        &self,
+        blocks: &[Block],
+        validators: &[Validator],
+        snapshot: &ConsensusMetricsSnapshot,
+    ) -> AttackOnlyMetrics {
+        let validator_set: HashSet<&str> = validators.iter().map(|v| v.address.as_str()).collect();
+        let theta = snapshot.topostake_proposer_fee_ratio.unwrap_or(1.0);
+        let depth = snapshot.topostake_depth.unwrap_or(1);
+        let cost_reference = snapshot.topostake_score_cost_reference.unwrap_or(1.0);
+        let mut report = AttackOnlyMetrics::default();
+
+        for block in blocks {
+            for (idx, tx) in block.body.transactions.iter().enumerate() {
+                if !tx.self_generated_attack {
+                    continue;
+                }
+                report.attack_tx_included += 1;
+                if self.adversarial_nodes.contains(&block.header.miner) {
+                    report.attack_proposer_fee_recovery += theta * tx.fee;
+                }
+                let Some(path) = block.body.paths.get(idx) else {
+                    continue;
+                };
+                if !block.verify_path_evidence(idx) {
+                    continue;
+                }
+                let full_path = path.full_path(block.header.miner.clone());
+                let path_length = full_path.len().saturating_sub(1);
+                if path_length < 2 {
+                    continue;
+                }
+                report.attack_certified_path_cost += tx.irrecoverable_cost;
+                let relay_budget = (1.0 - theta) * tx.fee;
+                let cost_weight = TopoStakeConsensus::transaction_credit_weight(
+                    tx.irrecoverable_cost,
+                    cost_reference,
+                );
+                for position in 1..path_length {
+                    let relayer = &full_path[position];
+                    if !validator_set.contains(relayer.as_str())
+                        || !self.adversarial_nodes.contains(relayer)
+                    {
+                        continue;
+                    }
+                    let gamma = TopoStakeConsensus::gamma_for_depth(depth, position, path_length);
+                    report.attack_relay_fee_recovery += relay_budget * gamma;
+                    report.attack_coalition_raw_contribution += cost_weight * gamma;
+                }
+            }
+        }
+        report
     }
 
     fn estimate_epoch_rewards(
@@ -2003,8 +2092,7 @@ impl WorldState {
                     if !validator_set.contains(relayer.as_str()) {
                         continue;
                     }
-                    let gamma =
-                        TopoStakeConsensus::gamma_for_depth(depth, position, path_length);
+                    let gamma = TopoStakeConsensus::gamma_for_depth(depth, position, path_length);
                     let reward = relay_budget * gamma;
                     let contribution = q * gamma;
                     report.relay_reward += reward;
@@ -2496,15 +2584,9 @@ mod tests {
             Validator::new("bob".to_string(), 3.0, 1.0),
         ];
         let mut rewards = EpochRewardReport::default();
-        rewards
-            .proposer_by_address
-            .insert("alice".to_string(), 0.4);
-        rewards
-            .relay_by_address
-            .insert("alice".to_string(), 0.2);
-        rewards
-            .relay_by_address
-            .insert("bob".to_string(), 0.6);
+        rewards.proposer_by_address.insert("alice".to_string(), 0.4);
+        rewards.relay_by_address.insert("alice".to_string(), 0.2);
+        rewards.relay_by_address.insert("bob".to_string(), 0.6);
 
         let updated = reinvest_epoch_rewards(&validators, &rewards, 0.5);
         assert!((updated[0].stake - 2.3).abs() < 1e-12);
@@ -2531,24 +2613,14 @@ mod tests {
         let origin = Wallet::new();
         let adversary = Wallet::new();
         let miner = Wallet::new();
-        let tx = Transaction::with_costs(
-            miner.address.clone(),
-            0,
-            1.0,
-            1.0,
-            origin.clone(),
-        );
+        let tx = Transaction::with_costs(miner.address.clone(), 0, 1.0, 1.0, origin.clone());
         let mut path = TransactionPaths::new_with_epoch(tx.clone(), 0);
         assert!(path.append_completed_hop(
             adversary.address.clone(),
             origin.clone(),
             adversary.clone(),
         ));
-        assert!(path.append_completed_hop(
-            miner.address.clone(),
-            adversary.clone(),
-            miner.clone(),
-        ));
+        assert!(path.append_completed_hop(miner.address.clone(), adversary.clone(), miner.clone(),));
         let block = Block::new(
             1,
             0,
@@ -2587,6 +2659,7 @@ mod tests {
             0.0,
             Arc::new(AtomicU64::new(0)),
             Arc::new(std::sync::Mutex::new(HashMap::new())),
+            Arc::new(Mutex::new(FloodingAuditState::default())),
         );
         world.adversarial_nodes.insert(adversary.address.clone());
         let validators = vec![
@@ -2601,10 +2674,7 @@ mod tests {
         assert!(report.relay_reward > 0.0);
         assert_eq!(report.adversary_relay_reward, report.relay_reward);
         assert!(report.raw_contribution > 0.0);
-        assert_eq!(
-            report.adversary_raw_contribution,
-            report.raw_contribution
-        );
+        assert_eq!(report.adversary_raw_contribution, report.raw_contribution);
 
         world.adversarial_nodes.insert(origin.address);
         let excluded = world.organic_capture_report(&[block], &validators, &snapshot);
@@ -2644,6 +2714,7 @@ mod tests {
             0.0,
             Arc::new(AtomicU64::new(0)),
             Arc::new(std::sync::Mutex::new(HashMap::new())),
+            Arc::new(Mutex::new(FloodingAuditState::default())),
         );
         tokio::spawn(async move {
             world.run(world_receiver).await;
@@ -2683,6 +2754,7 @@ mod tests {
             0.0,
             Arc::new(AtomicU64::new(0)),
             Arc::new(std::sync::Mutex::new(HashMap::new())),
+            Arc::new(Mutex::new(FloodingAuditState::default())),
         );
 
         let validators = world.validators.clone();

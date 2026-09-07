@@ -70,6 +70,7 @@ CLI_KEYS = {
     "slot_duration": "--slot-duration",
     "slot_per_epoch": "--slot-per-epoch",
     "max_epochs": "--max-epochs",
+    "warmup_epochs": "--metrics-warmup-epochs",
     "max_tx_per_block": "--max-tx-per-block",
     "topostake_target_depth": "--topostake-target-depth",
     "beta": "--beta",

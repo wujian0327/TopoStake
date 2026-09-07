@@ -1,8 +1,8 @@
 use crate::blockchain::block::Block;
 use crate::blockchain::path::TransactionPaths;
 use crate::consensus::{RandaoSeed, Validator};
-use crate::network::RelayProfile;
 use crate::network::world_state::SlotManager;
+use crate::network::RelayProfile;
 use std::sync::Arc;
 
 pub enum Message {
@@ -17,6 +17,7 @@ pub enum Message {
     GenerateBlock,
     GenerateTransactionPaths {
         to: String,
+        self_generated_attack: bool,
     },
     RecordGeneratedTransaction {
         tx_hash: String,
@@ -74,7 +75,17 @@ impl Message {
     }
 
     pub fn new_generate_transaction_path_msg(to: String) -> Message {
-        Message::GenerateTransactionPaths { to }
+        Message::GenerateTransactionPaths {
+            to,
+            self_generated_attack: false,
+        }
+    }
+
+    pub fn new_generate_attack_transaction_path_msg(to: String) -> Message {
+        Message::GenerateTransactionPaths {
+            to,
+            self_generated_attack: true,
+        }
     }
 
     pub fn new_record_generated_transaction_msg(

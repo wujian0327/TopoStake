@@ -194,6 +194,10 @@ struct Args {
     #[clap(long, default_value = "100")]
     max_epochs: u64,
 
+    /// Initial epochs excluded from run-level steady-state means
+    #[clap(long, default_value = "0")]
+    metrics_warmup_epochs: u64,
+
     /// Metrics 文件前缀 (Metrics file prefix)
     #[clap(long, default_value = "metrics")]
     metrics_prefix: String,
@@ -405,6 +409,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         max_tx_per_block: args.max_tx_per_block,
         topostake_config,
         max_epochs: args.max_epochs,
+        warmup_epochs: args.metrics_warmup_epochs,
         metrics_prefix: args.metrics_prefix,
         run_id: args.run_id,
         output_dir: args.output_dir,
